@@ -1,11 +1,13 @@
 import type * as vscode from "vscode";
 
 import type { AgentRunner } from "../agentRunner";
-import type { RunModelSelection } from "../../shared/messages";
 import { fakeAgentRunner } from "../fakeRun";
+import { renderCodeRuntimeContextPrompt } from "../runtime/contextPrompt";
+import { collectVsCodeRuntimeContext } from "../runtime/vscodeRuntimeContext";
+import type { RunModelSelection } from "../../shared/messages";
 import { createModelRunner } from "./modelRunner";
-import { createDeepSeekProvider } from "./providers/deepseekProvider";
 import { getModelRuntimeConfig } from "./modelConfig";
+import { createDeepSeekProvider } from "./providers/deepseekProvider";
 
 export async function createConfiguredAgentRunner(
   context: vscode.ExtensionContext,
@@ -24,5 +26,6 @@ export async function createConfiguredAgentRunner(
       model: config.model,
       thinking: config.thinking,
     }),
+    systemPromptProvider: async () => renderCodeRuntimeContextPrompt(await collectVsCodeRuntimeContext()),
   });
 }

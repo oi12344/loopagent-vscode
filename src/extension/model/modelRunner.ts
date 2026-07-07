@@ -5,16 +5,41 @@ import type { ModelMessage, ModelProvider } from "./types";
 export type CreateModelRunnerOptions = {
   provider: ModelProvider;
   systemPrompt?: string;
+  systemPromptProvider?: () => string | Promise<string>;
 };
 
-export function createModelRunner({ provider, systemPrompt }: CreateModelRunnerOptions): AgentRunner {
+export function createModelRunner({ provider, systemPrompt, systemPromptProvider }: CreateModelRunnerOptions): AgentRunner {
   return {
     run: async function* ({ runId, task, signal }) {
       yield { type: "runStarted", runId, task } satisfies HostToWebviewMessage;
       yield { type: "assistantStarted", runId, provider: provider.displayName } satisfies HostToWebviewMessage;
-      yield { type: "assistantThinking", runId, message: `Calling ${provider.displayName}` } satisfies HostToWebviewMessage;
 
-      const messages = createMessages(task, systemPrompt);
+      const systemPrompts = [systemPrompt];
+      if (systemPromptProvider) {
+        yield {
+          type: "assistantThinking",
+          runId,
+          message: "Building code context",
+        } satisfies HostToWebviewMessage;
+
+        try {
+          systemPrompts.push(await systemPromptProvider());
+        } catch {
+          yield {
+            type: "assistantThinking",
+            runId,
+            message: "Code context unavailable",
+          } satisfies HostToWebviewMessage;
+        }
+      }
+
+      yield {
+        type: "assistantThinking",
+        runId,
+        message: `Calling ${provider.displayName}`,
+      } satisfies HostToWebviewMessage;
+
+      const messages = createMessages(task, systemPrompts);
       let reportedReasoningSignal = false;
 
       for await (const event of provider.stream({ messages, signal })) {
@@ -32,7 +57,11 @@ export function createModelRunner({ provider, systemPrompt }: CreateModelRunnerO
         }
 
         if (event.type === "contentDelta") {
-          yield { type: "assistantDelta", runId, content: event.content } satisfies HostToWebviewMessage;
+          yield {
+            type: "assistantDelta",
+            runId,
+            content: event.content,
+          } satisfies HostToWebviewMessage;
         }
       }
 
@@ -42,13 +71,18 @@ export function createModelRunner({ provider, systemPrompt }: CreateModelRunnerO
   };
 }
 
-function createMessages(task: string, systemPrompt?: string): ModelMessage[] {
+function createMessages(task: string, systemPrompts: Array<string | undefined>): ModelMessage[] {
   const messages: ModelMessage[] = [];
 
-  if (systemPrompt?.trim()) {
-    messages.push({ role: "system", content: systemPrompt.trim() });
+  for (const systemPrompt of systemPrompts) {
+    const trimmedPrompt = systemPrompt?.trim();
+
+    if (trimmedPrompt) {
+      messages.push({ role: "system", content: trimmedPrompt });
+    }
   }
 
   messages.push({ role: "user", content: task });
+
   return messages;
 }
