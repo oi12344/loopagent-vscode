@@ -213,6 +213,16 @@ type CodeRuntimeContext = {
   - 模型 messages 中包含格式化后的上下文。
   - 上下文 provider 失败时不阻断整个 run，而是发送可见的过程提示并继续回答。
 
+## 2026-07-07 实施说明
+
+第一阶段实现时把上下文能力拆成三个边界：
+
+- `src/extension/runtime/codeRuntimeContext.ts`：纯函数上下文收集、过滤和裁剪，便于单元测试。
+- `src/extension/runtime/contextPrompt.ts`：把上下文快照渲染为 DeepSeek 可消费的 system prompt。
+- `src/extension/runtime/vscodeRuntimeContext.ts`：唯一直接访问 VS Code API 和本地白名单项目文件的 adapter。
+
+DeepSeek runner 通过 `systemPromptProvider` 在每次 run 时临时注入上下文。上下文收集会产生 `Building code context` 过程事件；如果上下文 provider 失败，runner 发送 `Code context unavailable` 过程事件并继续调用模型。`fakeAgentRunner`、Webview 消息协议和 UI 保持不变。
+
 ## 后续阶段
 
 完成只读上下文后，再设计：
