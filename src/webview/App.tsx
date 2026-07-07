@@ -1,0 +1,488 @@
+import * as React from "react";
+import type { HostToWebviewMessage, ModelThinkingMode, RunModelSelection } from "../shared/messages";
+import { createDefaultVsCodeApi, type VsCodeApi } from "./vscodeApi";
+import "./styles.css";
+
+type AppProps = {
+  vscodeApi?: VsCodeApi;
+};
+
+type UserTurn = {
+  id: string;
+  role: "user";
+  content: string;
+  runId?: string;
+  pending?: boolean;
+};
+
+type AssistantTurn = {
+  id: string;
+  role: "assistant";
+  runId: string;
+  provider: string;
+  process: string[];
+  content: string;
+  status: "thinking" | "streaming" | "done" | "error";
+  error?: string;
+};
+
+type ChatTurn = UserTurn | AssistantTurn;
+
+type AssistantUpdate = (turn: AssistantTurn) => AssistantTurn;
+
+type ModelOption = {
+  id: string;
+  label: string;
+  description: string;
+  selection: RunModelSelection;
+  supportsThinking: boolean;
+};
+
+const defaultProviderName = "LoopAgent";
+
+const modelOptions: ModelOption[] = [
+  {
+    id: "deepseek-v4-flash",
+    label: "DeepSeek v4 Flash",
+    description: "Real DeepSeek provider",
+    selection: {
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      thinking: "disabled",
+    },
+    supportsThinking: true,
+  },
+  {
+    id: "fake-local",
+    label: "Fake local",
+    description: "Local development runner",
+    selection: {
+      provider: "fake",
+      model: "fake-local",
+      thinking: "disabled",
+    },
+    supportsThinking: false,
+  },
+];
+
+export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
+  const [message, setMessage] = React.useState("");
+  const [isRunning, setIsRunning] = React.useState(false);
+  const [activeRunId, setActiveRunId] = React.useState<string | null>(null);
+  const [turns, setTurns] = React.useState<ChatTurn[]>([]);
+  const [selectedModelId, setSelectedModelId] = React.useState(modelOptions[0].id);
+  const [thinkingMode, setThinkingMode] = React.useState<ModelThinkingMode>("disabled");
+  const [openMenu, setOpenMenu] = React.useState<"model" | "thinking" | null>(null);
+  const nextTurnId = React.useRef(0);
+
+  const selectedModel = modelOptions.find((option) => option.id === selectedModelId) ?? modelOptions[0];
+  const effectiveThinkingMode = selectedModel.supportsThinking ? thinkingMode : "disabled";
+
+  function createTurnId(prefix: string) {
+    const id = `${prefix}-${nextTurnId.current}`;
+    nextTurnId.current += 1;
+    return id;
+  }
+
+  function createAssistantTurn(runId: string, provider = defaultProviderName): AssistantTurn {
+    return {
+      id: createTurnId("assistant"),
+      role: "assistant",
+      runId,
+      provider,
+      process: [],
+      content: "",
+      status: "thinking",
+    };
+  }
+
+  function updateAssistantTurn(runId: string, update: AssistantUpdate, provider?: string) {
+    setTurns((currentTurns) => {
+      const assistantIndex = currentTurns.findIndex((turn) => turn.role === "assistant" && turn.runId === runId);
+
+      if (assistantIndex === -1) {
+        return [...currentTurns, update(createAssistantTurn(runId, provider))];
+      }
+
+      return currentTurns.map((turn, index) => {
+        if (index !== assistantIndex || turn.role !== "assistant") {
+          return turn;
+        }
+
+        return update(turn);
+      });
+    });
+  }
+
+  React.useEffect(() => {
+    function handleHostMessage(event: MessageEvent<HostToWebviewMessage>) {
+      const hostMessage = event.data;
+
+      if (!hostMessage || typeof hostMessage.type !== "string") {
+        return;
+      }
+
+      if (hostMessage.type === "runStarted") {
+        setActiveRunId(hostMessage.runId);
+        setIsRunning(true);
+        setTurns((currentTurns) => attachRunToUserTurn(currentTurns, hostMessage.runId, hostMessage.task, createTurnId));
+        return;
+      }
+
+      if (hostMessage.type === "assistantStarted") {
+        setActiveRunId(hostMessage.runId);
+        setIsRunning(true);
+        updateAssistantTurn(
+          hostMessage.runId,
+          (turn) => ({
+            ...turn,
+            provider: hostMessage.provider,
+            status: "thinking",
+          }),
+          hostMessage.provider,
+        );
+        return;
+      }
+
+      if (hostMessage.type === "assistantThinking") {
+        updateAssistantTurn(hostMessage.runId, (turn) => ({
+          ...turn,
+          process: appendUniqueProcess(turn.process, hostMessage.message),
+          status: turn.content.length > 0 ? "streaming" : "thinking",
+        }));
+        return;
+      }
+
+      if (hostMessage.type === "assistantDelta") {
+        updateAssistantTurn(hostMessage.runId, (turn) => ({
+          ...turn,
+          content: `${turn.content}${hostMessage.content}`,
+          status: "streaming",
+        }));
+        return;
+      }
+
+      if (hostMessage.type === "assistantFinished") {
+        updateAssistantTurn(hostMessage.runId, (turn) => ({
+          ...turn,
+          status: "done",
+        }));
+        return;
+      }
+
+      if (hostMessage.type === "agentEvent") {
+        updateAssistantTurn(hostMessage.runId, (turn) => ({
+          ...turn,
+          process: appendUniqueProcess(turn.process, hostMessage.message),
+        }));
+        return;
+      }
+
+      if (hostMessage.type === "runFinished") {
+        setIsRunning(false);
+        setActiveRunId(null);
+        updateAssistantTurn(hostMessage.runId, (turn) => ({
+          ...turn,
+          process: appendUniqueProcess(turn.process, "Done"),
+          status: "done",
+        }));
+        return;
+      }
+
+      if (hostMessage.type === "runFailed") {
+        setIsRunning(false);
+        setActiveRunId(null);
+        updateAssistantTurn(hostMessage.runId, (turn) => ({
+          ...turn,
+          error: hostMessage.message,
+          process: appendUniqueProcess(turn.process, "Run failed"),
+          status: "error",
+        }));
+      }
+    }
+
+    window.addEventListener("message", handleHostMessage);
+
+    return () => {
+      window.removeEventListener("message", handleHostMessage);
+    };
+  }, []);
+
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const trimmedMessage = message.trim();
+
+    if (!trimmedMessage || isRunning) {
+      return;
+    }
+
+    const runModel: RunModelSelection = {
+      ...selectedModel.selection,
+      thinking: effectiveThinkingMode,
+    };
+
+    setIsRunning(true);
+    setActiveRunId(null);
+    setOpenMenu(null);
+    setTurns((currentTurns) => [
+      ...currentTurns,
+      {
+        id: createTurnId("user"),
+        role: "user",
+        content: trimmedMessage,
+        pending: true,
+      },
+    ]);
+    setMessage("");
+    vscodeApi.postMessage({ type: "startTask", task: trimmedMessage, model: runModel });
+  }
+
+  function selectModel(option: ModelOption) {
+    setSelectedModelId(option.id);
+    if (!option.supportsThinking) {
+      setThinkingMode("disabled");
+    }
+    setOpenMenu(null);
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="app-header">
+        <div>
+          <h1>LoopAgent</h1>
+          {activeRunId ? <span className="run-id">{activeRunId}</span> : null}
+        </div>
+        <span className="status-pill">{isRunning ? "Running" : "Ready"}</span>
+      </header>
+
+      <section className="chat-log" aria-label="Conversation">
+        {turns.length === 0 ? (
+          <p className="empty-state">Start a conversation with LoopAgent.</p>
+        ) : (
+          turns.map((turn) => {
+            if (turn.role === "user") {
+              return <UserMessage key={turn.id} turn={turn} />;
+            }
+
+            return <AssistantMessage key={turn.id} turn={turn} />;
+          })
+        )}
+      </section>
+
+      <form className="chat-composer" aria-label="Chat composer" onSubmit={handleSubmit}>
+        <label htmlFor="message-input">Message</label>
+        <textarea
+          id="message-input"
+          value={message}
+          onChange={(event) => setMessage(event.currentTarget.value)}
+          placeholder="Ask LoopAgent anything about this workspace."
+          rows={3}
+        />
+
+        <div className="composer-toolbar">
+          <div className="composer-tools">
+            <div className="tool-menu-anchor">
+              <button type="button" className="chip-button" onClick={() => setOpenMenu(openMenu === "model" ? null : "model")}>
+                {selectedModel.label}
+              </button>
+              {openMenu === "model" ? <ModelMenu selectedModel={selectedModel} onSelect={selectModel} /> : null}
+            </div>
+
+            <div className="tool-menu-anchor">
+              <button
+                type="button"
+                className="chip-button"
+                disabled={!selectedModel.supportsThinking}
+                onClick={() => setOpenMenu(openMenu === "thinking" ? null : "thinking")}
+              >
+                {selectedModel.supportsThinking ? `Think: ${thinkingMode === "enabled" ? "On" : "Off"}` : "Think: Not supported"}
+              </button>
+              {openMenu === "thinking" && selectedModel.supportsThinking ? (
+                <ThinkingMenu thinkingMode={thinkingMode} onSelect={setThinkingMode} onClose={() => setOpenMenu(null)} />
+              ) : null}
+            </div>
+          </div>
+
+          <button type="submit" disabled={!message.trim() || isRunning}>
+            {isRunning ? "Sending..." : "Send"}
+          </button>
+        </div>
+      </form>
+    </main>
+  );
+}
+
+function ModelMenu({ selectedModel, onSelect }: { selectedModel: ModelOption; onSelect(option: ModelOption): void }) {
+  return (
+    <div className="composer-menu" role="menu" aria-label="Model">
+      {modelOptions.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          role="menuitem"
+          className="menu-item"
+          aria-label={`${option.label} ${option.description}`}
+          aria-current={option.id === selectedModel.id ? "true" : undefined}
+          onClick={() => onSelect(option)}
+        >
+          <span>{option.label}</span>
+          <span>{option.description}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ThinkingMenu({
+  thinkingMode,
+  onSelect,
+  onClose,
+}: {
+  thinkingMode: ModelThinkingMode;
+  onSelect(mode: ModelThinkingMode): void;
+  onClose(): void;
+}) {
+  function select(mode: ModelThinkingMode) {
+    onSelect(mode);
+    onClose();
+  }
+
+  return (
+    <div className="composer-menu" role="menu" aria-label="Deep thinking">
+      <button
+        type="button"
+        role="menuitem"
+        className="menu-item"
+        aria-label="Off Uses direct answer mode"
+        aria-current={thinkingMode === "disabled" ? "true" : undefined}
+        onClick={() => select("disabled")}
+      >
+        <span>Off</span>
+        <span>Uses direct answer mode</span>
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="menu-item"
+        aria-label="On Enables provider reasoning mode"
+        aria-current={thinkingMode === "enabled" ? "true" : undefined}
+        onClick={() => select("enabled")}
+      >
+        <span>On</span>
+        <span>Enables provider reasoning mode</span>
+      </button>
+    </div>
+  );
+}
+
+function UserMessage({ turn }: { turn: UserTurn }) {
+  return (
+    <article className="message message-user">
+      <div className="message-meta">You</div>
+      <div className="message-body">{turn.content}</div>
+    </article>
+  );
+}
+
+function AssistantMessage({ turn }: { turn: AssistantTurn }) {
+  return (
+    <article className={`message message-assistant${turn.status === "error" ? " message-error" : ""}`}>
+      <div className="message-meta">
+        <span>{turn.provider}</span>
+        <span>{formatAssistantStatus(turn.status)}</span>
+      </div>
+
+      {turn.process.length > 0 ? (
+        <details className="process-details" open>
+          <summary>Process</summary>
+          <ol>
+            {turn.process.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ol>
+        </details>
+      ) : null}
+
+      {turn.content.length > 0 ? <div className="message-body assistant-answer">{turn.content}</div> : null}
+      {turn.status !== "done" && turn.content.length === 0 && !turn.error ? (
+        <div className="assistant-placeholder">Waiting for response...</div>
+      ) : null}
+      {turn.error ? (
+        <p className="error-message" role="alert">
+          {turn.error}
+        </p>
+      ) : null}
+    </article>
+  );
+}
+
+function attachRunToUserTurn(
+  turns: ChatTurn[],
+  runId: string,
+  task: string,
+  createTurnId: (prefix: string) => string,
+): ChatTurn[] {
+  const pendingUserIndex = findLastIndex(
+    turns,
+    (turn): turn is UserTurn => turn.role === "user" && turn.pending === true && turn.content === task,
+  );
+
+  if (pendingUserIndex === -1) {
+    return [
+      ...turns,
+      {
+        id: createTurnId("user"),
+        role: "user",
+        content: task,
+        runId,
+      },
+    ];
+  }
+
+  return turns.map((turn, index) => {
+    if (index !== pendingUserIndex || turn.role !== "user") {
+      return turn;
+    }
+
+    return {
+      ...turn,
+      runId,
+      pending: false,
+    };
+  });
+}
+
+function appendUniqueProcess(process: string[], message: string): string[] {
+  if (process.includes(message)) {
+    return process;
+  }
+
+  return [...process, message];
+}
+
+function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (predicate(items[index])) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function formatAssistantStatus(status: AssistantTurn["status"]): string {
+  if (status === "done") {
+    return "Done";
+  }
+
+  if (status === "error") {
+    return "Error";
+  }
+
+  if (status === "streaming") {
+    return "Responding";
+  }
+
+  return "Thinking";
+}

@@ -1,0 +1,119 @@
+{
+  "name": "loopagent-vscode",
+  "displayName": "LoopAgent",
+  "version": "0.0.1",
+  "publisher": "local-dev",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:loopagent.hello",
+    "onCommand:loopagent.focusChat",
+    "onCommand:loopagent.setModelApiKey",
+    "onCommand:loopagent.clearModelApiKey",
+    "onView:loopagent.chat"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "loopagent.hello",
+        "title": "LoopAgent: Hello"
+      },
+      {
+        "command": "loopagent.focusChat",
+        "title": "LoopAgent: Focus Chat"
+      },
+      {
+        "command": "loopagent.setModelApiKey",
+        "title": "LoopAgent: Set Model API Key"
+      },
+      {
+        "command": "loopagent.clearModelApiKey",
+        "title": "LoopAgent: Clear Model API Key"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "loopagent",
+          "title": "LoopAgent",
+          "icon": "resources/loopagent.svg"
+        }
+      ]
+    },
+    "views": {
+      "loopagent": [
+        {
+          "id": "loopagent.chat",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "LoopAgent",
+      "properties": {
+        "loopagent.model.provider": {
+          "type": "string",
+          "enum": [
+            "fake",
+            "deepseek"
+          ],
+          "default": "fake",
+          "description": "Model provider used when running LoopAgent tasks."
+        },
+        "loopagent.model.model": {
+          "type": "string",
+          "default": "deepseek-v4-flash",
+          "description": "Model name passed to the configured provider."
+        },
+        "loopagent.model.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional provider base URL override. Leave empty to use the provider default."
+        },
+        "loopagent.model.thinking": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "enabled"
+          ],
+          "default": "disabled",
+          "description": "Thinking mode for providers that support it."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "lint": "echo \"No lint configured yet\"",
+    "compile": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "debug:vscode": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-vscode-debug.ps1",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p ./"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@types/vscode": "^1.96.0",
+    "@vitejs/plugin-react": "^6.0.3",
+    "@vscode/test-electron": "^2.4.1",
+    "esbuild": "^0.28.1",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  }
+}
