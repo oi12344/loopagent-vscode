@@ -57,7 +57,8 @@ $args = @(
   "--user-data-dir=$userDataDir",
   "--extensions-dir=$extensionsDir",
   "--remote-debugging-port=$debugPort",
-  "--disable-workspace-trust"
+  "--disable-workspace-trust",
+  "$extensionPath"
 )
 
 Start-Process -FilePath $codeCli -ArgumentList $args -WindowStyle Hidden
