@@ -289,6 +289,29 @@ importBindings: ImportBinding[]
 
 后续仓库规模增大后再引入 SQLite。即使引入 SQLite，也不需要图数据库；调用者、被调用者、影响范围和路径查询都可以通过 `edges(source, kind)`、`edges(target, kind)` 索引加 BFS/DFS 实现。
 
+### 内存预算与降级
+
+第一阶段内存索引只保存结构化摘要，不保存完整源码正文、完整 AST/CST、embedding 或全文倒排索引。源码片段只在查询命中后按行读取，并受 prompt 预算裁剪。
+
+默认保护线：
+
+| 项目 | 默认上限 | 超限行为 |
+| --- | ---: | --- |
+| 单文件大小 | `512KB` | 记录 diagnostic，不解析内容 |
+| 索引文件数 | `3000` | 停止继续索引，标记 partial |
+| 节点数 | `50000` | 停止新增节点和派生边，标记 partial |
+| 边数 | `150000` | 停止新增边，保留已建图 |
+| 未解析引用数 | `100000` | 停止记录新引用，保留 diagnostic |
+| 单次 prompt 片段预算 | `8000` 字符 | 按相关性裁剪并标记 truncated |
+
+索引状态至少区分：
+
+```ts
+type CodeIndexStatus = "idle" | "indexing" | "ready" | "partial" | "failed";
+```
+
+当达到任一保护线、解析超时或索引失败时，模型链路不得阻塞。`providerRegistry` 必须继续返回现有 `CodeRuntimeContext`，语义索引内容只作为可选增强；partial/failed 状态可以通过诊断信息暴露，但不能导致普通聊天不可用。
+
 ## 搜索索引
 
 语义图需要同时支持结构化查询和自然语言命中。
@@ -349,7 +372,7 @@ query 分词
 - `.env` 和 `.env.*`
 - 文件名包含 `secret`、`token`、`api_key`、`apikey`、`key` 等敏感词的文件
 
-语义索引不得读取超大文件。第一阶段应设置单文件大小上限，超过上限只记录 file diagnostic，不解析内容。
+语义索引不得读取超大文件。第一阶段单文件默认上限为 `512KB`，超过上限只记录 file diagnostic，不解析内容。路径过滤、文件大小过滤和总量预算必须在进入 parser/language adapter 前完成，避免无意义分配 AST、节点和边对象。
 
 ## 与现有模型链路集成
 

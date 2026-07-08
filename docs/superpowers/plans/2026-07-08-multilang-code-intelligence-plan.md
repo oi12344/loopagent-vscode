@@ -16,6 +16,21 @@
 - 第一轮不实现框架专用补边，例如 React render、NestJS route、Spring controller 这类依赖框架约定推断出的关系边。
 - 第一轮不接入真实 Tree-sitter runtime，不修改 `package.json` 增加 grammar 依赖，不修改 `esbuild.js` 打包 wasm。
 - 第一轮不接入完整 VS Code workspace 文件扫描，只落地路径过滤基础和可注入空实现，真实扫描单独排期。
+- 第一轮内存索引必须受预算保护，不保存完整源码正文、完整 AST/CST、embedding 或全文倒排索引。
+- 默认保护线：单文件 `512KB`、最多 `3000` 个文件、`50000` 个节点、`150000` 条边、`100000` 条未解析引用、单次 prompt 片段 `8000` 字符。
+- 任一保护线触发时必须降级为 partial/failed 语义增强，模型链路继续使用现有 `CodeRuntimeContext`，不得因为语义索引构建失败阻塞普通聊天。
+
+---
+
+## 内存预算实现要求
+
+后续执行任务 8 和任务 11 时必须遵守以下实现约束：
+
+- `WorkspaceIntelligence` 不常驻保存源码正文；`readSourceRange` 只在查询命中后读取片段。
+- parser 或 language adapter 之前必须先完成路径过滤、文件大小过滤和总量预算判断。
+- 超过单文件大小、文件数、节点数、边数或未解析引用数时，停止继续扩张索引并记录 diagnostic。
+- prompt 渲染必须按 `maxChars` 裁剪，并在结果中保留 `truncated` 标记。
+- 本轮不引入 SQLite；如果默认保护线不足以覆盖大仓库，记录为后续持久化任务，不在第一阶段临时扩大内存预算。
 
 ---
 
