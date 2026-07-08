@@ -26,6 +26,6 @@ export async function createConfiguredAgentRunner(
       model: config.model,
       thinking: config.thinking,
     }),
-    systemPromptProvider: async () => renderCodeRuntimeContextPrompt(await collectVsCodeRuntimeContext()),
+    systemPromptProvider: async (_request) => renderCodeRuntimeContextPrompt(await collectVsCodeRuntimeContext()),
   });
 }

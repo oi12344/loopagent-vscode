@@ -36,7 +36,7 @@ describe("createModelRunner runtime context", () => {
     const runner = createModelRunner({
       provider,
       systemPrompt: "Base system prompt.",
-      systemPromptProvider: async () => "Runtime context prompt.",
+      systemPromptProvider: async ({ task }) => `Runtime context for: ${task}`,
     });
 
     const hostMessages = await collectHostMessages(runner, "Inspect workspace");
@@ -44,7 +44,7 @@ describe("createModelRunner runtime context", () => {
     expect(capturedMessages).toEqual([
       [
         { role: "system", content: "Base system prompt." },
-        { role: "system", content: "Runtime context prompt." },
+        { role: "system", content: "Runtime context for: Inspect workspace" },
         { role: "user", content: "Inspect workspace" },
       ],
     ]);

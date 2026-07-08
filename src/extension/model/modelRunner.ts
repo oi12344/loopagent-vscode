@@ -1,16 +1,17 @@
-import type { AgentRunner } from "../agentRunner";
+import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import type { HostToWebviewMessage } from "../../shared/messages";
 import type { ModelMessage, ModelProvider } from "./types";
 
 export type CreateModelRunnerOptions = {
   provider: ModelProvider;
   systemPrompt?: string;
-  systemPromptProvider?: () => string | Promise<string>;
+  systemPromptProvider?: (request: AgentRunRequest) => string | Promise<string>;
 };
 
 export function createModelRunner({ provider, systemPrompt, systemPromptProvider }: CreateModelRunnerOptions): AgentRunner {
   return {
-    run: async function* ({ runId, task, signal }) {
+    run: async function* (request) {
+      const { runId, task, signal } = request;
       yield { type: "runStarted", runId, task } satisfies HostToWebviewMessage;
       yield { type: "assistantStarted", runId, provider: provider.displayName } satisfies HostToWebviewMessage;
 
@@ -23,7 +24,7 @@ export function createModelRunner({ provider, systemPrompt, systemPromptProvider
         } satisfies HostToWebviewMessage;
 
         try {
-          systemPrompts.push(await systemPromptProvider());
+          systemPrompts.push(await systemPromptProvider(request));
         } catch {
           yield {
             type: "assistantThinking",
