@@ -504,3 +504,11 @@ npm run debug:vscode
 2. 第一阶段的跨文件调用解析不会完整处理动态调用、函数作为值传递、反射和框架隐式关系。
 3. 第一阶段内存索引适合中小项目；大型仓库需要 SQLite 持久化和分页查询。
 4. 多语言 adapter 的精度会逐步提升，不能假设所有语言首版能力一致。
+
+## 实施记录
+
+第一轮实施已经落地内存语义图、名称搜索索引、TS/JS 与 Python 基础抽取、引用解析、一跳图遍历、`exploreCode` 上下文构建、prompt 渲染、`WorkspaceIntelligence` 编排、内存预算保护、模型 prompt provider 签名调整和 VS Code workspace 路径过滤基础。
+
+本轮模型链路只接入空的 code intelligence prompt 注入点，真实 VS Code workspace 文件扫描、增量更新、Tree-sitter runtime、grammar wasm 打包、SQLite 持久化、更多语言 adapter 和框架专用补边保留为后续工作。
+
+验证记录见 `docs/superpowers/plans/2026-07-08-multilang-code-intelligence-verification.md`。
