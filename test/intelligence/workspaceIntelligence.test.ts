@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { createWorkspaceIntelligence } from "../../src/extension/intelligence/workspaceIntelligence";
+import {
+  createEmptyWorkspaceIntelligence,
+  createWorkspaceIntelligence,
+} from "../../src/extension/intelligence/workspaceIntelligence";
 
 describe("createWorkspaceIntelligence", () => {
+  it("provides an empty implementation for optional prompt injection", async () => {
+    const intelligence = createEmptyWorkspaceIntelligence();
+
+    await expect(intelligence.buildCodeIntelligencePrompt("anything")).resolves.toBe("");
+    expect(intelligence.getStatus()).toBe("ready");
+    expect(intelligence.getDiagnostics()).toEqual([]);
+  });
+
   it("indexes source files and returns a code intelligence prompt", async () => {
     const intelligence = createWorkspaceIntelligence({
       readWorkspaceFiles: async () => [

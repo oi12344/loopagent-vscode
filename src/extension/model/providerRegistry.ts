@@ -2,6 +2,7 @@ import type * as vscode from "vscode";
 
 import type { AgentRunner } from "../agentRunner";
 import { fakeAgentRunner } from "../fakeRun";
+import { createEmptyWorkspaceIntelligence } from "../intelligence/workspaceIntelligence";
 import { renderCodeRuntimeContextPrompt } from "../runtime/contextPrompt";
 import { collectVsCodeRuntimeContext } from "../runtime/vscodeRuntimeContext";
 import type { RunModelSelection } from "../../shared/messages";
@@ -19,6 +20,8 @@ export async function createConfiguredAgentRunner(
     return fakeAgentRunner;
   }
 
+  const workspaceIntelligence = createEmptyWorkspaceIntelligence();
+
   return createModelRunner({
     provider: createDeepSeekProvider({
       apiKey: config.apiKey,
@@ -26,6 +29,10 @@ export async function createConfiguredAgentRunner(
       model: config.model,
       thinking: config.thinking,
     }),
-    systemPromptProvider: async (_request) => renderCodeRuntimeContextPrompt(await collectVsCodeRuntimeContext()),
+    systemPromptProvider: async (request) => {
+      const runtimePrompt = renderCodeRuntimeContextPrompt(await collectVsCodeRuntimeContext());
+      const codePrompt = await workspaceIntelligence.buildCodeIntelligencePrompt(request.task);
+      return [runtimePrompt, codePrompt].filter((part) => part.trim().length > 0).join("\n\n");
+    },
   });
 }

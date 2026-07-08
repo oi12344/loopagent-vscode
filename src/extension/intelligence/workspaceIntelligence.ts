@@ -193,3 +193,17 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
     },
   };
 }
+
+export function createEmptyWorkspaceIntelligence(): WorkspaceIntelligence {
+  return {
+    async buildCodeIntelligencePrompt() {
+      return "";
+    },
+    getStatus() {
+      return "ready";
+    },
+    getDiagnostics() {
+      return [];
+    },
+  };
+}
