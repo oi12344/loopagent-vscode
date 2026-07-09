@@ -76,6 +76,8 @@ deletedPaths: Set<relativePath>
 ```text
 createTreeSitterParserRuntime({
   wasmDirectory?: string;
+  parserWasmPath?: string;
+  grammarWasmDirectory?: string;
   languageWasmPaths?: Partial<Record<string, string>>;
 })
 ```
