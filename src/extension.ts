@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 
 import { startAgentRun, type AgentRunHandle } from "./extension/agentRunner";
+import { createTreeSitterParserRuntime } from "./extension/intelligence/parser/treeSitterRuntime";
+import { createVsCodeWorkspaceIntelligence } from "./extension/intelligence/vscodeWorkspaceIntelligence";
 import { clearModelApiKey, getConfiguredProviderId, setModelApiKey } from "./extension/model/modelConfig";
 import { createConfiguredAgentRunner } from "./extension/model/providerRegistry";
 import { createWebviewHtml } from "./extension/webviewHtml";
@@ -50,6 +52,9 @@ export function deactivate(): void {
 
 class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private activeRun: AgentRunHandle | undefined;
+  private readonly workspaceIntelligence = createVsCodeWorkspaceIntelligence(vscode, {
+    parserRuntime: createTreeSitterParserRuntime(),
+  });
 
   constructor(private readonly context: vscode.ExtensionContext) {}
 
@@ -89,7 +94,9 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private startRun(message: Extract<WebviewToHostMessage, { type: "startTask" }>, webview: vscode.Webview): void {
     this.activeRun?.cancel();
 
-    void createConfiguredAgentRunner(this.context, message.model).then((runner) => {
+    void createConfiguredAgentRunner(this.context, message.model, {
+      workspaceIntelligence: this.workspaceIntelligence,
+    }).then((runner) => {
       const run = startAgentRun({
         task: message.task,
         runner,
