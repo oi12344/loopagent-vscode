@@ -67,6 +67,51 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(systemPrompt).toContain("src/modelAccess.ts");
     expect(systemPrompt).not.toContain("DEEPSEEK_API_KEY");
   });
+
+  it("wires tree-sitter parser runtime into VS Code workspace intelligence", async () => {
+    const fakeVsCodeApi = createFakeVsCodeWorkspaceApi("E:\\work\\repo", new Map());
+    const fakeParserRuntime = {
+      parse: vi.fn(),
+    };
+    const createTreeSitterParserRuntime = vi.fn(() => fakeParserRuntime);
+    const createVsCodeWorkspaceIntelligence = vi.fn(() => ({
+      buildCodeIntelligencePrompt: vi.fn(async () => ""),
+      getStatus: vi.fn(() => "ready"),
+      getDiagnostics: vi.fn(() => []),
+    }));
+
+    vi.resetModules();
+    vi.doMock("../src/extension/model/modelConfig", () => ({
+      getModelRuntimeConfig: async () => ({
+        provider: "deepseek",
+        model: "test-model",
+        baseUrl: "",
+        apiKey: "test-key",
+        thinking: "disabled",
+      }),
+    }));
+    vi.doMock("../src/extension/intelligence/parser/treeSitterRuntime", () => ({
+      createTreeSitterParserRuntime,
+    }));
+    vi.doMock("../src/extension/intelligence/vscodeWorkspaceIntelligence", () => ({
+      createVsCodeWorkspaceIntelligence,
+    }));
+    vi.doMock("../src/extension/model/providers/deepseekProvider", () => ({
+      createDeepSeekProvider: (): ModelProvider => ({
+        id: "mock",
+        displayName: "Mock model",
+        stream: async function* () {
+          yield { type: "contentDelta", content: "ok" };
+        },
+      }),
+    }));
+
+    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
+    await createConfiguredAgentRunner({} as never, { provider: "deepseek" }, { vscodeApi: fakeVsCodeApi });
+
+    expect(createTreeSitterParserRuntime).toHaveBeenCalledTimes(1);
+    expect(createVsCodeWorkspaceIntelligence).toHaveBeenCalledWith(fakeVsCodeApi, { parserRuntime: fakeParserRuntime });
+  });
 });
 
 async function collectHostMessages(runner: AgentRunner, task: string): Promise<HostToWebviewMessage[]> {

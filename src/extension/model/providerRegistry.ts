@@ -2,6 +2,8 @@ import type * as vscode from "vscode";
 
 import type { AgentRunner } from "../agentRunner";
 import { fakeAgentRunner } from "../fakeRun";
+import type { ParserRuntime } from "../intelligence/parser/parserRuntime";
+import { createTreeSitterParserRuntime } from "../intelligence/parser/treeSitterRuntime";
 import type { WorkspaceIntelligence } from "../intelligence/workspaceIntelligence";
 import { createVsCodeWorkspaceIntelligence, type VsCodeWorkspaceApi } from "../intelligence/vscodeWorkspaceIntelligence";
 import { renderCodeRuntimeContextPrompt } from "../runtime/contextPrompt";
@@ -14,6 +16,7 @@ import { createDeepSeekProvider } from "./providers/deepseekProvider";
 export type CreateConfiguredAgentRunnerDeps = {
   vscodeApi?: VsCodeWorkspaceApi;
   workspaceIntelligence?: WorkspaceIntelligence;
+  parserRuntime?: ParserRuntime;
 };
 
 export async function createConfiguredAgentRunner(
@@ -27,7 +30,10 @@ export async function createConfiguredAgentRunner(
   }
 
   const workspaceIntelligence =
-    deps.workspaceIntelligence ?? createVsCodeWorkspaceIntelligence(deps.vscodeApi ?? requireVsCodeApi());
+    deps.workspaceIntelligence ??
+    createVsCodeWorkspaceIntelligence(deps.vscodeApi ?? requireVsCodeApi(), {
+      parserRuntime: deps.parserRuntime ?? createTreeSitterParserRuntime(),
+    });
   const provider = createDeepSeekProvider({
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
