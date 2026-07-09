@@ -44,6 +44,49 @@ describe("createWorkspaceIntelligence", () => {
     expect(intelligence.getStatus()).toBe("ready");
   });
 
+  it("reuses cached parser results when file content is unchanged", async () => {
+    let parseCalls = 0;
+    const intelligence = createWorkspaceIntelligence({
+      parserRuntime: {
+        async parse(filePath, languageId, text) {
+          parseCalls += 1;
+          return { filePath, languageId, text, tree: { ok: true }, diagnostics: [] };
+        },
+      },
+      readWorkspaceFiles: async () => [
+        { path: "src/a.ts", languageId: "typescript", text: "export function run() {}" },
+      ],
+      readSourceRange: () => "export function run() {}",
+    });
+
+    await intelligence.buildCodeIntelligencePrompt("run");
+    await intelligence.buildCodeIntelligencePrompt("run");
+
+    expect(parseCalls).toBe(1);
+  });
+
+  it("re-parses changed file content and exposes the new symbol", async () => {
+    let parseCalls = 0;
+    let text = "export function run() {}";
+    const intelligence = createWorkspaceIntelligence({
+      parserRuntime: {
+        async parse(filePath, languageId, sourceText) {
+          parseCalls += 1;
+          return { filePath, languageId, text: sourceText, tree: { ok: true }, diagnostics: [] };
+        },
+      },
+      readWorkspaceFiles: async () => [{ path: "src/a.ts", languageId: "typescript", text }],
+      readSourceRange: () => text,
+    });
+
+    await intelligence.buildCodeIntelligencePrompt("run");
+    text = "export function renamed() {}";
+    const prompt = await intelligence.buildCodeIntelligencePrompt("renamed");
+
+    expect(parseCalls).toBe(2);
+    expect(prompt).toContain("renamed");
+  });
+
   it("skips oversized files and reports partial status without blocking prompts", async () => {
     const intelligence = createWorkspaceIntelligence({
       budgets: { maxFileBytes: 16 },
