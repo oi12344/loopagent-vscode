@@ -39,7 +39,7 @@ npm install
 
 ```ts
 import { describe, expect, it } from "vitest";
-import { TREE_SITTER_ASSETS } from "../esbuild";
+import { TREE_SITTER_ASSETS } from "../scripts/treeSitterAssets";
 
 describe("TREE_SITTER_ASSETS", () => {
   it("lists parser runtime and first-stage language wasm files", () => {
@@ -60,13 +60,13 @@ describe("TREE_SITTER_ASSETS", () => {
 npm test -- test/treeSitterAssets.test.ts
 ```
 
-预期：FAIL，`esbuild` 未导出 `TREE_SITTER_ASSETS`。
+预期：FAIL，`scripts/treeSitterAssets` 尚不存在。
 
 ### 步骤 3：实现资产列表与复制
 
-修改 `esbuild.js`：
+新增 `scripts/treeSitterAssets.js`，并修改 `esbuild.js`：
 
-- 导出 `TREE_SITTER_ASSETS`。
+- `scripts/treeSitterAssets.js` 导出 `TREE_SITTER_ASSETS` 和 `copyTreeSitterAssets()`。
 - 新增 `copyTreeSitterAssets()`。
 - `build()` 在 `esbuild.build(...)` 之后执行复制。
 - `watch()` 在启动 watch 前先复制一次。
@@ -85,7 +85,7 @@ npm run compile
 提交：
 
 ```powershell
-git add package.json package-lock.json esbuild.js test/treeSitterAssets.test.ts
+git add package.json package-lock.json esbuild.js scripts/treeSitterAssets.js test/treeSitterAssets.test.ts docs/superpowers/plans/2026-07-09-incremental-index-tree-sitter-plan.md
 git commit -m "feat(intelligence): package tree-sitter wasm assets"
 ```
 
