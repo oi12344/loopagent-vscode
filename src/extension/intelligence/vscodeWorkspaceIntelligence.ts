@@ -4,37 +4,40 @@ import {
   type WorkspaceIntelligenceBudgets,
   type WorkspaceSourceFile,
 } from "./workspaceIntelligence";
+import type { ParserRuntime } from "./parser/parserRuntime";
 
-type WorkspaceUri = {
+export type WorkspaceUri = {
   fsPath: string;
 };
 
-type WorkspaceFolder = {
+export type WorkspaceFolder = {
   uri: WorkspaceUri;
-  name: string;
-  index: number;
 };
 
-type MaybePromise<T> = T | Promise<T> | PromiseLike<T>;
+export type MaybePromise<T> = T | PromiseLike<T>;
+
+export type VsCodeFileSystemWatcher = {
+  onDidCreate(listener: (uri: WorkspaceUri) => void): { dispose(): void };
+  onDidChange(listener: (uri: WorkspaceUri) => void): { dispose(): void };
+  onDidDelete(listener: (uri: WorkspaceUri) => void): { dispose(): void };
+  dispose(): void;
+};
 
 export type VsCodeWorkspaceApi = {
   workspace: {
     workspaceFolders?: readonly WorkspaceFolder[];
-    findFiles(
-      include: string,
-      exclude?: string | null,
-      maxResults?: number,
-    ): MaybePromise<readonly WorkspaceUri[]>;
+    findFiles(include: string, exclude?: string | null, maxResults?: number): MaybePromise<readonly WorkspaceUri[]>;
     fs: {
       readFile(uri: WorkspaceUri): MaybePromise<Uint8Array>;
     };
+    createFileSystemWatcher?(globPattern: string): VsCodeFileSystemWatcher;
     asRelativePath?(pathOrUri: WorkspaceUri | string, includeWorkspaceFolder?: boolean): string;
   };
 };
 
 export type CreateVsCodeWorkspaceIntelligenceOptions = Partial<WorkspaceIntelligenceBudgets> & {
-  maxFileBytes?: number;
   maxWorkspaceFiles?: number;
+  parserRuntime?: ParserRuntime;
 };
 
 const DEFAULT_MAX_FILE_BYTES = 100_000;
@@ -48,21 +51,34 @@ export function createVsCodeWorkspaceIntelligence(
   options: CreateVsCodeWorkspaceIntelligenceOptions = {},
 ): WorkspaceIntelligence {
   const sourceCache = new Map<string, string>();
+  const dirtyPaths = new Set<string>();
+  const deletedPaths = new Set<string>();
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const maxWorkspaceFiles = options.maxWorkspaceFiles ?? DEFAULT_MAX_WORKSPACE_FILES;
+  const { parserRuntime, maxWorkspaceFiles: _maxWorkspaceFiles, ...budgets } = options;
+
+  const watcher = vscodeApi.workspace.createFileSystemWatcher?.(SOURCE_INCLUDE_PATTERN);
+  watcher?.onDidCreate((uri) => markDirty(uri));
+  watcher?.onDidChange((uri) => markDirty(uri));
+  watcher?.onDidDelete((uri) => markDeleted(uri));
 
   return createWorkspaceIntelligence({
-    budgets: options,
+    budgets,
+    parserRuntime,
     async readWorkspaceFiles() {
-      sourceCache.clear();
-
       const workspaceRoots = getWorkspaceRoots(vscodeApi.workspace.workspaceFolders);
       const uris = await vscodeApi.workspace.findFiles(SOURCE_INCLUDE_PATTERN, SOURCE_EXCLUDE_PATTERN, maxWorkspaceFiles);
       const files: WorkspaceSourceFile[] = [];
+      const currentPaths = new Set<string>();
 
       for (const uri of uris) {
         const relativePath = getWorkspaceRelativePath(vscodeApi, uri, workspaceRoots);
         if (!isIndexableWorkspacePath(relativePath)) {
+          continue;
+        }
+
+        const cacheKey = normalizePathSeparators(relativePath);
+        if (deletedPaths.has(cacheKey)) {
           continue;
         }
 
@@ -71,15 +87,29 @@ export function createVsCodeWorkspaceIntelligence(
           continue;
         }
 
-        const bytes = await vscodeApi.workspace.fs.readFile(uri);
-        if (bytes.byteLength > maxFileBytes) {
-          continue;
+        currentPaths.add(cacheKey);
+        let text = sourceCache.get(cacheKey);
+        if (text === undefined || dirtyPaths.has(cacheKey)) {
+          const bytes = await vscodeApi.workspace.fs.readFile(uri);
+          if (bytes.byteLength > maxFileBytes) {
+            sourceCache.delete(cacheKey);
+            dirtyPaths.delete(cacheKey);
+            continue;
+          }
+          text = new TextDecoder().decode(bytes);
+          sourceCache.set(cacheKey, text);
+          dirtyPaths.delete(cacheKey);
         }
 
-        const text = new TextDecoder().decode(bytes);
-        const cacheKey = normalizePathSeparators(relativePath);
-        sourceCache.set(cacheKey, text);
         files.push({ path: cacheKey, languageId, text });
+      }
+
+      for (const cachedPath of sourceCache.keys()) {
+        if (!currentPaths.has(cachedPath)) {
+          sourceCache.delete(cachedPath);
+          dirtyPaths.delete(cachedPath);
+          deletedPaths.delete(cachedPath);
+        }
       }
 
       return files;
@@ -88,6 +118,25 @@ export function createVsCodeWorkspaceIntelligence(
       return readSourceRangeFromText(sourceCache.get(normalizePathSeparators(filePath)) ?? "", startLine, endLine);
     },
   });
+
+  function markDirty(uri: WorkspaceUri): void {
+    const cacheKey = getWatcherCacheKey(uri);
+    dirtyPaths.add(cacheKey);
+    deletedPaths.delete(cacheKey);
+  }
+
+  function markDeleted(uri: WorkspaceUri): void {
+    const cacheKey = getWatcherCacheKey(uri);
+    sourceCache.delete(cacheKey);
+    dirtyPaths.delete(cacheKey);
+    deletedPaths.add(cacheKey);
+  }
+
+  function getWatcherCacheKey(uri: WorkspaceUri): string {
+    return normalizePathSeparators(
+      getWorkspaceRelativePath(vscodeApi, uri, getWorkspaceRoots(vscodeApi.workspace.workspaceFolders)),
+    );
+  }
 }
 
 export function isIndexableWorkspacePath(filePath: string): boolean {
@@ -96,7 +145,9 @@ export function isIndexableWorkspacePath(filePath: string): boolean {
   const fileName = parts.at(-1) ?? "";
 
   if (
-    parts.some((part) => part === ".git" || part === "node_modules" || part === "dist" || part.startsWith(".local-vscode-"))
+    parts.some(
+      (part) => part === ".git" || part === "node_modules" || part === "dist" || part.startsWith(".local-vscode-"),
+    )
   ) {
     return false;
   }
@@ -128,7 +179,7 @@ export function detectWorkspaceLanguageId(filePath: string): string | undefined 
   return undefined;
 }
 
-export function normalizeWorkspaceRelativePath(filePath: string, workspaceRoots: readonly string[] = []): string {
+export function normalizeWorkspaceRelativePath(filePath: string, workspaceRoots: readonly string[]): string {
   const normalizedPath = normalizePathSeparators(filePath);
   const roots = workspaceRoots
     .map((root) => normalizePathSeparators(root).replace(/\/+$/, ""))
@@ -153,7 +204,6 @@ export function readSourceRangeFromText(text: string, startLine: number, endLine
   if (!text) {
     return "";
   }
-
   const lines = text.split(/\r?\n/);
   const normalizedStart = Math.max(1, startLine);
   const normalizedEnd = Math.max(normalizedStart, endLine);
