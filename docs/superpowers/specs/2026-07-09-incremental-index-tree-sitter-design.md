@@ -92,6 +92,19 @@ createTreeSitterParserRuntime({
 
 测试可以传入 `node_modules` 下的 wasm 路径，避免依赖编译产物。
 
+### 扩展生命周期
+
+`LoopAgentChatViewProvider` 在实例创建时构造一次 `WorkspaceIntelligence`：
+
+```text
+LoopAgentChatViewProvider
+  -> createTreeSitterParserRuntime()
+  -> createVsCodeWorkspaceIntelligence(vscode, { parserRuntime })
+  -> createConfiguredAgentRunner(..., { workspaceIntelligence })
+```
+
+这样同一个侧边栏会话内的多次 `startTask` 复用同一个源码缓存、抽取缓存和 watcher 脏标记集合。`providerRegistry` 仍保留默认创建路径，便于测试、独立调用和未来非侧边栏入口复用。
+
 ### 构建资产
 
 `esbuild.js` 在非 watch 构建和 watch 启动时都要复制 wasm 资产：
@@ -138,9 +151,11 @@ modelRunner request.task
 3. `treeSitterRuntime.test.ts`
    - 使用真实 wasm 解析 TypeScript 和 Python，`ParsedSource.tree` 非空。
    - 不支持语言或缺 grammar 时返回 diagnostic 并降级。
-4. `vscodeDebugScript.test.ts`
+4. `extensionWorkspaceIntelligence.test.ts`
+   - 连续两次 chat run 复用同一个 `WorkspaceIntelligence` 实例。
+5. `vscodeDebugScript.test.ts`
    - 保持调试宿主启动路径不回退。
-5. 全量验证
+6. 全量验证
    - `npm test`
    - `npm run typecheck`
    - `npm run compile`
@@ -148,3 +163,14 @@ modelRunner request.task
 ## 已知取舍
 
 本轮采用“抽取结果增量缓存 + 每次查询重组图”的方式，而不是直接在图里做节点/边局部删除。这样内存和 CPU 成本仍然可控，且能避免跨文件引用解析的局部一致性问题。后续如果仓库规模继续扩大，再引入 SQLite 或图快照持久化。
+
+## 实施记录
+
+本轮已经完成：
+
+1. `scripts/treeSitterAssets.js` 和 `esbuild.js` 复制 Tree-sitter runtime/grammar wasm 到 `dist/tree-sitter/`。
+2. `treeSitterRuntime.ts` 接入 `web-tree-sitter`，支持 TypeScript、TSX、JavaScript、JSX、Python。
+3. `workspaceIntelligence.ts` 基于 `file.path + contentHash` 缓存抽取结果。
+4. `vscodeWorkspaceIntelligence.ts` 基于 `FileSystemWatcher` 维护源码缓存、脏文件集合和删除集合。
+5. `providerRegistry.ts` 默认把 Tree-sitter parser runtime 注入 VS Code workspace intelligence。
+6. `extension.ts` 在 `LoopAgentChatViewProvider` 生命周期内复用一个 workspace intelligence 实例，避免每次 chat run 重建索引缓存。
