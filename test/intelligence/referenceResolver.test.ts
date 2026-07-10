@@ -18,6 +18,19 @@ function createFunctionNode(filePath: string, name: string, line = 1): CodeNode 
   };
 }
 
+function createReference(overrides: Partial<UnresolvedReference> = {}): UnresolvedReference {
+  return {
+    fromNodeId: "symbol:src/a.ts:function:run:1",
+    referenceName: "helper",
+    referenceKind: "calls",
+    calleeKind: "identifier",
+    filePath: "src/a.ts",
+    line: 2,
+    languageId: "typescript",
+    ...overrides,
+  };
+}
+
 describe("resolveReferences", () => {
   it("resolves imported call references into call edges", () => {
     const graph = createSemanticGraph();
@@ -110,5 +123,61 @@ describe("resolveReferences", () => {
     });
 
     expect(edges).toEqual([]);
+  });
+
+  it("does not resolve a member call to a bare same-file function", () => {
+    const graph = createSemanticGraph();
+    graph.upsertNode(createFunctionNode("src/a.ts", "run"));
+    graph.upsertNode(createFunctionNode("src/a.ts", "helper", 10));
+
+    const edges = resolveReferences({
+      graph,
+      importBindings: [],
+      references: [createReference({ calleeKind: "member", receiverName: "service" })],
+    });
+
+    expect(edges).toEqual([]);
+  });
+
+  it("uses evidence-based confidence levels", () => {
+    const importedGraph = createSemanticGraph();
+    importedGraph.upsertNode(createFunctionNode("src/a.ts", "run"));
+    importedGraph.upsertNode(createFunctionNode("src/b.ts", "helper"));
+    const [importedEdge] = resolveReferences({
+      graph: importedGraph,
+      references: [createReference()],
+      importBindings: [
+        {
+          filePath: "src/a.ts",
+          localName: "helper",
+          importedName: "helper",
+          source: "./b",
+          resolvedFilePath: "src/b.ts",
+          languageId: "typescript",
+        },
+      ],
+    });
+
+    const sameFileGraph = createSemanticGraph();
+    sameFileGraph.upsertNode(createFunctionNode("src/a.ts", "run"));
+    sameFileGraph.upsertNode(createFunctionNode("src/a.ts", "helper", 10));
+    const [sameFileEdge] = resolveReferences({
+      graph: sameFileGraph,
+      references: [createReference()],
+      importBindings: [],
+    });
+
+    const globalGraph = createSemanticGraph();
+    globalGraph.upsertNode(createFunctionNode("src/a.ts", "run"));
+    globalGraph.upsertNode(createFunctionNode("src/c.ts", "helper"));
+    const [globalEdge] = resolveReferences({
+      graph: globalGraph,
+      references: [createReference()],
+      importBindings: [],
+    });
+
+    expect(importedEdge?.confidence).toBe("exact");
+    expect(sameFileEdge?.confidence).toBe("probable");
+    expect(globalEdge?.confidence).toBe("heuristic");
   });
 });

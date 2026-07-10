@@ -7,6 +7,7 @@ import { createPythonAdapter } from "./languages/pythonAdapter";
 import { createTypeScriptAdapter } from "./languages/typescriptAdapter";
 import type { ExtractionResult, LanguageAdapter } from "./languages/languageAdapter";
 import type { ParsedSource, ParserRuntime } from "./parser/parserRuntime";
+import { resolveImportBindings } from "./resolution/modulePathResolver";
 import { resolveReferences } from "./resolution/referenceResolver";
 
 export type CodeIndexStatus = "idle" | "indexing" | "ready" | "partial" | "failed";
@@ -155,7 +156,15 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
           }
         }
 
-        for (const edge of resolveReferences({ graph, references: unresolvedReferences, importBindings })) {
+        const resolvedImportBindings = resolveImportBindings(
+          importBindings,
+          files.map((file) => file.path),
+        );
+        for (const edge of resolveReferences({
+          graph,
+          references: unresolvedReferences,
+          importBindings: resolvedImportBindings,
+        })) {
           if (!addEdgeWithinBudget(edge, edge.filePath ?? "<workspace>")) {
             break;
           }
