@@ -1,6 +1,7 @@
 import type { CodeEdge, CodeNode, ImportBinding, UnresolvedReference } from "../graph/graphTypes";
 import type { ParsedSource } from "../parser/parserRuntime";
 import type { ExtractionResult, LanguageAdapter } from "./languageAdapter";
+import { extractPythonAst } from "./pythonAstExtractor";
 
 const KEYWORD_CALLS = new Set([
   "and",
@@ -49,12 +50,12 @@ export function createPythonAdapter(): LanguageAdapter {
     languageIds: ["python"],
     extensions: [".py"],
     extract(parsed) {
-      return extractPython(parsed);
+      return parsed.tree ? extractPythonAst(parsed) : extractPythonFallback(parsed);
     },
   };
 }
 
-function extractPython(parsed: ParsedSource): ExtractionResult {
+function extractPythonFallback(parsed: ParsedSource): ExtractionResult {
   const fileNode = createFileNode(parsed);
   const nodes: CodeNode[] = [fileNode];
   const edges: CodeEdge[] = [];
