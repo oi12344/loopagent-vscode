@@ -1,8 +1,10 @@
 # 扩展生命周期与端到端验证设计
 
-> 状态：等待书面规格评审。
+> 状态：设计和实施计划已批准，等待执行。
 >
 > 父规格：`docs/superpowers/specs/2026-07-10-sqlite-vector-code-index-design.md`
+>
+> 实施计划：`docs/superpowers/plans/2026-07-11-sqlite-index-lifecycle-validation-plan.md`
 >
 > 前置规格：其余五份 SQLite 索引子规格。
 
@@ -74,6 +76,23 @@ loopagent.clearEmbeddingApiKey
 ### Status
 
 显示并返回可序列化 DTO，至少包含：state、read/write role、capabilities、schema/index version、pending/failed job、file/chunk/edge count、embedding 状态、最近扫描时间和有界写入指标。DTO 供集成测试调用，不包含源码、vector、key 或绝对数据库路径。
+
+```ts
+type CodeIndexStatusDto = {
+  state: "idle" | "indexing" | "ready" | "partial" | "failed" | "disabled";
+  role: "writer" | "read_only" | "none";
+  capabilities?: SqliteCapabilities;
+  schemaVersion?: number;
+  counts: {
+    files: number;
+    chunks: number;
+    edges: number;
+    pendingJobs: number;
+    failedJobs: number;
+  };
+  lastScanAt?: number;
+};
+```
 
 ### Clear
 

@@ -1,8 +1,10 @@
 # 稳定 Chunk 与 Snapshot 差异设计
 
-> 状态：等待书面规格评审。
+> 状态：设计和实施计划已批准，等待执行。
 >
 > 父规格：`docs/superpowers/specs/2026-07-10-sqlite-vector-code-index-design.md`
+>
+> 实施计划：`docs/superpowers/plans/2026-07-11-sqlite-index-chunk-snapshot-plan.md`
 >
 > 前置规格：`docs/superpowers/specs/2026-07-11-sqlite-index-storage-worker-design.md`
 

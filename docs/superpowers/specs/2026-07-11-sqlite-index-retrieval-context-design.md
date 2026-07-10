@@ -1,8 +1,10 @@
 # SQLite 检索与模型上下文设计
 
-> 状态：等待书面规格评审。
+> 状态：设计和实施计划已批准，等待执行。
 >
 > 父规格：`docs/superpowers/specs/2026-07-10-sqlite-vector-code-index-design.md`
+>
+> 实施计划：`docs/superpowers/plans/2026-07-11-sqlite-index-retrieval-context-plan.md`
 >
 > 前置规格：存储与 worker、稳定 chunk 与 snapshot、工作区增量索引。
 
@@ -54,12 +56,41 @@ type RetrievalHit = {
 };
 
 type RetrievedCodeContext = {
+  hits: RetrievalHit[];
   entryNodes: CodeNode[];
   relatedNodes: CodeNode[];
   edges: CodeEdge[];
   chunks: RetrievedChunk[];
   trace: RetrievalTrace;
+  diagnostics: RetrievalDiagnostic[];
   truncated: boolean;
+};
+
+type RetrievalDiagnostic = {
+  code: string;
+  message: string;
+};
+
+type VectorCandidateResult = {
+  hits: RetrievalHit[];
+  diagnostics: RetrievalDiagnostic[];
+};
+
+type RetrievedChunk = {
+  chunkId: string;
+  nodeId?: string;
+  filePath: string;
+  chunkKind: CodeChunkKind;
+  sourceText: string;
+  startLine?: number;
+  endLine?: number;
+  tokenHint: number;
+};
+
+type RetrievalTrace = {
+  sources: RetrievalSource[];
+  candidateCounts: Partial<Record<RetrievalSource, number>>;
+  truncatedBy: string[];
 };
 ```
 
@@ -96,6 +127,13 @@ type GraphBudget = {
   maxNodes: number;
   maxEdges: number;
 };
+
+type RetrievedGraph = {
+  nodes: CodeNode[];
+  edges: CodeEdge[];
+  truncated: boolean;
+  truncatedBy: Array<"depth" | "nodes" | "edges">;
+};
 ```
 
 实现使用 source/target/owner 索引和有界 recursive CTE。深度、node 数或 edge 数达到预算立即截断，并在 trace 中记录。禁止返回完整图快照。
@@ -123,7 +161,7 @@ score = 1 / (60 + exact_rank)
 
 ```ts
 type VectorCandidateSource = {
-  search(query: string, limit: number): Promise<readonly RetrievalHit[]>;
+  search(query: string, limit: number): Promise<VectorCandidateResult>;
 };
 
 type HybridRetriever = {

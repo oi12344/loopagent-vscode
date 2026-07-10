@@ -1,8 +1,10 @@
 # SQLite 存储与 Worker 设计
 
-> 状态：等待书面规格评审。
+> 状态：设计和实施计划已批准，等待执行。
 >
 > 父规格：`docs/superpowers/specs/2026-07-10-sqlite-vector-code-index-design.md`
+>
+> 实施计划：`docs/superpowers/plans/2026-07-11-sqlite-index-storage-worker-plan.md`
 >
 > 本规格只负责运行时基线、SQLite schema、migration、worker RPC、持久化 job 和 writer lease。稳定 chunk 的生成与差异算法由后续规格定义。
 
@@ -186,6 +188,19 @@ updated_at      integer not null
 
 `event_kind` 为 `create`、`change`、`delete`；`status` 为 `pending`、`running`、`failed`。同一 URI 的新事件通过 upsert 合并。
 
+```ts
+type IndexChange = { fileUri: string; eventKind: "create" | "change" | "delete" };
+
+type ClaimedIndexJob = {
+  id: number;
+  fileUri: string;
+  eventKind: "create" | "change" | "delete";
+  claimedAt: number;
+};
+```
+
+`claimedAt` 对应 claim 时写入的 `updated_at`，completion/failure 用 `(id, status, updated_at)` 条件更新，防止删除处理中到达的新事件。
+
 ### Migration 与 Meta
 
 ```text
@@ -295,7 +310,7 @@ writer/read_only --dispose--> closed
 3. fake worker 验证 RPC 配对、错误传播、exit 和 dispose。
 4. fake clock + 两个数据库实例验证任一时刻最多一个 writer。
 5. 验证续租失败转只读、只读查询、过期后接管和 stale job 恢复。
-6. 编译后确认 `dist/sqliteIndexWorker.js` 存在；真实宿主能力验证归生命周期规格负责。
+6. 编译后确认 `dist/sqliteIndexWorker.js` 存在，并在最低 VS Code `1.101.0` 中运行最小 capability probe；完整打包工作流复测归生命周期规格负责。
 
 ## 完成门禁
 
