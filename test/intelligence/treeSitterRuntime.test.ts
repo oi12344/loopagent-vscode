@@ -16,6 +16,7 @@ describe("createTreeSitterParserRuntime", () => {
 
     expect(parsed.tree).toBeTruthy();
     expect(parsed.diagnostics).toEqual([]);
+    parsed.tree?.delete();
   });
 
   it("parses Python with a real tree", async () => {
@@ -25,6 +26,7 @@ describe("createTreeSitterParserRuntime", () => {
 
     expect(parsed.tree).toBeTruthy();
     expect(parsed.diagnostics).toEqual([]);
+    parsed.tree?.delete();
   });
 
   it("degrades unsupported languages without throwing", async () => {
