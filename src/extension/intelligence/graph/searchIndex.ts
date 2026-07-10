@@ -56,6 +56,9 @@ export function createSearchIndex(): SearchIndex {
       for (const segment of splitIdentifier(node.name)) {
         addToken(segment, node.id);
       }
+      for (const segment of splitIdentifier(node.qualifiedName)) {
+        addToken(segment, node.id);
+      }
       for (const part of node.filePath.split(/[\\/._-]+/)) {
         addToken(part, node.id);
         for (const segment of splitIdentifier(part)) {
