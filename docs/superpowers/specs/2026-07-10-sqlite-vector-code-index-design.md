@@ -1,6 +1,6 @@
 # SQLite 持久化与向量代码索引设计
 
-> 状态：设计已批准，等待实施计划。
+> 状态：设计已批准，实施计划已编写，等待执行。
 >
 > 本版本取代本文档早期的“文件变化后删除并重建全部文件索引”和“暂时保留完整内存图”方案。新的更新粒度是符号 chunk，SQLite 是唯一持久化索引事实源。
 
@@ -203,6 +203,8 @@ provider        text not null
 model           text not null
 embedding_hash  text not null
 status          text not null
+attempts        integer not null default 0
+last_error      text
 updated_at      integer not null
 primary key(chunk_id, provider, model)
 ```
