@@ -215,13 +215,17 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
     const parsed = deps.parserRuntime
       ? await deps.parserRuntime.parse(file.path, file.languageId, file.text)
       : createParsedSource(file.path, file.languageId, file.text);
-    const extracted = adapter.extract(parsed);
-    const result = {
-      ...extracted,
-      diagnostics: [...parsed.diagnostics, ...extracted.diagnostics],
-    };
-    extractionCacheByFile.set(file.path, { languageId: file.languageId, contentHash, result });
-    return result;
+    try {
+      const extracted = adapter.extract(parsed);
+      const result = {
+        ...extracted,
+        diagnostics: [...parsed.diagnostics, ...extracted.diagnostics],
+      };
+      extractionCacheByFile.set(file.path, { languageId: file.languageId, contentHash, result });
+      return result;
+    } finally {
+      parsed.tree?.delete();
+    }
   }
 }
 

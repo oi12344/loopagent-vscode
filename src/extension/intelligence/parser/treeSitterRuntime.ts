@@ -3,7 +3,7 @@ import path from "node:path";
 import { Language, Parser } from "web-tree-sitter";
 
 import type { IndexDiagnostic } from "../graph/graphTypes";
-import type { ParsedSource, ParserRuntime } from "./parserRuntime";
+import type { ParsedSource, ParserRuntime, SyntaxTree } from "./parserRuntime";
 
 export type TreeSitterLanguageId = "typescript" | "typescriptreact" | "javascript" | "javascriptreact" | "python";
 
@@ -39,12 +39,19 @@ export function createTreeSitterParserRuntime(options: TreeSitterParserRuntimeOp
         ]);
       }
 
+      let parser: Parser | undefined;
       try {
         await initializeParser(parserWasmPath);
         const language = await loadLanguage(normalizedLanguageId);
-        const parser = new Parser();
+        parser = new Parser();
         parser.setLanguage(language);
-        return createParsedSource(filePath, languageId, text, parser.parse(text), []);
+        const tree = parser.parse(text);
+        if (!tree) {
+          return createParsedSource(filePath, languageId, text, undefined, [
+            createWarning(filePath, "Tree-sitter 未返回语法树，已降级为轻量抽取。"),
+          ]);
+        }
+        return createParsedSource(filePath, languageId, text, tree, []);
       } catch (error) {
         return createParsedSource(filePath, languageId, text, undefined, [
           createWarning(
@@ -52,6 +59,8 @@ export function createTreeSitterParserRuntime(options: TreeSitterParserRuntimeOp
             `Tree-sitter 解析失败，已降级为轻量抽取：${error instanceof Error ? error.message : String(error)}`,
           ),
         ]);
+      } finally {
+        parser?.delete();
       }
     },
   };
@@ -96,7 +105,7 @@ function createParsedSource(
   filePath: string,
   languageId: string,
   text: string,
-  tree: unknown,
+  tree: SyntaxTree | undefined,
   diagnostics: IndexDiagnostic[],
 ): ParsedSource {
   return {
