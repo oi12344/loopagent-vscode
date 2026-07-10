@@ -7,6 +7,11 @@ export type ResolveReferencesOptions = {
   importBindings: ImportBinding[];
 };
 
+type ResolvedTarget = {
+  node: CodeNode;
+  confidence: CodeEdge["confidence"];
+};
+
 export function resolveReferences({ graph, references, importBindings }: ResolveReferencesOptions): CodeEdge[] {
   const resolvedEdges: CodeEdge[] = [];
 
@@ -17,14 +22,14 @@ export function resolveReferences({ graph, references, importBindings }: Resolve
     }
 
     resolvedEdges.push({
-      id: `edge:${reference.fromNodeId}:${reference.referenceKind}:${target.id}:${reference.line}`,
+      id: `edge:${reference.fromNodeId}:${reference.referenceKind}:${target.node.id}:${reference.line}`,
       source: reference.fromNodeId,
-      target: target.id,
+      target: target.node.id,
       kind: reference.referenceKind,
       filePath: reference.filePath,
       line: reference.line,
       column: reference.column,
-      confidence: "exact",
+      confidence: applyConfidenceHint(target.confidence, reference.confidenceHint),
     });
   }
 
@@ -35,24 +40,47 @@ function findTargetNode(
   graph: SemanticGraph,
   reference: UnresolvedReference,
   importBindings: ImportBinding[],
-): CodeNode | undefined {
+): ResolvedTarget | undefined {
+  if (reference.calleeKind && reference.calleeKind !== "identifier") {
+    return undefined;
+  }
+
   const imported = importBindings.find(
     (binding) => binding.filePath === reference.filePath && binding.localName === reference.referenceName,
   );
 
   if (imported?.resolvedFilePath) {
-    return graph
+    const target = graph
       .getAllNodes()
-      .find((node) => node.filePath === imported.resolvedFilePath && node.name === imported.importedName);
+      .find((node) => node.filePath === imported.resolvedFilePath && isImportedTarget(node, imported));
+    return target ? { node: target, confidence: "exact" } : undefined;
   }
 
   const sameFile = graph
     .getNodesByName(reference.referenceName)
     .find((node) => node.filePath === reference.filePath);
   if (sameFile) {
-    return sameFile;
+    return { node: sameFile, confidence: "probable" };
   }
 
   const candidates = graph.getNodesByName(reference.referenceName);
-  return candidates.length === 1 ? candidates[0] : undefined;
+  return candidates.length === 1 ? { node: candidates[0]!, confidence: "heuristic" } : undefined;
+}
+
+function isImportedTarget(node: CodeNode, binding: ImportBinding): boolean {
+  if (binding.importedName === "default") {
+    return node.metadata?.isDefaultExport === true;
+  }
+  return node.name === binding.importedName;
+}
+
+function applyConfidenceHint(
+  resolvedConfidence: CodeEdge["confidence"],
+  hint: CodeEdge["confidence"] | undefined,
+): CodeEdge["confidence"] {
+  if (!hint) {
+    return resolvedConfidence;
+  }
+  const rank: Record<CodeEdge["confidence"], number> = { heuristic: 0, probable: 1, exact: 2 };
+  return rank[hint] < rank[resolvedConfidence] ? hint : resolvedConfidence;
 }

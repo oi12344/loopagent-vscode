@@ -59,6 +59,8 @@ export type CodeEdge = {
   metadata?: Record<string, unknown>;
 };
 
+export type CallCalleeKind = "identifier" | "member" | "dynamic";
+
 export type ImportBinding = {
   filePath: string;
   localName: string;
@@ -73,13 +75,16 @@ export type ImportBinding = {
 export type UnresolvedReference = {
   fromNodeId: string;
   referenceName: string;
-  referenceKind: "calls" | "references" | "type_of" | "extends" | "implements";
+  referenceKind: "calls" | "references" | "type_of" | "extends" | "implements" | "instantiates";
   filePath: string;
   line: number;
   column?: number;
   localScope?: string;
   importSource?: string;
   languageId: string;
+  calleeKind?: CallCalleeKind;
+  receiverName?: string;
+  confidenceHint?: CodeEdge["confidence"];
   metadata?: Record<string, unknown>;
 };
 

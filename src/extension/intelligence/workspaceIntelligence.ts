@@ -5,6 +5,9 @@ import { createSearchIndex } from "./graph/searchIndex";
 import { createSemanticGraph } from "./graph/semanticGraph";
 import { createPythonAdapter } from "./languages/pythonAdapter";
 import { createTypeScriptAdapter } from "./languages/typescriptAdapter";
+import type { ExtractionResult, LanguageAdapter } from "./languages/languageAdapter";
+import type { ParsedSource, ParserRuntime } from "./parser/parserRuntime";
+import { resolveImportBindings } from "./resolution/modulePathResolver";
 import { resolveReferences } from "./resolution/referenceResolver";
 
 export type CodeIndexStatus = "idle" | "indexing" | "ready" | "partial" | "failed";
@@ -28,6 +31,7 @@ export type WorkspaceIntelligenceDeps = {
   readWorkspaceFiles(): Promise<WorkspaceSourceFile[]>;
   readSourceRange(filePath: string, startLine: number, endLine: number): string;
   budgets?: Partial<WorkspaceIntelligenceBudgets>;
+  parserRuntime?: ParserRuntime;
 };
 
 export type WorkspaceIntelligence = {
@@ -45,9 +49,16 @@ const DEFAULT_BUDGETS: WorkspaceIntelligenceBudgets = {
   maxPromptChars: 8_000,
 };
 
+type CachedExtraction = {
+  languageId: string;
+  contentHash: string;
+  result: ExtractionResult;
+};
+
 export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): WorkspaceIntelligence {
   const adapters = [createTypeScriptAdapter(), createPythonAdapter()];
   const budgets = { ...DEFAULT_BUDGETS, ...deps.budgets };
+  const extractionCacheByFile = new Map<string, CachedExtraction>();
   let status: CodeIndexStatus = "idle";
   let diagnostics: IndexDiagnostic[] = [];
 
@@ -76,6 +87,12 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
 
       try {
         const files = await deps.readWorkspaceFiles();
+        const currentFilePaths = new Set(files.map((file) => file.path));
+        for (const cachedFilePath of extractionCacheByFile.keys()) {
+          if (!currentFilePaths.has(cachedFilePath)) {
+            extractionCacheByFile.delete(cachedFilePath);
+          }
+        }
 
         for (const file of files) {
           if (stopIndexing) {
@@ -84,6 +101,7 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
 
           const adapter = adapters.find((candidate) => candidate.languageIds.includes(file.languageId));
           if (!adapter) {
+            extractionCacheByFile.delete(file.path);
             continue;
           }
 
@@ -93,18 +111,13 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
           }
 
           if (Buffer.byteLength(file.text, "utf8") > budgets.maxFileBytes) {
+            extractionCacheByFile.delete(file.path);
             markPartial(file.path, `文件超过 ${budgets.maxFileBytes} 字节上限，已跳过解析。`);
             continue;
           }
 
           indexedFiles += 1;
-          const result = adapter.extract({
-            filePath: file.path,
-            languageId: file.languageId,
-            text: file.text,
-            tree: undefined,
-            diagnostics: [],
-          });
+          const result = await extractWorkspaceFile(file, adapter);
           diagnostics.push(...result.diagnostics);
 
           for (const node of result.nodes) {
@@ -143,7 +156,15 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
           }
         }
 
-        for (const edge of resolveReferences({ graph, references: unresolvedReferences, importBindings })) {
+        const resolvedImportBindings = resolveImportBindings(
+          importBindings,
+          files.map((file) => file.path),
+        );
+        for (const edge of resolveReferences({
+          graph,
+          references: unresolvedReferences,
+          importBindings: resolvedImportBindings,
+        })) {
           if (!addEdgeWithinBudget(edge, edge.filePath ?? "<workspace>")) {
             break;
           }
@@ -192,6 +213,47 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
       return diagnostics.map((diagnostic) => ({ ...diagnostic }));
     },
   };
+
+  async function extractWorkspaceFile(file: WorkspaceSourceFile, adapter: LanguageAdapter): Promise<ExtractionResult> {
+    const contentHash = createContentHash(file.text);
+    const cached = extractionCacheByFile.get(file.path);
+    if (cached?.languageId === file.languageId && cached.contentHash === contentHash) {
+      return cached.result;
+    }
+
+    const parsed = deps.parserRuntime
+      ? await deps.parserRuntime.parse(file.path, file.languageId, file.text)
+      : createParsedSource(file.path, file.languageId, file.text);
+    try {
+      const extracted = adapter.extract(parsed);
+      const result = {
+        ...extracted,
+        diagnostics: [...parsed.diagnostics, ...extracted.diagnostics],
+      };
+      extractionCacheByFile.set(file.path, { languageId: file.languageId, contentHash, result });
+      return result;
+    } finally {
+      parsed.tree?.delete();
+    }
+  }
+}
+
+function createParsedSource(filePath: string, languageId: string, text: string): ParsedSource {
+  return {
+    filePath,
+    languageId,
+    text,
+    tree: undefined,
+    diagnostics: [],
+  };
+}
+
+function createContentHash(text: string): string {
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+  }
+  return `${text.length}:${hash}`;
 }
 
 export function createEmptyWorkspaceIntelligence(): WorkspaceIntelligence {

@@ -40,6 +40,8 @@ export function renderCodeIntelligencePrompt(result: CodeIntelligenceResult): st
   }
 
   lines.push("", "### 语义索引预算");
+  lines.push(`- 上下文模式: ${result.profile.mode} (${result.profile.reason})`);
+  lines.push(`- 源码片段: ${result.snippets.length}/${result.profile.maxSnippetNodes}`);
   lines.push(`- 使用字符: ${result.budget.usedChars}/${result.budget.maxChars}`);
   lines.push(`- 是否截断: ${result.budget.truncated ? "是" : "否"}`);
 

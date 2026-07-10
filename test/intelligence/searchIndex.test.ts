@@ -83,4 +83,32 @@ describe("SearchIndex", () => {
     expect(index.search("model", 1)).toEqual([node.id]);
     expect(index.search("model")).toEqual([node.id, secondNode.id]);
   });
+
+  it("prioritizes qualified class method matches over nearby factory names", () => {
+    const index = createSearchIndex();
+    const methodNode: CodeNode = {
+      ...node,
+      id: "symbol:src/extension.ts:method:startRun:89",
+      kind: "method",
+      name: "startRun",
+      qualifiedName: "src/extension.ts::LoopAgentChatViewProvider.startRun",
+      filePath: "src/extension.ts",
+      startLine: 89,
+      endLine: 108,
+    };
+    const factoryNode: CodeNode = {
+      ...node,
+      id: "symbol:src/extension/intelligence/vscodeWorkspaceIntelligence.ts:function:createVsCodeWorkspaceIntelligence:49",
+      name: "createVsCodeWorkspaceIntelligence",
+      qualifiedName: "src/extension/intelligence/vscodeWorkspaceIntelligence.ts::createVsCodeWorkspaceIntelligence",
+      filePath: "src/extension/intelligence/vscodeWorkspaceIntelligence.ts",
+      startLine: 49,
+      endLine: 140,
+    };
+
+    index.addNode(factoryNode);
+    index.addNode(methodNode);
+
+    expect(index.search("extension.ts LoopAgentChatViewProvider.startRun", 1)).toEqual([methodNode.id]);
+  });
 });

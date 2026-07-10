@@ -1,7 +1,24 @@
+import path from "node:path";
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 
 import { createPythonAdapter } from "../../src/extension/intelligence/languages/pythonAdapter";
 import type { IndexDiagnostic } from "../../src/extension/intelligence/graph/graphTypes";
+import { createTreeSitterParserRuntime } from "../../src/extension/intelligence/parser/treeSitterRuntime";
+
+const require = createRequire(import.meta.url);
+const parserWasmPath = require.resolve("web-tree-sitter/web-tree-sitter.wasm");
+const grammarWasmDirectory = path.join(process.cwd(), "node_modules", "@vscode", "tree-sitter-wasm", "wasm");
+
+async function extractWithTree(text: string) {
+  const runtime = createTreeSitterParserRuntime({ parserWasmPath, grammarWasmDirectory });
+  const parsed = await runtime.parse("app/sample.py", "python", text);
+  try {
+    return createPythonAdapter().extract(parsed);
+  } finally {
+    parsed.tree?.delete();
+  }
+}
 
 describe("Python adapter", () => {
   it("extracts imports, classes, functions, methods, and calls", () => {
@@ -43,7 +60,7 @@ describe("Python adapter", () => {
     );
   });
 
-  it("handles aliases, diagnostics, and indentation scope exits", () => {
+  it("handles aliases and indentation scope exits without owning parser diagnostics", () => {
     const adapter = createPythonAdapter();
     const diagnostic: IndexDiagnostic = {
       filePath: "app/service.py",
@@ -82,7 +99,7 @@ describe("Python adapter", () => {
       source: "app.repo",
       languageId: "python",
     });
-    expect(result.diagnostics).toEqual([diagnostic]);
+    expect(result.diagnostics).toEqual([]);
     expect(methodNode).toEqual(expect.objectContaining({ kind: "method", name: "run" }));
     expect(result.nodes).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ kind: "method", name: "helper" })]),
@@ -96,5 +113,78 @@ describe("Python adapter", () => {
     expect(result.unresolvedReferences).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ referenceName: "inner", line: 3 })]),
     );
+  });
+
+  it("extracts async decorated functions and method ranges from AST", async () => {
+    const result = await extractWithTree(
+      [
+        "@trace",
+        "async def run():",
+        "    helper()",
+        "class Service:",
+        "    def start(self):",
+        "        return run()",
+      ].join("\n"),
+    );
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "function",
+          name: "run",
+          startLine: 2,
+          endLine: 3,
+          metadata: expect.objectContaining({ decoratorStartLine: 1 }),
+        }),
+        expect.objectContaining({ kind: "class", name: "Service", startLine: 4, endLine: 6 }),
+        expect.objectContaining({
+          kind: "method",
+          name: "start",
+          qualifiedName: "app/sample.py::Service.start",
+          startLine: 5,
+          endLine: 6,
+        }),
+      ]),
+    );
+  });
+
+  it("extracts Python imports and preserves member calls", async () => {
+    const result = await extractWithTree(
+      [
+        "from .repo import load_user as load",
+        "import app.client as client",
+        "async def run():",
+        "    load()",
+        "    client.send()",
+      ].join("\n"),
+    );
+
+    expect(result.importBindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ localName: "load", importedName: "load_user", source: ".repo" }),
+        expect.objectContaining({ localName: "client", importedName: "app.client", source: "app.client" }),
+      ]),
+    );
+    expect(result.importBindings).toHaveLength(2);
+    expect(result.unresolvedReferences).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ referenceName: "load", calleeKind: "identifier", referenceKind: "calls" }),
+        expect.objectContaining({
+          referenceName: "send",
+          receiverName: "client",
+          calleeKind: "member",
+          referenceKind: "calls",
+        }),
+      ]),
+    );
+  });
+
+  it("keeps valid declarations when the syntax tree contains errors", async () => {
+    const result = await extractWithTree("def valid():\n    pass\n\ndef broken(");
+
+    expect(result.nodes).toContainEqual(expect.objectContaining({ kind: "function", name: "valid" }));
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({ severity: "warning", message: expect.stringContaining("ERROR") }),
+    ]);
   });
 });
