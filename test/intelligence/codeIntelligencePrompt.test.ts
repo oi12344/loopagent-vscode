@@ -5,6 +5,17 @@ import { renderCodeIntelligencePrompt } from "../../src/extension/intelligence/c
 
 const baseResult: CodeIntelligenceResult = {
   query: "configured runner",
+  profile: {
+    mode: "focused-source",
+    reason: "test-fixture",
+    maxEntryNodes: 5,
+    expandDepth: 2,
+    maxRelatedNodes: 14,
+    maxEdges: 28,
+    maxSnippetNodes: 5,
+    maxSnippetChars: 6_000,
+    maxSnippetLines: 90,
+  },
   entryNodes: [
     {
       id: "a",
