@@ -48,7 +48,7 @@
 - 修改：`test/intelligence/codeIntelligencePrompt.test.ts:6`
 - 验证：`src/extension/intelligence/context/codeIntelligencePrompt.ts:43`
 
-- [ ] **Step 1：复现当前全量测试失败**
+- [x] **Step 1：复现当前全量测试失败**
 
 运行：
 
@@ -58,7 +58,7 @@ npm test -- test/intelligence/codeIntelligencePrompt.test.ts
 
 预期：两个测试在 `result.profile.mode` 处失败，错误包含 `Cannot read properties of undefined`。
 
-- [ ] **Step 2：补齐测试夹具中的真实预算 profile**
+- [x] **Step 2：补齐测试夹具中的真实预算 profile**
 
 在 `baseResult` 的 `query` 后增加完整字段：
 
@@ -76,7 +76,7 @@ profile: {
 },
 ```
 
-- [ ] **Step 3：验证提示词测试与全量基线**
+- [x] **Step 3：验证提示词测试与全量基线**
 
 运行：
 
@@ -87,7 +87,7 @@ npm test
 
 预期：提示词文件 3 个测试通过；全量测试无失败。
 
-- [ ] **Step 4：提交测试基线修复**
+- [x] **Step 4：提交测试基线修复**
 
 ```powershell
 git add test/intelligence/codeIntelligencePrompt.test.ts
@@ -105,7 +105,7 @@ git commit -m "test: restore code intelligence prompt baseline"
 - 新增：`test/intelligence/treeSitterRuntimeLifecycle.test.ts`
 - 修改：`test/intelligence/workspaceIntelligence.test.ts`
 
-- [ ] **Step 1：为 Parser 和 Tree 释放编写失败测试**
+- [x] **Step 1：为 Parser 和 Tree 释放编写失败测试**
 
 在 `treeSitterRuntimeLifecycle.test.ts` 使用 `vi.hoisted` 和 `vi.mock("web-tree-sitter")` 构造可观察对象：
 
@@ -199,7 +199,7 @@ it("releases a parsed tree after extraction", async () => {
 });
 ```
 
-- [ ] **Step 2：运行生命周期测试并确认红灯**
+- [x] **Step 2：运行生命周期测试并确认红灯**
 
 运行：
 
@@ -209,7 +209,7 @@ npm test -- test/intelligence/treeSitterRuntimeLifecycle.test.ts test/intelligen
 
 预期：Parser 和 Tree 的 `delete()` 断言失败，因为当前生产代码没有释放资源。
 
-- [ ] **Step 3：定义最小语法树接口和调用元数据**
+- [x] **Step 3：定义最小语法树接口和调用元数据**
 
 在 `parserRuntime.ts` 定义：
 
@@ -266,7 +266,7 @@ export type UnresolvedReference = {
 };
 ```
 
-- [ ] **Step 4：在正确边界释放 Parser 和 Tree**
+- [x] **Step 4：在正确边界释放 Parser 和 Tree**
 
 `treeSitterRuntime.ts` 使用 `try/finally`：
 
@@ -307,7 +307,7 @@ try {
 }
 ```
 
-- [ ] **Step 5：运行生命周期和现有 parser 测试**
+- [x] **Step 5：运行生命周期和现有 parser 测试**
 
 运行：
 
@@ -318,7 +318,7 @@ npm run typecheck
 
 预期：全部通过；Parser 由 runtime 释放，Tree 由 workspace 释放。
 
-- [ ] **Step 6：提交生命周期变更**
+- [x] **Step 6：提交生命周期变更**
 
 ```powershell
 git add src/extension/intelligence/parser/parserRuntime.ts src/extension/intelligence/parser/treeSitterRuntime.ts src/extension/intelligence/graph/graphTypes.ts src/extension/intelligence/workspaceIntelligence.ts test/intelligence/treeSitterRuntimeLifecycle.test.ts test/intelligence/workspaceIntelligence.test.ts
@@ -332,7 +332,7 @@ git commit -m "fix(intelligence): manage tree-sitter resource lifecycles"
 - 新增：`src/extension/intelligence/languages/treeSitterAst.ts`
 - 新增：`test/intelligence/treeSitterAst.test.ts`
 
-- [ ] **Step 1：编写遍历、字段和范围的失败测试**
+- [x] **Step 1：编写遍历、字段和范围的失败测试**
 
 测试使用纯对象，不加载 grammar：
 
@@ -391,7 +391,7 @@ it("converts zero-based syntax positions into code ranges", () => {
 });
 ```
 
-- [ ] **Step 2：运行测试并确认模块缺失红灯**
+- [x] **Step 2：运行测试并确认模块缺失红灯**
 
 运行：
 
@@ -401,7 +401,7 @@ npm test -- test/intelligence/treeSitterAst.test.ts
 
 预期：测试因 `treeSitterAst.ts` 或导出函数不存在而失败。
 
-- [ ] **Step 3：实现完整公共工具 API**
+- [x] **Step 3：实现完整公共工具 API**
 
 `treeSitterAst.ts` 提供：
 
@@ -452,7 +452,7 @@ export function readStringLiteral(node: SyntaxNode | undefined): string | undefi
 }
 ```
 
-- [ ] **Step 4：验证公共工具**
+- [x] **Step 4：验证公共工具**
 
 运行：
 
@@ -463,7 +463,7 @@ npm run typecheck
 
 预期：公共工具测试和类型检查通过。
 
-- [ ] **Step 5：提交公共工具**
+- [x] **Step 5：提交公共工具**
 
 ```powershell
 git add src/extension/intelligence/languages/treeSitterAst.ts test/intelligence/treeSitterAst.test.ts
@@ -478,7 +478,7 @@ git commit -m "feat(intelligence): add shared tree-sitter AST helpers"
 - 修改：`src/extension/intelligence/languages/typescriptAdapter.ts`
 - 修改：`test/intelligence/typescriptAdapter.test.ts`
 
-- [ ] **Step 1：增加真实 grammar 的符号和范围失败测试**
+- [x] **Step 1：增加真实 grammar 的符号和范围失败测试**
 
 在测试文件建立一次 runtime，并确保测试释放 Tree：
 
@@ -521,7 +521,7 @@ it("extracts AST-backed declarations and exact ranges", async () => {
 });
 ```
 
-- [ ] **Step 2：增加导入和 callee 形态失败测试**
+- [x] **Step 2：增加导入和 callee 形态失败测试**
 
 ```ts
 it("extracts multiline imports and preserves callee shape", async () => {
@@ -546,7 +546,7 @@ it("extracts multiline imports and preserves callee shape", async () => {
 });
 ```
 
-- [ ] **Step 3：运行 TypeScript 测试并确认红灯**
+- [x] **Step 3：运行 TypeScript 测试并确认红灯**
 
 运行：
 
@@ -556,7 +556,7 @@ npm test -- test/intelligence/typescriptAdapter.test.ts
 
 预期：箭头函数、constructor、interface、type、enum、多行导入和 callee 元数据断言失败。
 
-- [ ] **Step 4：实现 TypeScript AST extractor**
+- [x] **Step 4：实现 TypeScript AST extractor**
 
 `typescriptAstExtractor.ts` 使用一次 `visitNamedNodes` 遍历，并维护 `Map<SyntaxNode, CodeNode>`。节点分派必须覆盖：
 
@@ -599,7 +599,7 @@ switch (node.type) {
 
 所有 `CodeNode` 必须使用 `toCodeRange(node)`；`method_definition` 从最近类节点生成 `Class.method` qualified name；调用 owner 从最近已映射的 function/method AST 节点获得。`member_expression` 只记录成员元数据，不转换成裸 identifier。
 
-- [ ] **Step 5：将 adapter 切换为 AST 主路径和 fallback**
+- [x] **Step 5：将 adapter 切换为 AST 主路径和 fallback**
 
 保留现有正则函数并重命名：
 
@@ -616,9 +616,9 @@ export function createTypeScriptAdapter(): LanguageAdapter {
 }
 ```
 
-fallback 返回的 `diagnostics` 改为空数组，解析诊断由 workspace 合并。
+fallback 的诊断所有权在 Task 7 与 ERROR Tree 行为一起修改，确保诊断去重经过独立红灯验证。
 
-- [ ] **Step 6：验证 AST 主路径和 fallback**
+- [x] **Step 6：验证 AST 主路径和 fallback**
 
 运行：
 
@@ -629,7 +629,7 @@ npm run typecheck
 
 预期：真实 AST 新测试通过；现有 `tree: undefined` 测试继续通过。
 
-- [ ] **Step 7：提交 TypeScript AST 抽取**
+- [x] **Step 7：提交 TypeScript AST 抽取**
 
 ```powershell
 git add src/extension/intelligence/languages/typescriptAstExtractor.ts src/extension/intelligence/languages/typescriptAdapter.ts test/intelligence/typescriptAdapter.test.ts
@@ -644,7 +644,7 @@ git commit -m "feat(intelligence): extract TypeScript semantics from AST"
 - 修改：`src/extension/intelligence/languages/pythonAdapter.ts`
 - 修改：`test/intelligence/pythonAdapter.test.ts`
 
-- [ ] **Step 1：增加真实 Python grammar 的失败测试**
+- [x] **Step 1：增加真实 Python grammar 的失败测试**
 
 ```ts
 import path from "node:path";
@@ -701,7 +701,7 @@ it("extracts Python imports and keeps member calls unresolved", async () => {
 });
 ```
 
-- [ ] **Step 2：运行 Python 测试并确认红灯**
+- [x] **Step 2：运行 Python 测试并确认红灯**
 
 运行：
 
@@ -711,7 +711,7 @@ npm test -- test/intelligence/pythonAdapter.test.ts
 
 预期：`async def`、完整范围、qualified name、模块导入和成员调用元数据断言失败。
 
-- [ ] **Step 3：实现 Python AST extractor**
+- [x] **Step 3：实现 Python AST extractor**
 
 `pythonAstExtractor.ts` 使用一次遍历并处理：
 
@@ -737,7 +737,7 @@ switch (node.type) {
 
 最近容器若为 `class_definition` 则生成 method；若最近容器为另一个 `function_definition`，跳过局部函数节点，并且局部函数中的调用不得回挂到外层函数。`decorated_definition` 通过 `definition` 字段进入内部声明，节点 metadata 记录装饰器起始行。
 
-- [ ] **Step 4：切换 Python adapter 主路径并保留 fallback**
+- [x] **Step 4：切换 Python adapter 主路径并保留 fallback**
 
 ```ts
 export function createPythonAdapter(): LanguageAdapter {
@@ -752,9 +752,9 @@ export function createPythonAdapter(): LanguageAdapter {
 }
 ```
 
-fallback 返回空 adapter diagnostics；parser diagnostics 只由 workspace 合并。
+fallback 的诊断所有权在 Task 7 与 ERROR Tree 行为一起修改，确保诊断去重经过独立红灯验证。
 
-- [ ] **Step 5：验证 Python AST 与 fallback**
+- [x] **Step 5：验证 Python AST 与 fallback**
 
 运行：
 
@@ -765,7 +765,7 @@ npm run typecheck
 
 预期：真实 AST 和原有 fallback 测试全部通过。
 
-- [ ] **Step 6：提交 Python AST 抽取**
+- [x] **Step 6：提交 Python AST 抽取**
 
 ```powershell
 git add src/extension/intelligence/languages/pythonAstExtractor.ts src/extension/intelligence/languages/pythonAdapter.ts test/intelligence/pythonAdapter.test.ts
@@ -783,7 +783,7 @@ git commit -m "feat(intelligence): extract Python semantics from AST"
 - 修改：`test/intelligence/referenceResolver.test.ts`
 - 修改：`test/intelligence/workspaceIntelligence.test.ts`
 
-- [ ] **Step 1：增加 TypeScript 和 Python 模块解析失败测试**
+- [x] **Step 1：增加 TypeScript 和 Python 模块解析失败测试**
 
 ```ts
 function binding(
@@ -826,7 +826,7 @@ it("resolves Python modules and package initializers", () => {
 });
 ```
 
-- [ ] **Step 2：增加引用置信度与成员防误连失败测试**
+- [x] **Step 2：增加引用置信度与成员防误连失败测试**
 
 ```ts
 function reference(overrides: Partial<UnresolvedReference> = {}): UnresolvedReference {
@@ -900,7 +900,7 @@ it("uses evidence-based confidence levels", () => {
 });
 ```
 
-- [ ] **Step 3：运行 resolver 测试并确认红灯**
+- [x] **Step 3：运行 resolver 测试并确认红灯**
 
 运行：
 
@@ -910,7 +910,7 @@ npm test -- test/intelligence/modulePathResolver.test.ts test/intelligence/refer
 
 预期：模块 resolver 尚不存在；成员调用仍可能产生边；现有 resolver 将所有边标记为 `exact`。
 
-- [ ] **Step 4：实现模块路径解析**
+- [x] **Step 4：实现模块路径解析**
 
 导出稳定接口：
 
@@ -923,7 +923,7 @@ export function resolveImportBindings(
 
 内部统一使用 `/`，TypeScript 系候选顺序为精确路径、`.ts/.tsx/.js/.jsx`、`/index.*`；Python 候选为模块 `.py` 和 `/__init__.py`。只返回复制后的 binding，不修改 adapter 缓存对象。
 
-- [ ] **Step 5：重构引用解析结果以携带证据等级**
+- [x] **Step 5：重构引用解析结果以携带证据等级**
 
 `findTargetNode` 改为返回：
 
@@ -944,7 +944,7 @@ if (reference.calleeKind && reference.calleeKind !== "identifier") {
 
 已解析导入返回 `exact`，同文件唯一候选返回 `probable`，全工作区唯一候选返回 `heuristic`。创建边时使用 `target.confidence`，不再硬编码 `exact`。
 
-- [ ] **Step 6：在 workspace 中接入模块 resolver**
+- [x] **Step 6：在 workspace 中接入模块 resolver**
 
 在引用解析前执行：
 
@@ -960,7 +960,7 @@ const resolvedEdges = resolveReferences({
 });
 ```
 
-- [ ] **Step 7：验证模块与引用解析**
+- [x] **Step 7：验证模块与引用解析**
 
 运行：
 
@@ -971,7 +971,7 @@ npm run typecheck
 
 预期：模块路径、别名导入、置信度和成员防误连测试全部通过。
 
-- [ ] **Step 8：提交模块与引用解析**
+- [x] **Step 8：提交模块与引用解析**
 
 ```powershell
 git add src/extension/intelligence/resolution/modulePathResolver.ts src/extension/intelligence/resolution/referenceResolver.ts src/extension/intelligence/workspaceIntelligence.ts test/intelligence/modulePathResolver.test.ts test/intelligence/referenceResolver.test.ts test/intelligence/workspaceIntelligence.test.ts
@@ -991,7 +991,7 @@ git commit -m "feat(intelligence): resolve module paths with evidence confidence
 - 修改：`test/intelligence/pythonAdapter.test.ts`
 - 修改：`test/intelligence/workspaceIntelligence.test.ts`
 
-- [ ] **Step 1：增加重复诊断和 ERROR Tree 失败测试**
+- [x] **Step 1：增加重复诊断和 ERROR Tree 失败测试**
 
 ```ts
 it("records each parser diagnostic exactly once", async () => {
@@ -1014,7 +1014,7 @@ it("extracts valid declarations from a tree containing errors", async () => {
 });
 ```
 
-- [ ] **Step 2：运行诊断测试并确认红灯**
+- [x] **Step 2：运行诊断测试并确认红灯**
 
 运行：
 
@@ -1024,7 +1024,7 @@ npm test -- test/intelligence/typescriptAdapter.test.ts test/intelligence/python
 
 预期：parser warning 当前重复；ERROR Tree 没有语义抽取 warning。
 
-- [ ] **Step 3：统一诊断所有权**
+- [x] **Step 3：统一诊断所有权**
 
 adapter fallback 与 AST extractor 都只返回自己产生的诊断：
 
@@ -1048,7 +1048,7 @@ const result: ExtractionResult = {
 };
 ```
 
-- [ ] **Step 4：验证诊断、fallback 和缓存行为**
+- [x] **Step 4：验证诊断、fallback 和缓存行为**
 
 运行：
 
@@ -1058,7 +1058,7 @@ npm test -- test/intelligence/typescriptAdapter.test.ts test/intelligence/python
 
 预期：每条 parser warning 只出现一次；ERROR Tree 保留有效节点；同内容文件仍命中 extraction cache。
 
-- [ ] **Step 5：提交诊断修复**
+- [x] **Step 5：提交诊断修复**
 
 ```powershell
 git add src/extension/intelligence/languages/typescriptAstExtractor.ts src/extension/intelligence/languages/pythonAstExtractor.ts src/extension/intelligence/languages/typescriptAdapter.ts src/extension/intelligence/languages/pythonAdapter.ts src/extension/intelligence/workspaceIntelligence.ts test/intelligence/typescriptAdapter.test.ts test/intelligence/pythonAdapter.test.ts test/intelligence/workspaceIntelligence.test.ts
@@ -1069,11 +1069,12 @@ git commit -m "fix(intelligence): keep AST diagnostics consistent"
 
 **文件：**
 
-- 修改：`docs/superpowers/specs/2026-07-09-incremental-index-tree-sitter-design.md`
 - 修改：`docs/superpowers/specs/2026-07-10-real-ast-semantic-extraction-design.md`
 - 修改：`docs/superpowers/plans/2026-07-10-real-ast-semantic-extraction-plan.md`
 
-- [ ] **Step 1：运行全部自动化验证**
+执行调整：`docs/superpowers/specs/2026-07-09-incremental-index-tree-sitter-design.md` 在本阶段开始前已有其他未提交修改。为避免混入无关内容，本阶段只在新的真实 AST 规格和本计划中记录实施结果，旧规格由其所属变更单独收口。
+
+- [x] **Step 1：运行全部自动化验证**
 
 ```powershell
 npm test
@@ -1084,7 +1085,9 @@ git diff --check
 
 预期：所有测试通过；TypeScript 无错误；`dist/tree-sitter/` 包含 parser、TypeScript、TSX、JavaScript 和 Python WASM；无空白错误。
 
-- [ ] **Step 2：执行对抗样例回归**
+实际结果（2026-07-10）：`npm test` 通过 30 个测试文件、109 个测试；`npm run typecheck` 与 `npm run compile` 均通过；`dist/tree-sitter/` 包含 5 个预期 WASM 文件。最终文档修改后的 `git diff --check` 在 Step 5 再执行一次。
+
+- [x] **Step 2：执行对抗样例回归**
 
 使用现有测试或一次性只读脚本验证以下事实：
 
@@ -1099,7 +1102,9 @@ import alias 连接 resolvedFilePath 中的真实符号
 
 预期：六项全部成立。
 
-- [ ] **Step 3：在唯一调试窗口中验证 Extension Host**
+实际结果（2026-07-10）：单独运行 TypeScript adapter、Python adapter、reference resolver 与 workspace AST 集成测试，共 4 个测试文件、22 个测试通过，六项事实均有自动化断言覆盖。
+
+- [x] **Step 3：在唯一调试窗口中验证 Extension Host**
 
 运行：
 
@@ -1109,9 +1114,11 @@ npm run debug:vscode
 
 复用唯一的 LoopAgent Extension Development Host，刷新窗口后执行 `LoopAgent: Open Panel`。触发两次同工作区代码提问，确认第二次使用 extraction cache；检查诊断中没有重复 Tree-sitter warning。测试结束后不启动第二个调试窗口。
 
-- [ ] **Step 4：更新中文设计与计划状态**
+实际结果（2026-07-10）：通过 `npm run debug:vscode` 启动并持续复用唯一调试窗口，远程调试端口为 `9333`。`local-dev.loopagent-vscode` 已激活，LoopAgent webview 正常显示；在 `Fake local` 下连续发送两次同工作区代码提问，两次流程均完成。最新 Extension Host 日志没有 Tree-sitter/WASM 错误或重复诊断；`safeStorage`、Git ref 和 CSP warning 属于既有调试环境问题。
 
-在两个设计文档的“实施结果”中记录：
+- [x] **Step 4：更新中文设计与计划状态**
+
+在新的真实 AST 设计文档中记录：
 
 ```markdown
 ## 实施结果
@@ -1125,7 +1132,9 @@ npm run debug:vscode
 
 将本计划已完成步骤勾选，并记录实际验证命令与结果；不得填写未实际执行的验证。
 
-- [ ] **Step 5：清理检查**
+实际结果（2026-07-10）：实施范围、剩余限制、自动化结果和 Extension Host 结果已写入 `docs/superpowers/specs/2026-07-10-real-ast-semantic-extraction-design.md` 与本计划。
+
+- [x] **Step 5：清理检查**
 
 运行：
 
@@ -1136,10 +1145,12 @@ git status --short
 
 预期：没有本阶段新增的临时日志、临时标记、测试脚手架或意外文件；原有无关脏文件保持不变。
 
-- [ ] **Step 6：提交验证文档**
+实际结果（2026-07-10）：临时调试标记扫描无匹配，新增代码清理标记扫描无匹配，`git diff --check` 退出码为 0；工作树中的原有无关修改和未跟踪文件均保留且不纳入本阶段提交。
+
+- [x] **Step 6：提交验证文档**
 
 ```powershell
-git add docs/superpowers/specs/2026-07-09-incremental-index-tree-sitter-design.md docs/superpowers/specs/2026-07-10-real-ast-semantic-extraction-design.md docs/superpowers/plans/2026-07-10-real-ast-semantic-extraction-plan.md
+git add docs/superpowers/specs/2026-07-10-real-ast-semantic-extraction-design.md docs/superpowers/plans/2026-07-10-real-ast-semantic-extraction-plan.md
 git commit -m "docs: record real AST extraction verification"
 ```
 

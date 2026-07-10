@@ -270,3 +270,24 @@ Python 导入按工作区相对模块路径匹配 `.py` 和 `/__init__.py`。本
 3. 正则抽取保留为可观察的降级能力，不再作为正常主路径。
 4. 第一版优先保证范围、符号、导入和直接调用正确，不提前实现完整编译器语义。
 5. SQLite 只持久化经过 AST 验证的事实，避免后续向量检索放大错误关系。
+
+## 实施结果
+
+- TypeScript、TSX、JavaScript、JSX 与 Python 已使用真实 Tree-sitter AST 作为正常抽取路径；正则抽取仅在 Tree-sitter 不可用时降级使用。
+- `Parser` 与 `Tree` 的所有权已明确，成功、空结果和异常路径均会显式释放相应 WASM 资源。
+- AST 主路径已覆盖函数、generator、箭头函数、类、constructor、方法、interface、type、enum、Python `async def`、装饰器和类方法完整范围。
+- 调用抽取已区分 identifier、member 与 dynamic 形态；无接收者类型证据时，成员调用保持未解析，不再按裸名称误连。
+- TypeScript 系相对模块与 Python 模块路径已接入工作区解析，调用边按证据标记为 `exact`、`probable` 或 `heuristic`。
+- Parser diagnostics 只在 workspace 合并一次；包含 `ERROR` 节点的 Tree 仍保留可识别声明，并产生一条语义 warning。
+- 当前增量能力仍是文件内容哈希与抽取结果缓存，不包含 `Tree.edit()`；SQLite、FTS、embedding 和向量检索继续按独立规格实施。
+
+## 验证记录
+
+验证日期：2026-07-10。
+
+- `npm test`：30 个测试文件、109 个测试通过。
+- `npm run typecheck`：通过。
+- `npm run compile`：通过，`dist/tree-sitter/` 生成 parser、TypeScript、TSX、JavaScript 和 Python 共 5 个 WASM 文件。
+- `npm test -- test/intelligence/typescriptAdapter.test.ts test/intelligence/pythonAdapter.test.ts test/intelligence/referenceResolver.test.ts test/intelligence/workspaceAstIntegration.test.ts`：4 个测试文件、22 个对抗与集成测试通过。
+- 对抗样例覆盖字符串花括号范围、箭头函数、Python `async def`、成员调用防误连、别名导入目标解析和 parser warning 去重。
+- 复用唯一 `npm run debug:vscode` 调试窗口，固定远程调试端口为 `9333`；在 `Fake local` 下连续执行两次同工作区代码提问，流程均完成，Extension Host 日志未出现 Tree-sitter/WASM 错误或重复诊断。
