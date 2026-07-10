@@ -13,7 +13,7 @@ const extensionConfig = {
   outfile: "dist/extension.js",
   platform: "node",
   sourcemap: !production,
-  target: "node20",
+  target: "node22",
 };
 
 const webviewConfig = {

@@ -4,7 +4,7 @@
   "version": "0.0.1",
   "publisher": "local-dev",
   "engines": {
-    "vscode": "^1.96.0"
+    "vscode": "^1.101.0"
   },
   "categories": [
     "Other"
@@ -104,7 +104,7 @@
     "@types/node": "^22.10.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@types/vscode": "^1.96.0",
+    "@types/vscode": "^1.101.0",
     "@vitejs/plugin-react": "^6.0.3",
     "@vscode/test-electron": "^2.4.1",
     "esbuild": "^0.28.1",
