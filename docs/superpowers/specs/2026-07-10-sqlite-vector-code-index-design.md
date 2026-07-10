@@ -1,6 +1,6 @@
 # SQLite 持久化与向量代码索引设计
 
-> 状态：设计已批准，实施计划已编写，等待执行。
+> 状态：设计已批准，实施计划正在按可独立验收的阶段重构。
 >
 > 本版本取代本文档早期的“文件变化后删除并重建全部文件索引”和“暂时保留完整内存图”方案。新的更新粒度是符号 chunk，SQLite 是唯一持久化索引事实源。
 
@@ -12,6 +12,9 @@
 4. 文件变化后仍使用 Tree-sitter 完整解析该文件，但只更新发生变化的符号 chunk、关系、FTS 和 embedding；本阶段不实现 `Tree.edit()`。
 5. 可恢复、跨请求有价值的索引状态全部落 SQLite；parser、grammar、临时 AST 和单次查询结果保留在内存。
 6. 不保留并行的完整 `sourceCache`、`extractionCacheByFile`、`SemanticGraph` 或 `SearchIndex` 作为正常索引路径。
+7. 敏感路径必须在扫描或 watcher 入队前过滤，并在 worker 读取文件前再次过滤；worker 侧检查是不可绕过的最终安全边界。
+8. exact token、FTS 和 SQL 图扩展必须先形成不依赖 embedding 的可用检索链路；向量能力通过可选接口在后续阶段注入。
+9. writer 租约必须覆盖获取、续租、丢失后只读降级、定期重试和释放，不能只提供未接入生命周期的数据库方法。
 
 ## 背景
 
@@ -306,12 +309,15 @@ value           text not null
 
 Tree-sitter 和 adapter 为变化文件生成一次完整 `ExtractionSnapshot`，内容按 owner chunk 分组：节点、出边、import binding、未解析引用、诊断和 chunk 文本。worker 在事务内将新旧稳定 ID 分为：
 
-- `unchanged`：所有 hash 相同，不写 chunk/FTS/embedding。
-- `metadata-only`：只更新范围或非检索元数据。
-- `search-changed`：更新 chunk 与 FTS，embedding 可继续复用。
-- `embedding-changed`：更新 chunk、FTS，并把 embedding 映射标记为 `pending`。
+- `unchanged`：三个 hash 和范围元数据都相同，不写 chunk、FTS 或 embedding。
+- `metadata-only`：三个 hash 相同，仅范围或非检索元数据变化；只更新对应列。
+- `source-changed`：`source_hash` 变化，但 `search_hash` 和 `embedding_hash` 相同；更新 `source_text`、`source_hash` 和范围，不写 FTS，不改变 embedding 映射。
+- `search-changed`：`search_hash` 变化，但 `embedding_hash` 相同；更新 chunk，只在 FTS 文本确实变化时重写 FTS，embedding 继续复用。
+- `embedding-changed`：`embedding_hash` 变化；更新 chunk，把当前 provider/model 的映射标记为 `pending`，并且仍然只在 `search_hash` 变化时重写 FTS。
 - `added`：插入完整记录。
 - `removed`：删除所属节点、出边、引用、诊断、chunk 和映射；内容寻址的 `embedding_cache` 可由回收任务延迟清理。
+
+分类按 `embedding_hash -> search_hash -> source_hash -> metadata` 的优先级判定，因此一个 chunk 只进入一个最高影响级别。`SnapshotChangeSet` 仍要分别列出 chunk、FTS 和 embedding 操作，不能用分类名称代替精确写入集合。
 
 文件删除在一个事务内级联清理全部文件索引。文件重命名按 delete/create 处理，但相同 `embedding_hash` 可以复用已有向量。
 
@@ -418,6 +424,8 @@ score = 1 / (k + exact_rank)
 
 其中 `k` 默认 `60`，避免单一路径分数过大。查询只把预算允许的候选节点、关系和 chunk 文本传回 Extension Host；禁止提供“读取完整图快照”的生产接口。
 
+`HybridRetriever` 先依赖 exact token、FTS 和 SQL 图扩展，并接受可选的 `VectorCandidateSource`。未注入向量源时不得生成伪造的 vector trace，检索和上下文生成仍必须完整可用。embedding 阶段实现 `VectorIndex` 后再注入该接口，并单独增加 vector 融合排序测试；基础混合检索任务不得提前依赖后续向量实现。
+
 ## 向量实现取舍
 
 ### 第一阶段
@@ -454,6 +462,8 @@ SqliteIndexWorkerClient
 
 watcher 不再只维护内存 `dirtyPaths` 和 `deletedPaths`，而是将事件合并写入 `index_jobs`。启动扫描也把新增、修改和删除差异写入同一队列。
 
+扫描结果和 watcher 事件在入队前都调用同一个纯函数路径策略，排除 `.env`、secret、token、API key、依赖目录、构建目录和本地调试目录。watcher 对排除路径直接忽略，不创建 `index_jobs` 行。启动对账把策略允许的 URI 集合与持久化 `files`、`index_jobs` 比较，在不读取源码的前提下直接清除现在已被排除的历史文件记录和陈旧 job。`processNextJob` 在 `stat` 或读取内容前再次执行该策略：若某个已排队路径因策略变化而被排除，则删除对应历史记录和 job，不读取或解析文件。入队过滤用于减少垃圾任务，worker 过滤才是安全边界。
+
 文件变更时：
 
 ```text
@@ -478,14 +488,17 @@ embedding 任务异步执行，不阻塞用户提问。若 embedding 尚未完�
 
 1. 一个 `SqliteIndexWorker` 独占当前 Extension Host 的数据库连接，所有写操作通过串行消息队列执行。
 2. 查询消息与写消息共用串行 worker 队列。查询只在事务边界执行，并且只读取已提交状态。
-3. `index_meta` 保存 writer owner 和租约时间。两个窗口意外打开同一工作区数据库时，只有持有有效租约的 worker 执行索引，其他实例只读并定期重试租约。
-4. 扩展启动先运行 migration 和能力探测，再恢复 `pending` 任务及超时的 `running` 任务，最后执行工作区差异扫描。
-5. 扩展关闭时停止接收新任务、完成或回滚当前事务、释放租约、checkpoint WAL 并关闭连接；不得删除数据库。
-6. schema 迁移失败时关闭原库并保留带时间戳的备份，再创建新库和全量重建任务。
+3. `index_meta` 保存 writer owner 和租约到期时间。获取和续租使用带 owner/expiry 条件的事务更新，不能无条件覆盖另一个实例的有效租约。
+4. 成为 writer 后按不超过 TTL 三分之一的间隔续租。claim job、应用 snapshot、更新 embedding 和 rebuild 等每个写事务都在同一事务内验证 owner 仍匹配且租约未到期。
+5. 续租失败或写前检查失败时立即停止 claim 新 job，取消续租计时器并进入 `read_only`；查询继续读取最后提交版本。只读实例以有界间隔重试获取租约，不使用忙循环。
+6. 重新获得租约后先恢复超时的 `running` job，再执行工作区差异扫描，然后恢复正常写入。两个实例的 fake-clock 测试必须证明任一时刻最多一个实例能够提交写事务。
+7. 扩展启动先运行 migration 和能力探测，再尝试获取租约；只有 writer 恢复任务并扫描，只读实例不得处理索引队列。
+8. 扩展关闭时停止接收新任务、取消续租/重试计时器、完成或回滚当前事务、仅在 owner 匹配时释放租约、checkpoint WAL 并关闭连接；不得删除数据库。
+9. schema 迁移失败时关闭原库并保留带时间戳的备份，再创建新库和全量重建任务。
 
 ## 安全与清理
 
-- 继续复用 `.env`、secret、token、API key、构建目录和依赖目录排除规则，排除文件不得写入 `files` 或任何 chunk 表。
+- 继续复用 `.env`、secret、token、API key、构建目录和依赖目录排除规则；扫描、watcher 和 job 执行共享同一策略，排除文件不得被读取，也不得写入 `files` 或任何 chunk 表。
 - 数据库只位于 VS Code 工作区存储目录，不进入仓库、不参与 Settings Sync，也不记录到普通日志。
 - 日志只记录文件相对路径、row count、耗时、状态和错误，不输出 chunk 源码或 embedding。
 - 提供 `LoopAgent: Rebuild Code Index`、`LoopAgent: Clear Code Index` 和 `LoopAgent: Show Code Index Status` 命令。
@@ -529,19 +542,21 @@ src/extension/intelligence/embedding/embeddingProvider.ts
 4. Embedding provider 未配置或暂时失败：跳过向量召回，exact token、FTS 和 graph 继续工作，pending 任务保留重试信息。
 5. card 数量超过 worker 余弦扫描上限：跳过全量向量扫描并记录诊断，不把所有 vector 加载到 Extension Host。
 6. 混合召回没有命中：prompt 明确标记“未命中代码上下文”，避免模型泛泛回答。
+7. writer 租约丢失：实例转为 `read_only`，停止所有索引和 embedding 写入，保留查询能力并定期尝试重新获取租约；不得退回完整内存索引。
 
 ## 验证策略
 
 单元测试：
 
-1. `indexMigrations.test.ts`：在临时目录中创建、升级和拒绝未知 schema，验证 WAL、foreign key 和 FTS5。
+1. `indexMigrations.test.ts`：在临时目录中创建、升级和拒绝未知 schema；通过 `PRAGMA table_info`、`foreign_key_list` 和 `index_list` 断言完整字段、外键动作、必需索引、WAL、foreign key 和 FTS5。
 2. `codeChunker.test.ts`：验证 file、function、class、method、test case、超大函数子块的稳定 ID 和三层 hash。
-3. `snapshotDiff.test.ts`：分别覆盖 unchanged、metadata-only、search-changed、embedding-changed、added 和 removed。
-4. `sqliteIndexWorker.test.ts`：验证事务回滚、持久化 job 恢复、文件增删改和级联约束。
+3. `snapshotDiff.test.ts`：分别覆盖 unchanged、metadata-only、source-changed、search-changed、embedding-changed、added 和 removed，并断言每类精确产生的 chunk/FTS/embedding 操作。
+4. `sqliteIndexWorker.test.ts`：验证事务回滚、持久化 job 恢复、文件增删改、级联约束、FTS 无孤立行，以及两个实例的租约续期、丢失、只读降级和重新接管。
 5. `sqliteFts.test.ts`：验证路径、qualified name、camelCase、签名、导入导出和中文 card 检索。
 6. `dependencyResolution.test.ts`：验证导出变化只重新解析受影响关系，不重新抽取依赖文件。
-7. `hybridRetriever.test.ts`：验证 exact token、FTS、vector hit 和 graph proximity 的 RRF 融合排序及硬预算。
+7. `hybridRetriever.test.ts`：先验证没有 vector provider 时 exact token、FTS 和 graph proximity 的融合排序及硬预算；向量计划再增加 vector hit 的 RRF 融合测试。
 8. `workspaceIntelligence.test.ts`：验证持久化索引不会破坏现有 prompt 生成链路，且生产对象不保存完整仓库 Map。
+9. `workspaceIndexer.test.ts` 与 `vscodeWorkspaceIntelligence.test.ts`：分别从启动扫描和 watcher/job 两条路径验证敏感文件不会被读取、解析或持久化。
 
 集成测试：
 
@@ -553,7 +568,8 @@ src/extension/intelligence/embedding/embeddingProvider.ts
 6. 用当前项目提问“模型集成是怎么实现的”，应命中 `providerRegistry.ts`、`modelRunner.ts`、`openAiCompatibleClient.ts` 等真实代码上下文。
 7. 用明确标识符 `assistantDelta` 提问，仍走 exact token/FTS 路径，不因为向量层引入额外噪音。
 8. 不配置 embedding provider 时，exact token、FTS 和 graph 仍可用。
-9. 被敏感规则排除的文件不会出现在任一 SQLite 表中。
+9. 被敏感规则排除的文件通过启动扫描和 watcher 触发时都不会被读取或新写入任一 SQLite 表；启动对账后，历史 `files`、chunk、关系和 `index_jobs` 记录全部清除。
+10. 两个实例指向同一 workspace 数据库时，只有 writer 处理 job；租约丢失的实例保持查询可用并能在原 writer 退出后接管。
 
 真实模型测试：
 
@@ -562,6 +578,7 @@ src/extension/intelligence/embedding/embeddingProvider.ts
 3. 打包 VSIX 后重新验证 worker bundle、数据库创建、重启复用和 FTS 查询，不接受只在源码测试环境通过。
 4. 记录发送给 DeepSeek 的完整 system prompt 和 user prompt，以及 exact/FTS/vector/graph 各自命中的 chunk 和 node。
 5. 对比持久化前后的启动解析文件数、SQLite 写入 row 数、embedding 请求数、`systemChars`、关键源码命中率和回答准确性。
+6. 验证报告必须包含“模型集成是怎么实现的”和 `assistantDelta` 两个固定查询的检索 trace、上下文文件、预算统计和回答结论；不得只记录索引生命周期指标。
 
 完成声明前统一执行：
 
@@ -572,6 +589,18 @@ npm run typecheck
 npm run compile
 git diff --check
 ```
+
+## 实施计划组织
+
+当前总计划 `docs/superpowers/plans/2026-07-10-sqlite-vector-code-index-plan.md` 只维护全局约束、子计划依赖、阶段门禁和最终验收，不再承载全部实现细节。执行时按以下五份计划顺序推进，每份计划必须在自身测试通过、文档更新并提交后才能进入下一份：
+
+1. `docs/superpowers/plans/2026-07-11-sqlite-index-storage-worker-plan.md`：运行时基线、schema、migration、worker RPC、持久化 job 和完整 writer lease 状态机。
+2. `docs/superpowers/plans/2026-07-11-sqlite-index-chunk-diff-plan.md`：稳定身份、card/source chunk、三层 hash、七类 snapshot diff 和事务写入。
+3. `docs/superpowers/plans/2026-07-11-sqlite-index-workspace-incremental-plan.md`：启动扫描、敏感路径双重门禁、watcher 队列、删除处理和跨文件关系重解析。
+4. `docs/superpowers/plans/2026-07-11-sqlite-index-retrieval-embedding-plan.md`：exact/FTS/graph 基础检索、模型上下文迁移、可选 vector 接口、embedding 生命周期和向量融合。
+5. `docs/superpowers/plans/2026-07-11-sqlite-index-lifecycle-e2e-plan.md`：扩展生命周期、索引命令、旧内存实现清理、最低宿主/当前宿主、VSIX 和真实模型验证。
+
+子计划使用连续的本地任务编号，各自从 Task 1 开始；总计划通过文件名和完成门禁表达全局顺序，避免因插入任务导致跨文件编号失效。实现方向发生变化时先更新本设计，再同步总计划和受影响的子计划。
 
 ## 分阶段落地
 
@@ -589,11 +618,11 @@ git diff --check
 
 ### 阶段 3：SQLite 检索与内存索引迁移
 
-实现 exact token、FTS 和 SQL 图扩展，迁移 `createCodeIntelligenceContext`，随后删除生产路径的 `sourceCache`、`extractionCacheByFile`、完整 `SemanticGraph` 和 `SearchIndex`。
+实现 exact token、FTS 和 SQL 图扩展，在未配置 vector source 时完成可用的 `HybridRetriever`，再迁移 `createCodeIntelligenceContext`。生产入口切换并验证后删除 `sourceCache`、`extractionCacheByFile`、完整 `SemanticGraph` 和 `SearchIndex`。
 
 ### 阶段 4：Embedding 生命周期与向量召回
 
-实现 `EmbeddingProvider`、内容寻址的 embedding cache、pending/retry 状态和 worker 余弦召回。未配置 provider 时不影响主链路。
+实现 `EmbeddingProvider`、内容寻址的 embedding cache、pending/retry 状态和 worker 余弦召回，并把 `VectorIndex` 注入阶段 3 已定义的可选接口。未配置 provider 时不影响主链路，阶段 3 的测试必须继续通过。
 
 ### 阶段 5：命令、恢复与真实宿主验证
 
