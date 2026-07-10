@@ -16,6 +16,12 @@ const extensionConfig = {
   target: "node22",
 };
 
+const sqliteWorkerConfig = {
+  ...extensionConfig,
+  entryPoints: ["src/extension/intelligence/storage/sqliteIndexWorker.ts"],
+  outfile: "dist/sqliteIndexWorker.js",
+};
+
 const webviewConfig = {
   entryPoints: ["src/webview/main.tsx"],
   bundle: true,
@@ -32,12 +38,21 @@ async function build() {
     await copyTreeSitterAssets();
     const extensionContext = await esbuild.context(extensionConfig);
     const webviewContext = await esbuild.context(webviewConfig);
-    await Promise.all([extensionContext.watch(), webviewContext.watch()]);
-    console.log("Watching extension and webview builds...");
+    const sqliteWorkerContext = await esbuild.context(sqliteWorkerConfig);
+    await Promise.all([
+      extensionContext.watch(),
+      webviewContext.watch(),
+      sqliteWorkerContext.watch(),
+    ]);
+    console.log("Watching extension, webview, and sqlite worker builds...");
     return;
   }
 
-  await Promise.all([esbuild.build(extensionConfig), esbuild.build(webviewConfig)]);
+  await Promise.all([
+    esbuild.build(extensionConfig),
+    esbuild.build(webviewConfig),
+    esbuild.build(sqliteWorkerConfig),
+  ]);
   await copyTreeSitterAssets();
 }
 
@@ -51,5 +66,6 @@ if (require.main === module) {
 module.exports = {
   build,
   extensionConfig,
+  sqliteWorkerConfig,
   webviewConfig,
 };
