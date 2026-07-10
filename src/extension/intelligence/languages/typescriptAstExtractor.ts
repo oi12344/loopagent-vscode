@@ -1,7 +1,14 @@
 import type { CodeEdge, CodeNode, ImportBinding, UnresolvedReference } from "../graph/graphTypes";
 import type { ParsedSource, SyntaxNode } from "../parser/parserRuntime";
 import type { ExtractionResult } from "./languageAdapter";
-import { getField, getNearestAncestor, readStringLiteral, toCodeRange, visitNamedNodes } from "./treeSitterAst";
+import {
+  getField,
+  getNearestAncestor,
+  getSyntaxTreeDiagnostics,
+  readStringLiteral,
+  toCodeRange,
+  visitNamedNodes,
+} from "./treeSitterAst";
 
 const FUNCTION_NODE_TYPES = new Set(["function_declaration", "generator_function_declaration"]);
 const VARIABLE_FUNCTION_NODE_TYPES = new Set(["arrow_function", "function_expression"]);
@@ -65,7 +72,13 @@ export function extractTypeScriptAst(parsed: ParsedSource): ExtractionResult {
     }
   });
 
-  return { nodes, edges, importBindings, unresolvedReferences, diagnostics: [] };
+  return {
+    nodes,
+    edges,
+    importBindings,
+    unresolvedReferences,
+    diagnostics: getSyntaxTreeDiagnostics(parsed),
+  };
 
   function addFunction(node: SyntaxNode, ancestors: readonly SyntaxNode[]): void {
     if (getNearestCallableSyntaxNode(ancestors)) {

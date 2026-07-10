@@ -124,7 +124,7 @@ function extractTypeScriptFallback(parsed: ParsedSource): ExtractionResult {
   });
 
   closeRemainingScopes(containerStack, nodes, lines.length);
-  return { nodes, edges, importBindings, unresolvedReferences, diagnostics: [...parsed.diagnostics] };
+  return { nodes, edges, importBindings, unresolvedReferences, diagnostics: [] };
 }
 
 function getCurrentClass(containerStack: ContainerScope[]): ContainerScope | undefined {

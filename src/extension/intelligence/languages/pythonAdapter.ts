@@ -137,7 +137,7 @@ function extractPythonFallback(parsed: ParsedSource): ExtractionResult {
     }
   });
 
-  return { nodes, edges, importBindings, unresolvedReferences, diagnostics: [...parsed.diagnostics] };
+  return { nodes, edges, importBindings, unresolvedReferences, diagnostics: [] };
 }
 
 function parseFromImportBindings(parsed: ParsedSource, source: string, importList: string): ImportBinding[] {

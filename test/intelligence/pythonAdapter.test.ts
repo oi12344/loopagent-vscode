@@ -60,7 +60,7 @@ describe("Python adapter", () => {
     );
   });
 
-  it("handles aliases, diagnostics, and indentation scope exits", () => {
+  it("handles aliases and indentation scope exits without owning parser diagnostics", () => {
     const adapter = createPythonAdapter();
     const diagnostic: IndexDiagnostic = {
       filePath: "app/service.py",
@@ -99,7 +99,7 @@ describe("Python adapter", () => {
       source: "app.repo",
       languageId: "python",
     });
-    expect(result.diagnostics).toEqual([diagnostic]);
+    expect(result.diagnostics).toEqual([]);
     expect(methodNode).toEqual(expect.objectContaining({ kind: "method", name: "run" }));
     expect(result.nodes).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ kind: "method", name: "helper" })]),
@@ -177,5 +177,14 @@ describe("Python adapter", () => {
         }),
       ]),
     );
+  });
+
+  it("keeps valid declarations when the syntax tree contains errors", async () => {
+    const result = await extractWithTree("def valid():\n    pass\n\ndef broken(");
+
+    expect(result.nodes).toContainEqual(expect.objectContaining({ kind: "function", name: "valid" }));
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({ severity: "warning", message: expect.stringContaining("ERROR") }),
+    ]);
   });
 });

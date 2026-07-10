@@ -1,7 +1,7 @@
 import type { CodeEdge, CodeNode, ImportBinding, UnresolvedReference } from "../graph/graphTypes";
 import type { ParsedSource, SyntaxNode } from "../parser/parserRuntime";
 import type { ExtractionResult } from "./languageAdapter";
-import { getField, getNearestAncestor, toCodeRange, visitNamedNodes } from "./treeSitterAst";
+import { getField, getNearestAncestor, getSyntaxTreeDiagnostics, toCodeRange, visitNamedNodes } from "./treeSitterAst";
 
 type Callee = {
   referenceName: string;
@@ -42,7 +42,13 @@ export function extractPythonAst(parsed: ParsedSource): ExtractionResult {
     }
   });
 
-  return { nodes, edges, importBindings, unresolvedReferences, diagnostics: [] };
+  return {
+    nodes,
+    edges,
+    importBindings,
+    unresolvedReferences,
+    diagnostics: getSyntaxTreeDiagnostics(parsed),
+  };
 
   function addClass(node: SyntaxNode, ancestors: readonly SyntaxNode[]): void {
     if (getNearestContainer(ancestors)) {

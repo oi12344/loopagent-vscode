@@ -63,7 +63,7 @@ describe("TypeScript adapter", () => {
     );
   });
 
-  it("handles aliases, diagnostics, modifiers, and scope exits", () => {
+  it("handles aliases, modifiers, and scope exits without owning parser diagnostics", () => {
     const adapter = createTypeScriptAdapter();
     const diagnostic: IndexDiagnostic = {
       filePath: "src/extension/model/modelRunner.ts",
@@ -99,7 +99,7 @@ describe("TypeScript adapter", () => {
       source: "./modelRunner",
       languageId: "typescript",
     });
-    expect(result.diagnostics).toEqual([diagnostic]);
+    expect(result.diagnostics).toEqual([]);
     expect(methodNode).toEqual(expect.objectContaining({ kind: "method", name: "startRun" }));
     expect(result.edges).toContainEqual(expect.objectContaining({ source: classNode?.id, target: methodNode?.id }));
     expect(result.unresolvedReferences).toEqual(
@@ -286,5 +286,14 @@ describe("TypeScript adapter", () => {
         }),
       ]),
     );
+  });
+
+  it("keeps valid declarations when the syntax tree contains errors", async () => {
+    const result = await extractWithTree("function valid() {}\nfunction broken(");
+
+    expect(result.nodes).toContainEqual(expect.objectContaining({ kind: "function", name: "valid" }));
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({ severity: "warning", message: expect.stringContaining("ERROR") }),
+    ]);
   });
 });

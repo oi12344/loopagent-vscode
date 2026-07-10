@@ -1,4 +1,5 @@
-import type { SyntaxNode } from "../parser/parserRuntime";
+import type { IndexDiagnostic } from "../graph/graphTypes";
+import type { ParsedSource, SyntaxNode } from "../parser/parserRuntime";
 
 export type SyntaxVisitor = (node: SyntaxNode, ancestors: readonly SyntaxNode[]) => void;
 
@@ -54,4 +55,17 @@ export function readStringLiteral(node: SyntaxNode | undefined): string | undefi
     return value.slice(1, -1);
   }
   return value;
+}
+
+export function getSyntaxTreeDiagnostics(parsed: ParsedSource): IndexDiagnostic[] {
+  if (!parsed.tree?.rootNode.hasError) {
+    return [];
+  }
+  return [
+    {
+      filePath: parsed.filePath,
+      severity: "warning",
+      message: "Tree-sitter 语法树包含 ERROR 节点，已抽取其中可识别的声明。",
+    },
+  ];
 }
