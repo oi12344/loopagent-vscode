@@ -62,8 +62,11 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
 
     this.disposed = true;
     this.rejectAll(new Error("SQLite worker client disposed"));
-    this.disposePromise = Promise.resolve()
-      .then(() => this.worker.terminate())
+    const disposeRequest = this.stoppedError
+      ? Promise.reject<void>(this.stoppedError)
+      : this.sendRequest<void>((id) => ({ id, kind: "dispose" }));
+    this.disposePromise = disposeRequest
+      .finally(() => this.worker.terminate())
       .then(() => undefined);
     return this.disposePromise;
   }
@@ -78,6 +81,12 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
       return Promise.reject(this.stoppedError);
     }
 
+    return this.sendRequest(createRequest);
+  }
+
+  private sendRequest<T>(
+    createRequest: (id: number) => SqliteWorkerRequest,
+  ): Promise<T> {
     const id = this.nextRequestId++;
     return new Promise<T>((resolve, reject) => {
       this.pendingRequests.set(id, {
@@ -113,9 +122,6 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
   };
 
   private readonly handleWorkerExit = (exitCode: number): void => {
-    if (this.disposed) {
-      return;
-    }
     this.stop(new Error(`SQLite worker exited with code ${exitCode}`));
   };
 

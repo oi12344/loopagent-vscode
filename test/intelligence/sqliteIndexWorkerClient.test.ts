@@ -10,8 +10,12 @@ import type {
 class FakeWorker extends EventEmitter {
   readonly requests: SqliteWorkerRequest[] = [];
   readonly terminate = vi.fn(() => Promise.resolve(0));
+  postMessageError: Error | undefined;
 
   postMessage(request: SqliteWorkerRequest): void {
+    if (this.postMessageError) {
+      throw this.postMessageError;
+    }
     this.requests.push(request);
   }
 
@@ -32,6 +36,19 @@ function pendingRequestCount(client: unknown): number {
   return (
     client as { pendingRequests: ReadonlyMap<number, unknown> }
   ).pendingRequests.size;
+}
+
+function observeSettlement(promise: Promise<unknown>): () => boolean {
+  let settled = false;
+  void promise.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  return () => settled;
 }
 
 describe("SqliteIndexWorkerClient", () => {
@@ -120,20 +137,149 @@ describe("SqliteIndexWorkerClient", () => {
     expect(pendingRequestCount(client)).toBe(0);
   });
 
-  it("rejects pending work and terminates exactly once when repeatedly disposed", async () => {
+  it("rejects public work immediately and waits for the dispose response before terminating", async () => {
     const worker = new FakeWorker();
     const client = createSqliteIndexWorkerClient({ worker });
     const pendingStatus = client.getStatus();
 
     const firstDispose = client.dispose();
     const secondDispose = client.dispose();
+    const isDisposeSettled = observeSettlement(firstDispose);
 
     expect(secondDispose).toBe(firstDispose);
     await expect(pendingStatus).rejects.toThrow(/disposed/i);
+    expect(worker.requests).toEqual([
+      { id: 1, kind: "getStatus" },
+      { id: 2, kind: "dispose" },
+    ]);
+    expect(worker.terminate).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(isDisposeSettled()).toBe(false);
+
+    worker.respond({ id: 2, ok: true, value: undefined });
+
     await expect(firstDispose).resolves.toBeUndefined();
     expect(worker.terminate).toHaveBeenCalledOnce();
     expect(pendingRequestCount(client)).toBe(0);
     await expect(client.getStatus()).rejects.toThrow(/disposed/i);
+    expect(worker.requests).toHaveLength(2);
+  });
+
+  it("terminates and rejects dispose when posting the dispose request throws", async () => {
+    const worker = new FakeWorker();
+    const client = createSqliteIndexWorkerClient({ worker });
+    const postMessageError = new Error("post dispose failed");
+    worker.postMessageError = postMessageError;
+
+    await expect(client.dispose()).rejects.toBe(postMessageError);
+
+    expect(worker.terminate).toHaveBeenCalledOnce();
+    expect(pendingRequestCount(client)).toBe(0);
+  });
+
+  it("terminates and rejects dispose when the worker reports an error", async () => {
+    const worker = new FakeWorker();
+    const client = createSqliteIndexWorkerClient({ worker });
+    const workerError = new Error("worker failed during dispose");
+    const dispose = client.dispose();
+
+    worker.fail(workerError);
+
+    await expect(dispose).rejects.toBe(workerError);
+    expect(worker.terminate).toHaveBeenCalledOnce();
+    expect(pendingRequestCount(client)).toBe(0);
+  });
+
+  it("terminates and rejects dispose when the worker exits before responding", async () => {
+    const worker = new FakeWorker();
+    const client = createSqliteIndexWorkerClient({ worker });
+    const dispose = client.dispose();
+
+    worker.exit(0);
+
+    await expect(dispose).rejects.toThrow(/exited.*0/i);
+    expect(worker.terminate).toHaveBeenCalledOnce();
+    expect(pendingRequestCount(client)).toBe(0);
+  });
+
+  it("terminates with the original error when disposed after the worker stopped", async () => {
+    const worker = new FakeWorker();
+    const client = createSqliteIndexWorkerClient({ worker });
+    const workerError = new Error("worker already stopped");
+    worker.fail(workerError);
+
+    await expect(client.dispose()).rejects.toBe(workerError);
+
+    expect(worker.requests).toHaveLength(0);
+    expect(worker.terminate).toHaveBeenCalledOnce();
+    expect(pendingRequestCount(client)).toBe(0);
+  });
+
+  it("terminates and preserves a failed dispose response", async () => {
+    const worker = new FakeWorker();
+    const client = createSqliteIndexWorkerClient({ worker });
+    const dispose = client.dispose();
+
+    worker.respond({ id: 1, ok: false, error: "dispose failed" });
+
+    await expect(dispose).rejects.toThrow("dispose failed");
+    expect(worker.terminate).toHaveBeenCalledOnce();
+    expect(pendingRequestCount(client)).toBe(0);
+  });
+
+  it("propagates terminate failures after a successful dispose response", async () => {
+    const worker = new FakeWorker();
+    const terminateError = new Error("terminate failed");
+    worker.terminate.mockRejectedValueOnce(terminateError);
+    const client = createSqliteIndexWorkerClient({ worker });
+    const dispose = client.dispose();
+
+    worker.respond({ id: 1, ok: true, value: undefined });
+
+    await expect(dispose).rejects.toBe(terminateError);
+    expect(worker.terminate).toHaveBeenCalledOnce();
+    expect(pendingRequestCount(client)).toBe(0);
+  });
+
+  it("settles a request when postMessage throws without retaining it", async () => {
+    const worker = new FakeWorker();
+    const postMessageError = new Error("post request failed");
+    worker.postMessageError = postMessageError;
+    const client = createSqliteIndexWorkerClient({ worker });
+
+    await expect(client.getStatus()).rejects.toBe(postMessageError);
+
+    expect(worker.requests).toHaveLength(0);
+    expect(pendingRequestCount(client)).toBe(0);
+  });
+
+  it("keeps the original failure across exit and rejects later requests without posting", async () => {
+    const worker = new FakeWorker();
+    const client = createSqliteIndexWorkerClient({ worker });
+    const pendingStatus = client.getStatus();
+    const workerError = new Error("original worker failure");
+
+    worker.fail(workerError);
+    worker.exit(9);
+
+    await expect(pendingStatus).rejects.toBe(workerError);
+    await expect(client.getStatus()).rejects.toBe(workerError);
     expect(worker.requests).toHaveLength(1);
+    expect(pendingRequestCount(client)).toBe(0);
+  });
+
+  it("ignores late worker events after disposal without terminating twice", async () => {
+    const worker = new FakeWorker();
+    const client = createSqliteIndexWorkerClient({ worker });
+    const dispose = client.dispose();
+
+    worker.respond({ id: 1, ok: true, value: undefined });
+    await expect(dispose).resolves.toBeUndefined();
+
+    worker.fail(new Error("late worker error"));
+    worker.exit(0);
+
+    expect(worker.terminate).toHaveBeenCalledOnce();
+    expect(pendingRequestCount(client)).toBe(0);
   });
 });
