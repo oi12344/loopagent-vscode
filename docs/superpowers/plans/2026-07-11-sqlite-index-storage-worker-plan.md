@@ -28,7 +28,7 @@
 - `sqliteIndexStore.ts`：worker 内 schema 级 store、job 和 lease 原语。
 - `run-sqlite-vscode-probe.mjs`：固定最低版本 Extension Host 探针入口。
 
-## Task 1：提升运行时基线并实现 SQLite 能力探针
+## Task 1：提升运行时基线并实现 SQLite 能力探针（已实现）
 
 **Files:**
 
@@ -39,7 +39,7 @@
 - Modify: `test/packageManifest.test.ts`
 - Modify: `esbuild.js`
 
-- [ ] **Step 1：写 manifest 和 capability 失败测试**
+- [x] **Step 1：写 manifest 和 capability 失败测试**
 
 在 `test/packageManifest.test.ts` 增加：
 
@@ -68,7 +68,7 @@ it("probes sqlite, WAL, foreign keys, and FTS5", () => {
 });
 ```
 
-- [ ] **Step 2：运行测试确认 RED**
+- [x] **Step 2：运行测试确认 RED**
 
 ```powershell
 npm test -- test/packageManifest.test.ts test/intelligence/sqliteCapabilities.test.ts
@@ -76,7 +76,7 @@ npm test -- test/packageManifest.test.ts test/intelligence/sqliteCapabilities.te
 
 Expected: FAIL，manifest 仍为 `^1.96.0`，且 `probeSqliteCapabilities` 不存在。
 
-- [ ] **Step 3：实现最小 capability probe**
+- [x] **Step 3：实现最小 capability probe**
 
 `sqliteCapabilities.ts` 导出：
 
@@ -110,7 +110,7 @@ esbuild.js extensionConfig.target             -> node22
 
 运行 `npm install --save-dev @types/vscode@^1.103.0` 更新 `package-lock.json`，不要手工编辑 lockfile。
 
-- [ ] **Step 4：运行测试、类型检查和构建确认 GREEN**
+- [x] **Step 4：运行测试、类型检查和构建确认 GREEN**
 
 ```powershell
 npm test -- test/packageManifest.test.ts test/intelligence/sqliteCapabilities.test.ts
@@ -120,7 +120,7 @@ npm run compile
 
 Expected: 全部 exit code 0，`dist/extension.js` 正常生成。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```powershell
 git add package.json package-lock.json esbuild.js src/extension/intelligence/storage/sqliteCapabilities.ts test/packageManifest.test.ts test/intelligence/sqliteCapabilities.test.ts
@@ -128,7 +128,7 @@ git diff --cached --check
 git commit -m "build: require vscode node sqlite runtime"
 ```
 
-## Task 2：建立类型化 Worker RPC 和独立 Bundle
+## Task 2：建立类型化 Worker RPC 和独立 Bundle（已实现）
 
 **Files:**
 
@@ -139,7 +139,7 @@ git commit -m "build: require vscode node sqlite runtime"
 - Create: `test/sqliteWorkerBundle.test.ts`
 - Modify: `esbuild.js`
 
-- [ ] **Step 1：写 RPC 配对、错误和 dispose 失败测试**
+- [x] **Step 1：写 RPC 配对、错误和 dispose 失败测试**
 
 ```ts
 it("matches typed responses and propagates worker errors", async () => {
@@ -162,7 +162,7 @@ it("rejects every pending request when disposed", async () => {
 
 `test/sqliteWorkerBundle.test.ts` 断言 worker target 为 `node22`、format 为 `cjs`、outfile 为 `dist/sqliteIndexWorker.js`。
 
-- [ ] **Step 2：运行测试确认 RED**
+- [x] **Step 2：运行测试确认 RED**
 
 ```powershell
 npm test -- test/intelligence/sqliteIndexWorkerClient.test.ts test/sqliteWorkerBundle.test.ts
@@ -170,7 +170,7 @@ npm test -- test/intelligence/sqliteIndexWorkerClient.test.ts test/sqliteWorkerB
 
 Expected: FAIL，协议、client、worker entry 和 bundle config 不存在。
 
-- [ ] **Step 3：实现基础协议和 client**
+- [x] **Step 3：实现基础协议和 client**
 
 协议从以下联合开始：
 
@@ -187,7 +187,7 @@ export type SqliteWorkerResponse =
 
 client 使用递增 request ID 和 `Map<number, PendingRequest>`。`error`、非零 `exit` 和 dispose 都拒绝全部 pending；生产 API 不接受 SQL 字符串。
 
-- [ ] **Step 4：实现 worker bundle 并确认 GREEN**
+- [x] **Step 4：实现 worker bundle 并确认 GREEN**
 
 在 `esbuild.js` 增加独立 config，并让 build/watch 都处理三个 bundle：
 
@@ -210,7 +210,7 @@ Test-Path dist/sqliteIndexWorker.js
 
 Expected: 测试和构建通过，最后输出 `True`。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```powershell
 git add esbuild.js src/extension/intelligence/storage/sqliteIndexWorkerProtocol.ts src/extension/intelligence/storage/sqliteIndexWorker.ts src/extension/intelligence/storage/sqliteIndexWorkerClient.ts test/intelligence/sqliteIndexWorkerClient.test.ts test/sqliteWorkerBundle.test.ts
@@ -218,7 +218,7 @@ git diff --cached --check
 git commit -m "feat(intelligence): add sqlite index worker rpc"
 ```
 
-## Task 3：在最低 VS Code Extension Host 中验证 Worker 能力
+## Task 3：在最低 VS Code Extension Host 中验证 Worker 能力（已实现）
 
 **Files:**
 
@@ -232,7 +232,7 @@ git commit -m "feat(intelligence): add sqlite index worker rpc"
 - Modify: `test/packageManifest.test.ts`
 - Modify: `vitest.config.ts`
 
-- [ ] **Step 1：写 Extension Host probe runner**
+- [x] **Step 1：写 Extension Host probe runner**
 
 `run-sqlite-vscode-probe.mjs` 使用现有 `@vscode/test-electron`：
 
@@ -256,7 +256,7 @@ integration entry 导出 `async function run(): Promise<void>`，创建临时数
 
 当前分支还必须先把 `test/packageManifest.test.ts` 的期望改为 `^1.103.0`，运行该测试观察旧 manifest 的 RED，再执行 `npm install --save-dev @types/vscode@^1.103.0` 更新 `package.json` 和 `package-lock.json`。全新执行若已按修订后的 Task 1 使用 `1.103.0`，该断言保持 GREEN，但仍必须执行下面的 integration bundle RED。
 
-- [ ] **Step 2：运行确认 RED**
+- [x] **Step 2：运行确认 RED**
 
 ```powershell
 npm test -- test/packageManifest.test.ts
@@ -266,7 +266,7 @@ node scripts/run-sqlite-vscode-probe.mjs
 
 Expected: 当前分支的 manifest 测试先因仍为 `^1.101.0` 而 FAIL；integration runner 因 bundle 尚未接入而 FAIL。两项失败原因必须分别记录。
 
-- [ ] **Step 3：接入 integration bundle 和 script**
+- [x] **Step 3：接入 integration bundle 和 script**
 
 把 `package.json` 的运行时和类型基线统一改为：
 
@@ -332,7 +332,7 @@ test: {
 
 修改前运行一次全量 `npm test`，Expected: FAIL，源码 integration entry 和 `dist/test` bundle 均报告 `No test suite found`；修改后两者都不再进入 Vitest 收集列表。不要通过给 Extension Host entry 添加虚假 suite 或把 Vitest 打进宿主 bundle 来绕过失败。
 
-- [ ] **Step 4：运行最低宿主确认 GREEN**
+- [x] **Step 4：运行最低宿主确认 GREEN**
 
 ```powershell
 npm test -- test/packageManifest.test.ts
@@ -345,7 +345,7 @@ Expected: exit code 0；报告 VS Code `1.103.0`、Node `v22.17.0`，以及 sqli
 
 回归门禁还必须覆盖 `npm run package:vsix` 后直接执行 `npm run test:vscode:sqlite-probe`；该顺序用于证明 runner 能自行准备测试产物，同时 production VSIX 本身仍不包含 `dist/test/**`。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```powershell
 git add .vscodeignore package.json package-lock.json esbuild.js vitest.config.ts scripts/run-sqlite-vscode-probe.mjs test/packageManifest.test.ts test/integration/sqliteCapabilityExtension.test.ts test/fixtures/sqlite-probe/.gitkeep docs/superpowers/plans/2026-07-11-sqlite-index-storage-worker-plan.md
@@ -353,7 +353,7 @@ git diff --cached --check
 git commit -m "test(intelligence): verify sqlite worker in minimum vscode host"
 ```
 
-## Task 4：实现 Version 1 Schema 和 Migration
+## Task 4：实现 Version 1 Schema 和 Migration（已实现）
 
 **Files:**
 
@@ -366,7 +366,7 @@ git commit -m "test(intelligence): verify sqlite worker in minimum vscode host"
 - Modify: `src/extension/intelligence/storage/sqliteIndexWorker.ts`
 - Modify: `src/extension/intelligence/storage/sqliteIndexWorkerClient.ts`
 
-- [ ] **Step 1：写完整结构、幂等和备份失败测试**
+- [x] **Step 1：写完整结构、幂等和备份失败测试**
 
 测试必须使用 `PRAGMA table_info`、`foreign_key_list`、`index_list`，断言规格中的 14 个命名数据库对象（含 `chunk_fts`）、必需列、foreign key action 和索引。另加：
 
@@ -387,7 +387,7 @@ it("backs up an incompatible database before rebuilding", () => {
 });
 ```
 
-- [ ] **Step 2：运行确认 RED**
+- [x] **Step 2：运行确认 RED**
 
 ```powershell
 npm test -- test/intelligence/indexMigrations.test.ts
@@ -395,7 +395,7 @@ npm test -- test/intelligence/indexMigrations.test.ts
 
 Expected: FAIL，schema、migration 和 database opener 不存在。
 
-- [ ] **Step 3：实现精确 schema 和 migration**
+- [x] **Step 3：实现精确 schema 和 migration**
 
 `indexTypes.ts` 在本任务先定义以下四个联合类型：
 
@@ -415,7 +415,7 @@ export function applyIndexMigrations(database: DatabaseSync): void;
 
 `indexDatabase.ts` 负责 PRAGMA、unknown schema 备份主库/WAL/SHM、checkpoint 和 close；权限/I/O 错误原样抛出。
 
-- [ ] **Step 4：把 initialize 加入 RPC 并确认 GREEN**
+- [x] **Step 4：把 initialize 加入 RPC 并确认 GREEN**
 
 协议增加：
 
@@ -432,7 +432,7 @@ npm run typecheck
 
 Expected: 全部通过。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```powershell
 git add src/extension/intelligence/storage/indexTypes.ts src/extension/intelligence/storage/indexSchema.ts src/extension/intelligence/storage/indexMigrations.ts src/extension/intelligence/storage/indexDatabase.ts src/extension/intelligence/storage/sqliteIndexWorkerProtocol.ts src/extension/intelligence/storage/sqliteIndexWorker.ts src/extension/intelligence/storage/sqliteIndexWorkerClient.ts test/intelligence/indexMigrations.test.ts
@@ -589,9 +589,9 @@ git diff --cached --check
 git commit -m "feat(intelligence): enforce sqlite writer lease"
 ```
 
-**实际结果（2026-07-12）：** `index_meta` 使用 `writer_owner` 和 `writer_lease_expires_at` 保存绝对租约；获取、续租和 owner-match 释放均由 `BEGIN IMMEDIATE` 串行化。所有 Store 写 API 在自身事务内断言 owner 和绝对到期时间，部分缺失、空 owner 或非法 expiry 均 fail closed。Worker 初始化尝试获取 lease，每次写前按需获取或续期，Store 在写事务中再次断言；重新初始化和 dispose 仅由匹配 owner 释放。两个真实 SQLite 连接验证互斥、精确到期接管、非 owner 释放无效、过期 owner 无法写入和损坏 meta 拒绝。编译后的真实 Worker 完成 `initialize -> enqueueChanges -> getPendingJobs -> dispose`；最低 VS Code 宿主探针的新 Job 断言因下载连接 `ECONNRESET` 尚未复验，Task 7 阶段门禁必须重跑。定时续租、read_only 状态通知和自动恢复仍属于 Task 7。
+**实际结果（2026-07-12）：** `index_meta` 使用 `writer_owner` 和 `writer_lease_expires_at` 保存绝对租约；获取、续租和 owner-match 释放均由 `BEGIN IMMEDIATE` 串行化。所有 Store 写 API 在自身事务内断言 owner 和绝对到期时间，部分缺失、空 owner 或非法 expiry 均 fail closed。两个真实 SQLite 连接验证互斥、精确到期接管、非 owner 释放无效、过期 owner 无法写入和损坏 meta 拒绝。编译后的真实 Worker 完成 `initialize -> enqueueChanges -> getPendingJobs -> dispose`。
 
-## Task 7：接入 Lease 续租、只读降级和恢复（已实现，最低宿主待复验）
+## Task 7：接入 Lease 续租、只读降级和恢复（已实现）
 
 **Files:**
 
@@ -647,7 +647,7 @@ writer 以 TTL/3 续租；失败立即转 read_only 并停止写 RPC。read_only
 
 client 增加 `onDidChangeStatus(listener)`，只传递 `IndexWorkerStatus` DTO。后续 workspace adapter 用它在 writer/read_only 转换时启动或停止 watcher；listener disposal 不终止 worker。
 
-- [ ] **Step 4：运行本阶段全量验证（最低宿主增强探针待复验）**
+- [x] **Step 4：运行本阶段全量验证**
 
 ```powershell
 npm test -- test/intelligence/sqliteCapabilities.test.ts test/intelligence/indexMigrations.test.ts test/intelligence/sqliteIndexWorkerClient.test.ts test/intelligence/sqliteIndexJobs.test.ts test/intelligence/sqliteWriterLease.test.ts test/intelligence/sqliteIndexWorkerLease.test.ts test/sqliteWorkerBundle.test.ts
@@ -673,4 +673,6 @@ git commit -m "feat(intelligence): manage sqlite writer lifecycle"
 
 执行完成后记录：实际提交 hash、最低 VS Code/Electron/Node 版本、capability DTO、测试命令结果、与规格的偏差和技术债。只有 Task 1-7 全部完成后才能进入 chunk/snapshot 计划。
 
-**Task 7 实际结果（2026-07-12）：** 新增可独立测试的 Worker Runtime，writer 每 10 秒续租并周期恢复 stale job，续租失败转 `read_only`，read-only 每 10 秒有界重试，成功恢复后再发布 writer。Client 支持可释放的 `onDidChangeStatus`，单个 listener 抛错不影响其他 listener 或 RPC。dispose 清 timer、owner-match release、checkpoint 并保证 close。定向测试、typecheck、compile 和编译 Worker 真实流程通过；最低 VS Code `1.103.0` 增强探针下载 153.45 MB 归档时发生 `ECONNRESET`，故 Step 4 和存储阶段最低宿主门禁保持未完成。
+**Task 7 实际结果（2026-07-12）：** 新增可独立测试的 Worker Runtime，writer 每 10 秒续租并周期恢复 stale job，续租失败转 `read_only`，read-only 每 10 秒有界重试，成功恢复后再发布 writer。Client 支持可释放的 `onDidChangeStatus`，单个 listener 抛错不影响其他 listener 或 RPC。dispose 清 timer、owner-match release、checkpoint 并保证 close。存储矩阵 51 个测试、全量 224 个测试、typecheck、compile、diff check 和编译 Worker 真实流程通过。最低 VS Code `1.103.0` Extension Host 使用 Node `v22.17.0`，capability DTO 为 `{ sqlite: true, wal: true, foreignKeys: true, fts5: true }`，成功初始化 Worker 并持久化一条 pending job，exit code 0。
+
+**阶段提交：** `82c699c`、`7282137`、`26eabac`、`63c461c`、`5ee70c4`、`b3ae987`、`27cc2ef`、`a44907b`。当前无已知存储层功能缺口；生产 workspace adapter 接入、chunk/snapshot、检索和 embedding 属于后续子计划。
