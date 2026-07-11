@@ -388,13 +388,13 @@ git commit -m "build: add reproducible loopagent vsix"
 - Create: `test/vscodeVsixE2eScript.test.ts`
 - Modify: `docs/development.md`
 
-质量复审发现初版仅按用户数据目录子串筛选进程，并把未引用的路径参数直接交给 `Start-Process -ArgumentList`。前者可能关闭相似路径或仅把目录作为 workspace 打开的普通窗口，后者在仓库路径含空格时会破坏参数边界。本任务最终实现必须使用可执行纯函数测试覆盖精确参数匹配和 Windows 标准参数 quoting，并让 CIM、停止、等待和残留检查的失败全部可见。
+质量复审发现初版仅按用户数据目录子串筛选进程，并把未引用的路径参数直接交给 `Start-Process -ArgumentList`。前者可能关闭相似路径或仅把目录作为 workspace 打开的普通窗口，后者在仓库路径含空格时会破坏参数边界。此外，`Stop-Process` 成功后再按 PID 调用 `Wait-Process` 存在目标已经从进程表消失的竞态，会把成功停止误报为等待失败。本任务最终实现必须使用可执行测试覆盖精确参数匹配、Windows 标准参数 quoting 和真实进程停止等待，并让 CIM、停止、等待和残留检查的失败全部可见。
 
 - [ ] **Step 1：先写隔离启动脚本契约测试**
 
 创建 `test/vscodeVsixE2eScript.test.ts`：
 
-测试除读取主脚本契约外，还必须通过子进程实际执行 PowerShell 并导入 `scripts/vscodeVsixE2eSupport.psm1`，验证三个含空格的启动路径参数、嵌入双引号与结尾反斜杠的 quoting，以及精确 `--user-data-dir=<path>` 参数的正反边界。不得用注释或仅匹配 helper 名称代替纯函数行为测试。
+测试除读取主脚本契约外，还必须通过子进程实际执行 PowerShell 并导入 `scripts/vscodeVsixE2eSupport.psm1`，验证三个含空格的启动路径参数、嵌入双引号与结尾反斜杠的 quoting，以及精确 `--user-data-dir=<path>` 参数的正反边界。测试还要启动一个隐藏的临时 PowerShell `Start-Sleep` 进程，调用生产 helper 后刷新原 process object 并断言 `HasExited`，同时用不存在 PID 证明停止失败会产生非零结果。不得用注释或仅匹配 helper 名称代替可执行行为测试。
 
 ```ts
 import { readFileSync } from "node:fs";
@@ -482,8 +482,7 @@ function Get-ExistingLoopAgentVsixProcesses {
 if (-not $KeepExisting) {
   $processes = @(Get-ExistingLoopAgentVsixProcesses)
   foreach ($process in $processes) {
-    Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
-    Wait-Process -Id $process.ProcessId -Timeout 10 -ErrorAction Stop
+    Stop-VsixE2eProcess -TargetProcessId $process.ProcessId -TimeoutSeconds 10 | Out-Null
   }
   $remainingProcesses = @(Get-ExistingLoopAgentVsixProcesses)
   if ($remainingProcesses.Count -gt 0) {
@@ -513,7 +512,7 @@ Write-Host "remote-debugging-port: $debugPort"
 
 实现时允许为 `code.cmd` 的 Windows 启动行为增加最小兼容处理，但不得加入 `--extensionDevelopmentPath`，也不得创建带编号目录。
 
-`scripts/vscodeVsixE2eSupport.psm1` 只导出两个有真实调用点的纯函数：`ConvertTo-WindowsCommandLineArgument` 使用标准 Windows quoting 算法处理空白、嵌入双引号和结尾反斜杠；`Test-VsixE2eProcessCommandLine` 仅接受大小写不敏感、独立且完整的 `--user-data-dir=<exact path>` 参数。默认停止流程必须使用后者完成初次和停止后复查，`Stop-Process`、`Wait-Process` 或残留检查失败都必须终止脚本；`KeepExisting` 必须继续跳过整段停止与复查流程。
+`scripts/vscodeVsixE2eSupport.psm1` 只导出三个聚焦接口：纯函数 `ConvertTo-WindowsCommandLineArgument` 使用标准 Windows quoting 算法处理空白、嵌入双引号和结尾反斜杠；纯函数 `Test-VsixE2eProcessCommandLine` 仅接受大小写不敏感、独立且完整的 `--user-data-dir=<exact path>` 参数；`Stop-VsixE2eProcess` 使用 `Stop-Process -PassThru` 保存目标 process object，再通过 `Wait-Process -InputObject` 等待同一对象，避免按 PID 二次查找竞态。默认停止流程必须使用精确谓词完成初次和停止后复查，停止、等待或残留检查失败都必须终止脚本；`KeepExisting` 必须继续跳过整段停止与复查流程。
 
 - [ ] **Step 4：GREEN、文档同步与提交**
 
@@ -525,7 +524,7 @@ npm test -- test/vscodeVsixE2eScript.test.ts test/vscodeDebugScript.test.ts test
 
 Expected: 全部通过，且原有 `npm run debug:vscode` 契约没有回归。
 
-质量复审修复还必须运行全量 `npm test`、`npm run typecheck`、主脚本与 helper module 的 PowerShell AST 解析，以及 `git diff --check`。修复提交使用 `fix(test): isolate vsix e2e launch`，不得 amend 初版提交。
+质量复审修复还必须运行全量 `npm test`、`npm run typecheck`、主脚本与 helper module 的 PowerShell AST 解析，以及 `git diff --check`。精确匹配与 quoting 修复提交使用 `fix(test): isolate vsix e2e launch`；同一 process object 等待修复提交使用 `fix(test): wait for stopped vscode process`，均不得 amend 初版提交。
 
 更新 `docs/development.md`，增加：
 

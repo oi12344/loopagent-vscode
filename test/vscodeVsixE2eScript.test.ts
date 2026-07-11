@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -30,6 +30,47 @@ function runPowerShell<T>(body: string): T {
 }
 
 describe("VS Code VSIX E2E support", () => {
+  it("stops and waits for the same real process object", () => {
+    const hasExited = runPowerShell<boolean>([
+      "& {",
+      "$child = Start-Process powershell -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru",
+      "try {",
+      "Stop-VsixE2eProcess -TargetProcessId $child.Id -TimeoutSeconds 5 | Out-Null",
+      "$child.Refresh()",
+      "$child.HasExited",
+      "} finally {",
+      "$child.Refresh()",
+      "if (-not $child.HasExited) { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue }",
+      "}",
+      "}",
+    ].join("\n"));
+
+    expect(hasExited).toBe(true);
+  });
+
+  it("surfaces a real stop failure for a missing process", () => {
+    const result = spawnSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$ErrorActionPreference = 'Stop'; Import-Module $env:VSIX_E2E_SUPPORT_MODULE -Force; Stop-VsixE2eProcess -TargetProcessId 2147483647 -TimeoutSeconds 1",
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          VSIX_E2E_SUPPORT_MODULE: supportModulePath,
+        },
+      },
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("2147483647");
+  });
+
   it("quotes all three launch path arguments that contain spaces", () => {
     const quoted = runPowerShell<string[]>(
       "@(ConvertTo-WindowsCommandLineArgument '--user-data-dir=E:\\A B\\.local-vscode-user-data'; " +
@@ -103,8 +144,10 @@ describe("VS Code VSIX E2E script", () => {
     expect(script).toMatch(
       /Get-CimInstance Win32_Process[^\r\n]+-ErrorAction Stop/,
     );
-    expect(script).toMatch(/Stop-Process[^\r\n]+-ErrorAction Stop/);
-    expect(script).toMatch(/Wait-Process[^\r\n]+-ErrorAction Stop/);
+    expect(script).toContain(
+      "Stop-VsixE2eProcess -TargetProcessId $process.ProcessId -TimeoutSeconds 10 | Out-Null",
+    );
+    expect(script).not.toMatch(/Wait-Process\s+-Id/);
     expect(script).toContain("VSIX E2E process remained after termination");
     expect(script).not.toContain(
       "Get-CimInstance Win32_Process -Filter \"name = 'Code.exe'\" -ErrorAction SilentlyContinue",

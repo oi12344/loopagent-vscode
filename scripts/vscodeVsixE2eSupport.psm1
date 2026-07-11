@@ -69,7 +69,22 @@ function Test-VsixE2eProcessCommandLine {
   )
 }
 
+function Stop-VsixE2eProcess {
+  param(
+    [Parameter(Mandatory)]
+    [int]$TargetProcessId,
+
+    [int]$TimeoutSeconds = 10
+  )
+
+  $process = Stop-Process -Id $TargetProcessId -Force -PassThru -ErrorAction Stop
+  Wait-Process -InputObject $process -Timeout $TimeoutSeconds -ErrorAction Stop
+
+  return $process
+}
+
 Export-ModuleMember -Function @(
   "ConvertTo-WindowsCommandLineArgument",
-  "Test-VsixE2eProcessCommandLine"
+  "Test-VsixE2eProcessCommandLine",
+  "Stop-VsixE2eProcess"
 )

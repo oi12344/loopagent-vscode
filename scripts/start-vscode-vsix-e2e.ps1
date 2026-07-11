@@ -45,8 +45,7 @@ function Stop-ExistingLoopAgentVsixWindow {
   $processes = @(Get-ExistingLoopAgentVsixProcesses)
 
   foreach ($process in $processes) {
-    Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
-    Wait-Process -Id $process.ProcessId -Timeout 10 -ErrorAction Stop
+    Stop-VsixE2eProcess -TargetProcessId $process.ProcessId -TimeoutSeconds 10 | Out-Null
   }
 
   $remainingProcesses = @(Get-ExistingLoopAgentVsixProcesses)
