@@ -250,6 +250,8 @@ await runTests({
 });
 ```
 
+稳定 VSIX 门禁会在 probe 前执行 production package，该步骤会清理 `dist` 并且不会生成 integration entry。因此 runner 必须在调用 `runTests()` 前复用 `esbuild.js` 导出的 `sqliteWorkerConfig` 和 `sqliteProbeTestConfig`，只重建 `dist/sqliteIndexWorker.js` 与 `dist/test/sqliteCapabilityExtension.test.js`。probe 不得依赖此前运行过普通 `npm run compile` 的隐式残留。
+
 integration entry 导出 `async function run(): Promise<void>`，创建临时数据库，通过真实 `Worker` 加载 `dist/sqliteIndexWorker.js`，发送 `probe`，断言四项 capability 都为 true，最后 dispose worker 并删除临时目录。
 
 当前分支还必须先把 `test/packageManifest.test.ts` 的期望改为 `^1.103.0`，运行该测试观察旧 manifest 的 RED，再执行 `npm install --save-dev @types/vscode@^1.103.0` 更新 `package.json` 和 `package-lock.json`。全新执行若已按修订后的 Task 1 使用 `1.103.0`，该断言保持 GREEN，但仍必须执行下面的 integration bundle RED。
@@ -340,6 +342,8 @@ npm test
 ```
 
 Expected: exit code 0；报告 VS Code `1.103.0`、Node `v22.17.0`，以及 sqlite/WAL/foreignKeys/FTS5 全部为 true。失败时停止本计划，不继续 schema 实现。
+
+回归门禁还必须覆盖 `npm run package:vsix` 后直接执行 `npm run test:vscode:sqlite-probe`；该顺序用于证明 runner 能自行准备测试产物，同时 production VSIX 本身仍不包含 `dist/test/**`。
 
 - [ ] **Step 5：提交**
 

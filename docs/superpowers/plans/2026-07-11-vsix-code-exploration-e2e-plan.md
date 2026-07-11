@@ -931,6 +931,9 @@ git commit -m "test: automate installed code exploration e2e"
 
 - Create: `docs/superpowers/plans/2026-07-11-vsix-code-exploration-e2e-verification.md`
 - Modify: `docs/superpowers/plans/2026-07-11-vsix-code-exploration-e2e-plan.md`
+- Modify: `docs/superpowers/plans/2026-07-11-sqlite-index-storage-worker-plan.md`
+- Modify: `scripts/run-sqlite-vscode-probe.mjs`
+- Modify: `test/sqliteWorkerBundle.test.ts`
 
 - [ ] **Step 1：运行确定性门禁**
 
@@ -949,6 +952,7 @@ Expected:
 - Vitest 报告 0 failed。
 - TypeScript exit code 0。
 - `.artifacts/loopagent-vscode-0.0.1.vsix` 生成且清单验证通过。
+- SQLite probe 在 production package 清理 `dist` 后自行重建 worker 和 integration entry，不依赖普通开发构建残留。
 - VS Code `1.103.0` / Node `v22.17.0` 的 sqlite、WAL、foreign keys、FTS5 全为 true。
 - diff check exit code 0。
 
