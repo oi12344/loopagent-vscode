@@ -80,3 +80,16 @@ npm run debug:vscode
 5. 测试结束后关闭该调试窗口；如出现 `.local-vscode-user-data-*` 或 `.local-vscode-extensions-*` 这类带编号的目录，确认没有 VS Code 占用后再清理。
 
 注意事项：首次启动 VS Code 可能出现登录、欢迎页或扩展推荐弹窗，它们会遮挡 Webview。验证页面时应先关闭遮挡层，再用截图和实际交互确认功能，而不是只依赖 DOM 文本。
+
+## 稳定 VSIX E2E
+
+需要验证实际安装包而不是开发目录时，先生成固定 VSIX，再启动隔离窗口：
+
+```powershell
+npm run package:vsix
+npm run start:vscode:vsix-e2e
+```
+
+该入口把 `.artifacts\loopagent-vscode-0.0.1.vsix` 安装到固定的 `.local-vscode-extensions`，并复用固定的 `.local-vscode-user-data` 和 `9333` 远程调试端口。启动参数不包含 `--extensionDevelopmentPath`，因此验证对象是已安装的 VSIX，而不是当前源码目录中的开发扩展。
+
+默认启动前会关闭使用该固定用户数据目录的已有 VS Code 窗口，保证本项目只保留一个 VSIX E2E 窗口。真实 DeepSeek 验证可以继承当前进程的环境变量，但启动脚本、测试输出和验证记录不得输出任何密钥。
