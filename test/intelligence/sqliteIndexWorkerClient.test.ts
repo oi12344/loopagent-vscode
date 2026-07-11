@@ -52,6 +52,37 @@ function observeSettlement(promise: Promise<unknown>): () => boolean {
 }
 
 describe("SqliteIndexWorkerClient", () => {
+  it("sends fixed job queue DTOs without exposing SQL", async () => {
+    const worker = new FakeWorker();
+    const client = createSqliteIndexWorkerClient({ worker });
+    const claim = { id: 7, fileUri: "file:///src/a.ts", eventKind: "change" as const, claimedAt: 2_000 };
+
+    const enqueue = client.enqueueChanges([{ fileUri: "file:///src/a.ts", eventKind: "change" }]);
+    worker.respond({ id: 1, ok: true, value: undefined });
+    await enqueue;
+    const pending = client.getPendingJobs();
+    worker.respond({ id: 2, ok: true, value: [] });
+    await expect(pending).resolves.toEqual([]);
+    const claimed = client.claimNextJob("owner-a");
+    worker.respond({ id: 3, ok: true, value: claim });
+    await expect(claimed).resolves.toEqual(claim);
+    const completed = client.completeJob(claim);
+    worker.respond({ id: 4, ok: true, value: undefined });
+    await completed;
+    const failed = client.failJob(claim, "parse failed");
+    worker.respond({ id: 5, ok: true, value: undefined });
+    await failed;
+
+    expect(worker.requests).toEqual([
+      { id: 1, kind: "enqueueChanges", changes: [{ fileUri: "file:///src/a.ts", eventKind: "change" }] },
+      { id: 2, kind: "getPendingJobs" },
+      { id: 3, kind: "claimNextJob", ownerId: "owner-a" },
+      { id: 4, kind: "completeJob", claim },
+      { id: 5, kind: "failJob", claim, error: "parse failed" },
+    ]);
+    expect(JSON.stringify(worker.requests)).not.toContain("SELECT");
+  });
+
   it("increments request IDs and matches out-of-order responses", async () => {
     const worker = new FakeWorker();
     const client = createSqliteIndexWorkerClient({ worker });

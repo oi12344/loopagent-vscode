@@ -1,5 +1,8 @@
 import type { SqliteCapabilities } from "./sqliteCapabilities";
 import type {
+  ClaimedIndexJob,
+  IndexChange,
+  StoredIndexJob,
   SqliteWorkerRequest,
   SqliteWorkerResponse,
 } from "./sqliteIndexWorkerProtocol";
@@ -23,6 +26,11 @@ type SqliteWorkerTransport = {
 export type SqliteIndexWorkerClient = {
   probe(databasePath: string): Promise<SqliteCapabilities>;
   initialize(databasePath: string, ownerId: string): Promise<unknown>;
+  enqueueChanges(changes: readonly IndexChange[]): Promise<void>;
+  getPendingJobs(): Promise<StoredIndexJob[]>;
+  claimNextJob(ownerId: string): Promise<ClaimedIndexJob | undefined>;
+  completeJob(claim: ClaimedIndexJob): Promise<void>;
+  failJob(claim: ClaimedIndexJob, error: string): Promise<void>;
   getStatus(): Promise<unknown>;
   dispose(): Promise<void>;
 };
@@ -54,6 +62,26 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
 
   initialize(databasePath: string, ownerId: string): Promise<unknown> {
     return this.request((id) => ({ id, kind: "initialize", databasePath, ownerId }));
+  }
+
+  enqueueChanges(changes: readonly IndexChange[]): Promise<void> {
+    return this.request((id) => ({ id, kind: "enqueueChanges", changes }));
+  }
+
+  getPendingJobs(): Promise<StoredIndexJob[]> {
+    return this.request((id) => ({ id, kind: "getPendingJobs" }));
+  }
+
+  claimNextJob(ownerId: string): Promise<ClaimedIndexJob | undefined> {
+    return this.request((id) => ({ id, kind: "claimNextJob", ownerId }));
+  }
+
+  completeJob(claim: ClaimedIndexJob): Promise<void> {
+    return this.request((id) => ({ id, kind: "completeJob", claim }));
+  }
+
+  failJob(claim: ClaimedIndexJob, error: string): Promise<void> {
+    return this.request((id) => ({ id, kind: "failJob", claim, error }));
   }
 
   getStatus(): Promise<unknown> {

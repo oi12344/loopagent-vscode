@@ -2,6 +2,7 @@ import { parentPort } from "node:worker_threads";
 
 import { probeSqliteCapabilities } from "./sqliteCapabilities";
 import { openIndexDatabase, type OpenIndexDatabaseResult } from "./indexDatabase";
+import { SqliteIndexStore } from "./sqliteIndexStore";
 import type {
   SqliteWorkerRequest,
   SqliteWorkerResponse,
@@ -15,6 +16,7 @@ const workerPort = parentPort;
 let closing = false;
 let requestQueue = Promise.resolve();
 let indexDatabase: OpenIndexDatabaseResult | undefined;
+let indexStore: SqliteIndexStore | undefined;
 
 workerPort.on("message", (request: SqliteWorkerRequest) => {
   requestQueue = requestQueue.then(() => {
@@ -46,18 +48,41 @@ function dispatch(request: SqliteWorkerRequest): unknown {
     case "probe":
       return probeSqliteCapabilities(request.databasePath);
     case "initialize": {
-      indexDatabase?.close();
+      const previousDatabase = indexDatabase;
+      indexDatabase = undefined;
+      indexStore = undefined;
+      previousDatabase?.close();
       const capabilities = probeSqliteCapabilities(request.databasePath);
       indexDatabase = openIndexDatabase(request.databasePath);
+      indexStore = new SqliteIndexStore(indexDatabase.database);
       return { schemaVersion: 1, capabilities };
     }
+    case "enqueueChanges":
+      requireStore().enqueueChanges(request.changes);
+      return undefined;
+    case "getPendingJobs":
+      return requireStore().listPendingJobs();
+    case "claimNextJob":
+      return requireStore().claimNextJob(request.ownerId);
+    case "completeJob":
+      requireStore().completeJob(request.claim);
+      return undefined;
+    case "failJob":
+      requireStore().failJob(request.claim, request.error);
+      return undefined;
     case "getStatus":
       return { state: "idle" };
     case "dispose":
       indexDatabase?.close();
       indexDatabase = undefined;
+      indexStore = undefined;
       return undefined;
   }
+}
+
+function requireStore(): SqliteIndexStore {
+  if (!indexStore) throw new Error("SQLite index worker is not initialized");
+  return indexStore;
 }
 
 function postResponse(response: SqliteWorkerResponse): void {

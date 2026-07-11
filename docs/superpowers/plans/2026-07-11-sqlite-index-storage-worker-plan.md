@@ -440,7 +440,7 @@ git diff --cached --check
 git commit -m "feat(intelligence): add sqlite index schema"
 ```
 
-## Task 5：实现可恢复持久化 Job 队列
+## Task 5：实现可恢复持久化 Job 队列（已实现）
 
 **Files:**
 
@@ -450,7 +450,7 @@ git commit -m "feat(intelligence): add sqlite index schema"
 - Modify: `src/extension/intelligence/storage/sqliteIndexWorker.ts`
 - Modify: `src/extension/intelligence/storage/sqliteIndexWorkerClient.ts`
 
-- [ ] **Step 1：写合并、处理中再入队和恢复失败测试**
+- [x] **Step 1：写合并、处理中再入队和恢复失败测试**
 
 ```ts
 it("keeps a new event queued when it arrives during a running job", () => {
@@ -471,7 +471,7 @@ it("recovers only stale running jobs", () => {
 });
 ```
 
-- [ ] **Step 2：运行确认 RED**
+- [x] **Step 2：运行确认 RED**
 
 ```powershell
 npm test -- test/intelligence/sqliteIndexJobs.test.ts
@@ -479,7 +479,7 @@ npm test -- test/intelligence/sqliteIndexJobs.test.ts
 
 Expected: FAIL，store 和 job API 不存在。
 
-- [ ] **Step 3：实现 store job API**
+- [x] **Step 3：实现 store job API**
 
 ```ts
 export type IndexChange = {
@@ -507,7 +507,7 @@ export class SqliteIndexStore {
 
 `claimedAt` 使用 claim 事务写入的 `updated_at`；complete/fail 条件必须同时匹配 id、running 和 claimedAt。
 
-- [ ] **Step 4：扩展 RPC 并确认 GREEN**
+- [x] **Step 4：扩展 RPC 并确认 GREEN**
 
 增加 `enqueueChanges`、`getPendingJobs`、`claimNextJob`、`completeJob`、`failJob` 的固定 DTO。运行：
 
@@ -518,13 +518,15 @@ npm run typecheck
 
 Expected: 全部通过。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```powershell
 git add src/extension/intelligence/storage/sqliteIndexStore.ts src/extension/intelligence/storage/sqliteIndexWorkerProtocol.ts src/extension/intelligence/storage/sqliteIndexWorker.ts src/extension/intelligence/storage/sqliteIndexWorkerClient.ts test/intelligence/sqliteIndexJobs.test.ts
 git diff --cached --check
 git commit -m "feat(intelligence): persist sqlite index jobs"
 ```
+
+**实际结果（2026-07-12）：** 新增 `SqliteIndexStore`，实现单条事件 upsert、批量事件事务、原子 claim、基于单调 `claimedAt` 的完成/失败保护、pending 过滤和超时恢复；Worker/Client 仅暴露固定 DTO，重新初始化失败不会保留已关闭连接。针对性测试、全量测试、`npm run typecheck` 和 `npm run compile` 通过。Task 6 的 writer lease 不在本任务范围内。
 
 ## Task 6：实现 Writer Lease 数据库原语
 
