@@ -460,7 +460,8 @@ if (-not (Test-Path -LiteralPath $vsixPath)) {
 }
 
 function Find-CodeCli {
-  $command = Get-Command code -CommandType Application -ErrorAction SilentlyContinue
+  $command = Get-Command code -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1
   if ($command) { return $command.Path }
   $candidates = @(
     (Join-Path $env:LOCALAPPDATA "Programs\Microsoft VS Code\bin\code.cmd"),
@@ -654,21 +655,24 @@ const CODE_EXPLORATION_QUESTION =
   "追踪 LoopAgentChatViewProvider.startRun 到生成代码语义上下文的调用链，并说明工作区源码缓存何时失效。请列出关键源码文件和函数。";
 
 const REQUIRED_STATES = ["Building code context", "Calling DeepSeek deepseek-v4-flash", "Done"];
-const ANCHORS = [
-  "createConfiguredAgentRunner",
-  "systemPromptProvider",
-  "buildCodeIntelligencePrompt",
-  "createVsCodeWorkspaceIntelligence",
-  "sourceCache",
-  "dirtyPaths",
-  "watcher",
+const ANCHOR_GROUPS = [
+  ["createConfiguredAgentRunner"],
+  ["systemPromptProvider"],
+  ["buildCodeIntelligencePrompt"],
+  ["createVsCodeWorkspaceIntelligence"],
+  ["sourceCache", "dirtyPaths", "watcher"],
 ];
-const PATH_PATTERN = /src\/(?:extension\.ts|extension\/[A-Za-z0-9_./-]+\.ts)/g;
+const PATH_PATTERN =
+  /src\/(?:extension\.ts|extension\/[A-Za-z0-9_./-]+\.ts)(?![A-Za-z0-9_])/g;
 
 function evaluateCodeExploration({ process, answer }) {
   const missingStates = REQUIRED_STATES.filter((state) => !process.includes(state));
-  const matchedAnchors = [...new Set(ANCHORS.filter((anchor) => answer.includes(anchor)))];
-  const matchedPaths = [...new Set(answer.match(PATH_PATTERN) ?? [])];
+  const matchedAnchors = ANCHOR_GROUPS.flatMap((group) => {
+    const matched = group.find((anchor) => answer.includes(anchor));
+    return matched ? [matched] : [];
+  });
+  const normalizedAnswer = answer.replaceAll("\\", "/");
+  const matchedPaths = [...new Set(normalizedAnswer.match(PATH_PATTERN) ?? [])];
   const hasRequiredIntelligencePath = matchedPaths.some((path) =>
     path === "src/extension/model/providerRegistry.ts" ||
     path === "src/extension/intelligence/vscodeWorkspaceIntelligence.ts",
@@ -757,33 +761,27 @@ async function connectCdp(webSocketDebuggerUrl) {
   return { send, evaluate, close: () => socket.close() };
 }
 
-async function dispatchKey(session, type, key, code, virtualKeyCode, modifiers = 0) {
-  await session.send("Input.dispatchKeyEvent", {
-    type,
-    key,
-    code,
-    windowsVirtualKeyCode: virtualKeyCode,
-    nativeVirtualKeyCode: virtualKeyCode,
-    modifiers,
-  });
-}
-
-async function openFocusChatCommand(session) {
+async function openLoopAgentView(session) {
   await session.send("Runtime.enable");
   await session.send("Page.enable");
   await session.send("Page.bringToFront");
-  await dispatchKey(session, "rawKeyDown", "Control", "ControlLeft", 17, 2);
-  await dispatchKey(session, "rawKeyDown", "Shift", "ShiftLeft", 16, 10);
-  await dispatchKey(session, "rawKeyDown", "P", "KeyP", 80, 10);
-  await dispatchKey(session, "keyUp", "P", "KeyP", 80, 10);
-  await dispatchKey(session, "keyUp", "Shift", "ShiftLeft", 16, 2);
-  await dispatchKey(session, "keyUp", "Control", "ControlLeft", 17);
-  await delay(700);
-  await session.send("Input.insertText", { text: "LoopAgent: Focus Chat" });
-  await delay(300);
-  await dispatchKey(session, "rawKeyDown", "Enter", "Enter", 13);
-  await dispatchKey(session, "keyUp", "Enter", "Enter", 13);
-  await delay(2_000);
+  const deadline = Date.now() + TARGET_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const opened = await session.evaluate(`(() => {
+      const activityEntry = [...document.querySelectorAll("a")].find(
+        (element) => element.getAttribute("aria-label") === "LoopAgent",
+      );
+      if (!(activityEntry instanceof HTMLElement)) return false;
+      activityEntry.click();
+      return true;
+    })()`);
+    if (opened) {
+      await delay(2_000);
+      return;
+    }
+    await delay(500);
+  }
+  throw new Error("LoopAgent activity entry not found within 20s");
 }
 
 async function findWebviewTarget() {
@@ -806,34 +804,49 @@ async function submitQuestion(session, question) {
   await session.send("Runtime.enable");
   const payload = JSON.stringify(question);
   const submitted = await session.evaluate(`(async () => {
-    const modelButton = [...document.querySelectorAll("button")]
+    const webviewDocument =
+      document.getElementById("active-frame")?.contentDocument ?? document;
+    const webviewWindow = webviewDocument.defaultView;
+    if (!webviewWindow) return { ok: false, reason: "webview window missing" };
+    const modelButton = [...webviewDocument.querySelectorAll("button")]
       .find((button) => button.textContent?.trim() === "DeepSeek v4 Flash");
     if (!modelButton) return { ok: false, reason: "model button missing" };
     modelButton.click();
     await new Promise((resolve) => setTimeout(resolve, 100));
-    const modelItem = document.querySelector('[role="menuitem"][aria-label^="DeepSeek v4 Flash"]');
+    const modelItem = webviewDocument.querySelector('[role="menuitem"][aria-label^="DeepSeek v4 Flash"]');
     modelItem?.click();
-    const textarea = document.querySelector("#message-input");
-    if (!(textarea instanceof HTMLTextAreaElement)) return { ok: false, reason: "textarea missing" };
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    const textarea = webviewDocument.querySelector("#message-input");
+    if (!(textarea instanceof webviewWindow.HTMLTextAreaElement)) return { ok: false, reason: "textarea missing" };
+    const setter = Object.getOwnPropertyDescriptor(
+      webviewWindow.HTMLTextAreaElement.prototype,
+      "value",
+    )?.set;
+    if (!setter) return { ok: false, reason: "textarea setter missing" };
     setter.call(textarea, ${payload});
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    textarea.dispatchEvent(new webviewWindow.Event("input", { bubbles: true }));
     await new Promise((resolve) => setTimeout(resolve, 100));
-    const submit = document.querySelector('form.chat-composer button[type="submit"]');
-    if (!(submit instanceof HTMLButtonElement) || submit.disabled) {
+    const submit = webviewDocument.querySelector('form.chat-composer button[type="submit"]');
+    if (!(submit instanceof webviewWindow.HTMLButtonElement) || submit.disabled) {
       return { ok: false, reason: "submit button unavailable" };
     }
+    const assistantTurnCount = webviewDocument.querySelectorAll(
+      ".message-assistant",
+    ).length;
     submit.click();
-    return { ok: true };
+    return { ok: true, assistantTurnCount };
   })()`);
   if (!submitted?.ok) throw new Error(`Could not submit code exploration question: ${submitted?.reason}`);
+  return submitted;
 }
 
-async function waitForAnswer(session) {
+async function waitForAnswer(session, previousTurnCount) {
   const deadline = Date.now() + WAIT_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const state = await session.evaluate(`(() => {
-      const turns = [...document.querySelectorAll(".message-assistant")];
+      const webviewDocument =
+        document.getElementById("active-frame")?.contentDocument ?? document;
+      const turns = [...webviewDocument.querySelectorAll(".message-assistant")];
+      if (turns.length <= ${previousTurnCount}) return null;
       const turn = turns.at(-1);
       return {
         process: turn?.querySelector(".process-details")?.innerText ?? "",
@@ -861,11 +874,11 @@ if (!workbench?.webSocketDebuggerUrl) throw new Error("VS Code workbench CDP tar
 const workbenchSession = await connectCdp(workbench.webSocketDebuggerUrl);
 let webviewSession;
 try {
-  await openFocusChatCommand(workbenchSession);
+  await openLoopAgentView(workbenchSession);
   const webviewTarget = await findWebviewTarget();
   webviewSession = await connectCdp(webviewTarget.webSocketDebuggerUrl);
-  await submitQuestion(webviewSession, CODE_EXPLORATION_QUESTION);
-  const result = await waitForAnswer(webviewSession);
+  const submission = await submitQuestion(webviewSession, CODE_EXPLORATION_QUESTION);
+  const result = await waitForAnswer(webviewSession, submission.assistantTurnCount);
   const evaluation = evaluateCodeExploration(result);
   await captureWorkbenchScreenshot(workbenchSession);
   console.log(JSON.stringify({

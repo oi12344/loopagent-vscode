@@ -98,17 +98,38 @@ describe("code exploration E2E oracle", () => {
     const result = evaluateCodeExploration({
       process: "Building code context\nCalling DeepSeek deepseek-v4-flash\nDone",
       answer: [
-        "`src\\extension\\intelligence\\vscodeWorkspaceIntelligence.ts`,, uses sourceCache and dirtyPaths.",
-        "src/extension/intelligence/vscodeWorkspaceIntelligence.ts... sourceCache!",
-        "**src\\extension.ts** connects watcher; watcher.",
+        "`src\\extension\\intelligence\\vscodeWorkspaceIntelligence.ts`,, uses createConfiguredAgentRunner and sourceCache.",
+        "src/extension/intelligence/vscodeWorkspaceIntelligence.ts... sourceCache and dirtyPaths!",
+        "**src\\extension.ts** connects systemPromptProvider and watcher; watcher.",
       ].join("\n"),
     });
 
     expect(result.passed).toBe(true);
-    expect(result.matchedAnchors).toEqual(["sourceCache", "dirtyPaths", "watcher"]);
+    expect(result.matchedAnchors).toEqual([
+      "createConfiguredAgentRunner",
+      "systemPromptProvider",
+      "sourceCache",
+    ]);
     expect(result.matchedPaths).toEqual([
       "src/extension/intelligence/vscodeWorkspaceIntelligence.ts",
       "src/extension.ts",
+    ]);
+  });
+
+  it("counts cache invalidation as one anchor and rejects a tsx path prefix", () => {
+    const result = evaluateCodeExploration({
+      process: "Building code context\nCalling DeepSeek deepseek-v4-flash\nDone",
+      answer: [
+        "src/extension/model/providerRegistry.ts",
+        "src/extension/not-real.tsx",
+        "sourceCache dirtyPaths watcher",
+      ].join("\n"),
+    });
+
+    expect(result.passed).toBe(false);
+    expect(result.matchedAnchors).toEqual(["sourceCache"]);
+    expect(result.matchedPaths).toEqual([
+      "src/extension/model/providerRegistry.ts",
     ]);
   });
 });
@@ -126,18 +147,22 @@ describe("code exploration CDP runner contract", () => {
     expect(runner).not.toContain("Authorization");
   });
 
-  it("pins the isolated CDP endpoint, timeout, screenshot, and command", () => {
+  it("pins the isolated CDP endpoint, timeout, screenshot, and activity entry", () => {
     const runner = readRunner();
     expect(runner).toContain("const CDP_PORT = 9333");
     expect(runner).toContain("const WAIT_TIMEOUT_MS = 120_000");
     expect(runner).toContain("code-exploration-e2e.png");
-    expect(runner).toContain("LoopAgent: Focus Chat");
+    expect(runner).toContain('getAttribute("aria-label") === "LoopAgent"');
+    expect(runner).toContain("activityEntry.click()");
     expect(runner).toContain("workbench.html");
     expect(runner).toContain("vscode-webview");
   });
 
   it("uses the real Webview composer and assistant result selectors", () => {
     const runner = readRunner();
+    expect(runner).toContain('getElementById("active-frame")');
+    expect(runner).toContain("contentDocument ?? document");
+    expect(runner).toContain("webviewDocument.defaultView");
     expect(runner).toContain("DeepSeek v4 Flash");
     expect(runner).toContain("#message-input");
     expect(runner).toContain('form.chat-composer button[type="submit"]');
@@ -157,7 +182,7 @@ describe("code exploration CDP runner contract", () => {
   it("waits for an assistant turn created by the current submission", () => {
     const runner = readRunner();
     expect(runner).toContain("assistantTurnCount");
-    expect(runner).toContain("turns.length <= previousTurnCount");
+    expect(runner).toContain('turns.length <= ${previousTurnCount}');
   });
 
   it("prefers a LoopAgent target over a generic VS Code Webview", () => {

@@ -193,40 +193,27 @@ async function connectCdp(webSocketDebuggerUrl) {
   return { send, evaluate, close };
 }
 
-async function dispatchKey(
-  session,
-  type,
-  key,
-  code,
-  virtualKeyCode,
-  modifiers = 0,
-) {
-  await session.send("Input.dispatchKeyEvent", {
-    type,
-    key,
-    code,
-    windowsVirtualKeyCode: virtualKeyCode,
-    nativeVirtualKeyCode: virtualKeyCode,
-    modifiers,
-  });
-}
-
-async function openFocusChatCommand(session) {
+async function openLoopAgentView(session) {
   await session.send("Runtime.enable");
   await session.send("Page.enable");
   await session.send("Page.bringToFront");
-  await dispatchKey(session, "rawKeyDown", "Control", "ControlLeft", 17, 2);
-  await dispatchKey(session, "rawKeyDown", "Shift", "ShiftLeft", 16, 10);
-  await dispatchKey(session, "rawKeyDown", "P", "KeyP", 80, 10);
-  await dispatchKey(session, "keyUp", "P", "KeyP", 80, 10);
-  await dispatchKey(session, "keyUp", "Shift", "ShiftLeft", 16, 2);
-  await dispatchKey(session, "keyUp", "Control", "ControlLeft", 17);
-  await delay(700);
-  await session.send("Input.insertText", { text: "LoopAgent: Focus Chat" });
-  await delay(300);
-  await dispatchKey(session, "rawKeyDown", "Enter", "Enter", 13);
-  await dispatchKey(session, "keyUp", "Enter", "Enter", 13);
-  await delay(2_000);
+  const deadline = Date.now() + TARGET_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const opened = await session.evaluate(`(() => {
+      const activityEntry = [...document.querySelectorAll("a")].find(
+        (element) => element.getAttribute("aria-label") === "LoopAgent",
+      );
+      if (!(activityEntry instanceof HTMLElement)) return false;
+      activityEntry.click();
+      return true;
+    })()`);
+    if (opened) {
+      await delay(2_000);
+      return;
+    }
+    await delay(500);
+  }
+  throw new Error("LoopAgent activity entry not found within 20s");
 }
 
 async function findWebviewTarget() {
@@ -266,20 +253,26 @@ async function submitQuestion(session, question) {
   await session.send("Runtime.enable");
   const payload = JSON.stringify(question);
   const submitted = await session.evaluate(`(async () => {
+    const webviewDocument =
+      document.getElementById("active-frame")?.contentDocument ?? document;
+    const webviewWindow = webviewDocument.defaultView;
+    if (!webviewWindow) {
+      return { ok: false, reason: "webview window missing" };
+    }
     const modelLabel = "DeepSeek v4 Flash";
-    const modelButton = document.querySelector(
+    const modelButton = webviewDocument.querySelector(
       "form.chat-composer .composer-tools .tool-menu-anchor:first-child > button",
     );
-    if (!(modelButton instanceof HTMLButtonElement)) {
+    if (!(modelButton instanceof webviewWindow.HTMLButtonElement)) {
       return { ok: false, reason: "model button missing" };
     }
     if (modelButton.textContent?.trim() !== modelLabel) {
       modelButton.click();
       await new Promise((resolve) => setTimeout(resolve, 100));
-      const modelItem = [...document.querySelectorAll('[role="menuitem"]')].find(
+      const modelItem = [...webviewDocument.querySelectorAll('[role="menuitem"]')].find(
         (item) => item.getAttribute("aria-label")?.startsWith(modelLabel),
       );
-      if (!(modelItem instanceof HTMLButtonElement)) {
+      if (!(modelItem instanceof webviewWindow.HTMLButtonElement)) {
         return { ok: false, reason: "DeepSeek model option missing" };
       }
       modelItem.click();
@@ -289,26 +282,26 @@ async function submitQuestion(session, question) {
       return { ok: false, reason: "DeepSeek model selection not confirmed" };
     }
 
-    const textarea = document.querySelector("#message-input");
-    if (!(textarea instanceof HTMLTextAreaElement)) {
+    const textarea = webviewDocument.querySelector("#message-input");
+    if (!(textarea instanceof webviewWindow.HTMLTextAreaElement)) {
       return { ok: false, reason: "textarea missing" };
     }
     const setter = Object.getOwnPropertyDescriptor(
-      HTMLTextAreaElement.prototype,
+      webviewWindow.HTMLTextAreaElement.prototype,
       "value",
     )?.set;
     if (!setter) return { ok: false, reason: "textarea setter missing" };
     setter.call(textarea, ${payload});
-    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    textarea.dispatchEvent(new webviewWindow.Event("input", { bubbles: true }));
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    const submit = document.querySelector(
+    const submit = webviewDocument.querySelector(
       'form.chat-composer button[type="submit"]',
     );
-    if (!(submit instanceof HTMLButtonElement) || submit.disabled) {
+    if (!(submit instanceof webviewWindow.HTMLButtonElement) || submit.disabled) {
       return { ok: false, reason: "submit button unavailable" };
     }
-    const assistantTurnCount = document.querySelectorAll(
+    const assistantTurnCount = webviewDocument.querySelectorAll(
       ".message-assistant",
     ).length;
     submit.click();
@@ -327,8 +320,10 @@ async function waitForAnswer(session, previousTurnCount) {
   const deadline = Date.now() + WAIT_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const state = await session.evaluate(`(() => {
-      const turns = [...document.querySelectorAll(".message-assistant")];
-      if (turns.length <= previousTurnCount) return null;
+      const webviewDocument =
+        document.getElementById("active-frame")?.contentDocument ?? document;
+      const turns = [...webviewDocument.querySelectorAll(".message-assistant")];
+      if (turns.length <= ${previousTurnCount}) return null;
       const turn = turns.at(-1);
       return {
         process: turn?.querySelector(".process-details")?.innerText ?? "",
@@ -376,7 +371,7 @@ async function main() {
     }
 
     workbenchSession = await connectCdp(workbench.webSocketDebuggerUrl);
-    await openFocusChatCommand(workbenchSession);
+    await openLoopAgentView(workbenchSession);
     const webviewTarget = await findWebviewTarget();
     webviewSession = await connectCdp(webviewTarget.webSocketDebuggerUrl);
     const submission = await submitQuestion(

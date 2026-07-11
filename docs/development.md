@@ -75,7 +75,7 @@ npm run debug:vscode
 
 1. 运行 `npm test`、`npm run typecheck`、`npm run compile`。
 2. 运行 `npm run debug:vscode`。
-3. 在唯一的 Extension Development Host 中执行 `LoopAgent: Open Panel`。
+3. 在唯一的 Extension Development Host 中点击 Activity Bar 的 `LoopAgent` 入口打开 Chat 视图。
 4. 修改代码后优先在同一窗口中执行 `Developer: Reload Window`，不要重复启动新窗口。
 5. 测试结束后关闭该调试窗口；如出现 `.local-vscode-user-data-*` 或 `.local-vscode-extensions-*` 这类带编号的目录，确认没有 VS Code 占用后再清理。
 

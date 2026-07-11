@@ -6,16 +6,15 @@ const REQUIRED_STATES = [
   "Calling DeepSeek deepseek-v4-flash",
   "Done",
 ];
-const ANCHORS = [
-  "createConfiguredAgentRunner",
-  "systemPromptProvider",
-  "buildCodeIntelligencePrompt",
-  "createVsCodeWorkspaceIntelligence",
-  "sourceCache",
-  "dirtyPaths",
-  "watcher",
+const ANCHOR_GROUPS = [
+  ["createConfiguredAgentRunner"],
+  ["systemPromptProvider"],
+  ["buildCodeIntelligencePrompt"],
+  ["createVsCodeWorkspaceIntelligence"],
+  ["sourceCache", "dirtyPaths", "watcher"],
 ];
-const PATH_PATTERN = /src\/(?:extension\.ts|extension\/[A-Za-z0-9_./-]+\.ts)/g;
+const PATH_PATTERN =
+  /src\/(?:extension\.ts|extension\/[A-Za-z0-9_./-]+\.ts)(?![A-Za-z0-9_])/g;
 const REQUIRED_INTELLIGENCE_PATHS = new Set([
   "src/extension/model/providerRegistry.ts",
   "src/extension/intelligence/vscodeWorkspaceIntelligence.ts",
@@ -23,7 +22,10 @@ const REQUIRED_INTELLIGENCE_PATHS = new Set([
 
 function evaluateCodeExploration({ process, answer }) {
   const missingStates = REQUIRED_STATES.filter((state) => !process.includes(state));
-  const matchedAnchors = ANCHORS.filter((anchor) => answer.includes(anchor));
+  const matchedAnchors = ANCHOR_GROUPS.flatMap((group) => {
+    const matched = group.find((anchor) => answer.includes(anchor));
+    return matched ? [matched] : [];
+  });
   const normalizedAnswer = answer.replaceAll("\\", "/");
   const matchedPaths = [...new Set(normalizedAnswer.match(PATH_PATTERN) ?? [])];
   const hasRequiredIntelligencePath = matchedPaths.some((path) =>

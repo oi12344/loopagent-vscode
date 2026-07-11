@@ -194,6 +194,7 @@ describe("VS Code VSIX E2E script", () => {
   it("finds the Code CLI and launches an isolated new window", () => {
     expect(script).toContain("function Find-CodeCli");
     expect(script).toContain("Get-Command code -CommandType Application");
+    expect(script).toContain("Select-Object -First 1");
     expect(script).toContain("return $command.Path");
     expect(script).toContain("$env:LOCALAPPDATA");
     expect(script).toContain("$env:ProgramFiles");

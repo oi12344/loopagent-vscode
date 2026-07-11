@@ -13,7 +13,8 @@ $extensionsDir = Join-Path $projectRoot ".local-vscode-extensions"
 $debugPort = 9333
 
 function Find-CodeCli {
-  $command = Get-Command code -CommandType Application -ErrorAction SilentlyContinue
+  $command = Get-Command code -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1
   if ($command) {
     return $command.Path
   }
