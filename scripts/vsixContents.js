@@ -17,7 +17,7 @@ const REQUIRED_ENTRIES = [
 const FORBIDDEN_PATH =
   /^extension\/(?:dist\/test|test|src|scripts|docs|\.local-vscode-[^/]*|\.artifacts)(?:\/|$)/i;
 const SENSITIVE_PATH =
-  /(?:^|\/)\.env(?:[./_-]|$)|(?:^|[\/._-])(?:secret|token)(?:[\/._-]|$)|(?:^|[\/._-])api[-_. ]?key(?:[\/._-]|$)/i;
+  /(?:^|\/)\.env(?:[./_-]|$)|secret|token|api[-_]?key/i;
 
 function normalizeEntry(entry) {
   return entry.replaceAll("\\", "/");
