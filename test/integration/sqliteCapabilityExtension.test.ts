@@ -34,6 +34,13 @@ export async function run(): Promise<void> {
     console.log(
       `[sqlite-probe] capabilities sqlite=${capabilities.sqlite} wal=${capabilities.wal} foreignKeys=${capabilities.foreignKeys} fts5=${capabilities.fts5}`,
     );
+    await client.initialize(databasePath, "sqlite-probe-owner");
+    await client.enqueueChanges([{ fileUri: "file:///probe.ts", eventKind: "change" }]);
+    const pendingJobs = await client.getPendingJobs();
+    assert.equal(pendingJobs.length, 1);
+    assert.equal(pendingJobs[0]?.fileUri, "file:///probe.ts");
+    assert.equal(pendingJobs[0]?.status, "pending");
+    console.log("[sqlite-probe] initialized worker and persisted one pending job");
   } finally {
     try {
       if (client) {

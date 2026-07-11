@@ -528,14 +528,14 @@ git commit -m "feat(intelligence): persist sqlite index jobs"
 
 **实际结果（2026-07-12）：** 新增 `SqliteIndexStore`，实现单条事件 upsert、批量事件事务、原子 claim、基于单调 `claimedAt` 的完成/失败保护、pending 过滤和超时恢复；Worker/Client 仅暴露固定 DTO，重新初始化失败不会保留已关闭连接。针对性测试、全量测试、`npm run typecheck` 和 `npm run compile` 通过。Task 6 的 writer lease 不在本任务范围内。
 
-## Task 6：实现 Writer Lease 数据库原语
+## Task 6：实现 Writer Lease 数据库原语（已实现）
 
 **Files:**
 
 - Create: `test/intelligence/sqliteWriterLease.test.ts`
 - Modify: `src/extension/intelligence/storage/sqliteIndexStore.ts`
 
-- [ ] **Step 1：写双实例互斥和过期接管失败测试**
+- [x] **Step 1：写双实例互斥和过期接管失败测试**
 
 使用两个 `DatabaseSync` 连接指向同一临时库：
 
@@ -553,7 +553,7 @@ it("allows at most one writer and permits takeover after expiry", () => {
 
 另测非 owner 不能 release，过期 owner 不能提交 lease-guarded write。
 
-- [ ] **Step 2：运行确认 RED**
+- [x] **Step 2：运行确认 RED**
 
 ```powershell
 npm test -- test/intelligence/sqliteWriterLease.test.ts
@@ -561,7 +561,7 @@ npm test -- test/intelligence/sqliteWriterLease.test.ts
 
 Expected: FAIL，lease API 不存在。
 
-- [ ] **Step 3：实现原子 lease API**
+- [x] **Step 3：实现原子 lease API**
 
 ```ts
 acquireWriterLease(ownerId: string, ttlMs: number): boolean;
@@ -572,7 +572,7 @@ assertWriterLease(ownerId: string): void;
 
 获取和续租使用事务及 owner/expiry 条件更新。所有 lease-guarded write 在同一 transaction 中调用 `assertWriterLease`，不能先检查后另开事务写入。
 
-- [ ] **Step 4：运行并确认 GREEN**
+- [x] **Step 4：运行并确认 GREEN**
 
 ```powershell
 npm test -- test/intelligence/sqliteWriterLease.test.ts test/intelligence/sqliteIndexJobs.test.ts
@@ -581,13 +581,15 @@ npm run typecheck
 
 Expected: 全部通过，fake clock 不使用真实 sleep。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```powershell
 git add src/extension/intelligence/storage/sqliteIndexStore.ts test/intelligence/sqliteWriterLease.test.ts
 git diff --cached --check
 git commit -m "feat(intelligence): enforce sqlite writer lease"
 ```
+
+**实际结果（2026-07-12）：** `index_meta` 使用 `writer_owner` 和 `writer_lease_expires_at` 保存绝对租约；获取、续租和 owner-match 释放均由 `BEGIN IMMEDIATE` 串行化。所有 Store 写 API 在自身事务内断言 owner 和绝对到期时间，部分缺失、空 owner 或非法 expiry 均 fail closed。Worker 初始化尝试获取 lease，每次写前按需获取或续期，Store 在写事务中再次断言；重新初始化和 dispose 仅由匹配 owner 释放。两个真实 SQLite 连接验证互斥、精确到期接管、非 owner 释放无效、过期 owner 无法写入和损坏 meta 拒绝。编译后的真实 Worker 完成 `initialize -> enqueueChanges -> getPendingJobs -> dispose`；最低 VS Code 宿主探针的新 Job 断言因下载连接 `ECONNRESET` 尚未复验，Task 7 阶段门禁必须重跑。定时续租、read_only 状态通知和自动恢复仍属于 Task 7。
 
 ## Task 7：接入 Lease 续租、只读降级和恢复
 

@@ -36,6 +36,9 @@ type JobRow = {
   updated_at: number;
 };
 
+const WRITER_OWNER_KEY = "writer_owner";
+const WRITER_LEASE_EXPIRES_AT_KEY = "writer_lease_expires_at";
+
 export class SqliteIndexStore {
   private readonly now: () => number;
 
@@ -46,12 +49,59 @@ export class SqliteIndexStore {
     this.now = options.now ?? Date.now;
   }
 
-  enqueueFileEvent(fileUri: string, eventKind: IndexJobEvent): void {
-    this.upsertFileEvent(fileUri, eventKind);
+  enqueueFileEvent(ownerId: string, fileUri: string, eventKind: IndexJobEvent): void {
+    this.transaction(() => {
+      this.assertWriterLease(ownerId);
+      this.upsertFileEvent(fileUri, eventKind);
+    });
   }
 
-  enqueueChanges(changes: readonly IndexChange[]): void {
+  acquireWriterLease(ownerId: string, ttlMs: number): boolean {
+    this.validateLeaseInput(ownerId, ttlMs);
+    return this.transaction(() => {
+      const now = this.now();
+      const lease = this.readWriterLease();
+      if (lease && lease.ownerId !== ownerId && lease.expiresAt > now) {
+        return false;
+      }
+      this.writeMeta(WRITER_OWNER_KEY, ownerId);
+      this.writeMeta(WRITER_LEASE_EXPIRES_AT_KEY, String(now + ttlMs));
+      return true;
+    });
+  }
+
+  renewWriterLease(ownerId: string, ttlMs: number): boolean {
+    this.validateLeaseInput(ownerId, ttlMs);
+    return this.transaction(() => {
+      const now = this.now();
+      const lease = this.readWriterLease();
+      if (!lease || lease.ownerId !== ownerId || lease.expiresAt <= now) {
+        return false;
+      }
+      this.writeMeta(WRITER_LEASE_EXPIRES_AT_KEY, String(now + ttlMs));
+      return true;
+    });
+  }
+
+  releaseWriterLease(ownerId: string): void {
+    if (!ownerId) return;
     this.transaction(() => {
+      if (this.readWriterLease()?.ownerId !== ownerId) return;
+      this.database.prepare("DELETE FROM index_meta WHERE key IN (?, ?)")
+        .run(WRITER_OWNER_KEY, WRITER_LEASE_EXPIRES_AT_KEY);
+    });
+  }
+
+  assertWriterLease(ownerId: string): void {
+    const lease = this.readWriterLease();
+    if (!lease || lease.ownerId !== ownerId || lease.expiresAt <= this.now()) {
+      throw new Error(`Writer lease is not held by ${ownerId}`);
+    }
+  }
+
+  enqueueChanges(ownerId: string, changes: readonly IndexChange[]): void {
+    this.transaction(() => {
+      this.assertWriterLease(ownerId);
       for (const change of changes) this.upsertFileEvent(change.fileUri, change.eventKind);
     });
   }
@@ -69,8 +119,9 @@ export class SqliteIndexStore {
     `).run(fileUri, eventKind, now, now);
   }
 
-  claimNextJob(_ownerId: string): ClaimedIndexJob | undefined {
+  claimNextJob(ownerId: string): ClaimedIndexJob | undefined {
     return this.transaction(() => {
+      this.assertWriterLease(ownerId);
       const row = this.database.prepare(`
         SELECT id, file_uri, event_kind, updated_at
         FROM index_jobs
@@ -91,26 +142,35 @@ export class SqliteIndexStore {
     });
   }
 
-  completeJob(claim: ClaimedIndexJob): void {
-    this.database.prepare(`
-      DELETE FROM index_jobs WHERE id = ? AND status = 'running' AND updated_at = ?
-    `).run(claim.id, claim.claimedAt);
+  completeJob(ownerId: string, claim: ClaimedIndexJob): void {
+    this.transaction(() => {
+      this.assertWriterLease(ownerId);
+      this.database.prepare(`
+        DELETE FROM index_jobs WHERE id = ? AND status = 'running' AND updated_at = ?
+      `).run(claim.id, claim.claimedAt);
+    });
   }
 
-  failJob(claim: ClaimedIndexJob, error: string): void {
-    this.database.prepare(`
-      UPDATE index_jobs SET status = 'failed', last_error = ?, updated_at = ?
-      WHERE id = ? AND status = 'running' AND updated_at = ?
-    `).run(error, this.now(), claim.id, claim.claimedAt);
+  failJob(ownerId: string, claim: ClaimedIndexJob, error: string): void {
+    this.transaction(() => {
+      this.assertWriterLease(ownerId);
+      this.database.prepare(`
+        UPDATE index_jobs SET status = 'failed', last_error = ?, updated_at = ?
+        WHERE id = ? AND status = 'running' AND updated_at = ?
+      `).run(error, this.now(), claim.id, claim.claimedAt);
+    });
   }
 
-  recoverInterruptedJobs({ staleAfterMs }: { staleAfterMs: number }): number {
-    const now = this.now();
-    const result = this.database.prepare(`
-      UPDATE index_jobs SET status = 'pending', last_error = NULL, updated_at = ?
-      WHERE status = 'running' AND updated_at <= ?
-    `).run(now, now - staleAfterMs);
-    return Number(result.changes);
+  recoverInterruptedJobs(ownerId: string, { staleAfterMs }: { staleAfterMs: number }): number {
+    return this.transaction(() => {
+      this.assertWriterLease(ownerId);
+      const now = this.now();
+      const result = this.database.prepare(`
+        UPDATE index_jobs SET status = 'pending', last_error = NULL, updated_at = ?
+        WHERE status = 'running' AND updated_at <= ?
+      `).run(now, now - staleAfterMs);
+      return Number(result.changes);
+    });
   }
 
   listPendingJobs(): StoredIndexJob[] {
@@ -136,6 +196,31 @@ export class SqliteIndexStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }));
+  }
+
+  private readWriterLease(): { ownerId: string; expiresAt: number } | undefined {
+    const rows = this.database.prepare("SELECT key, value FROM index_meta WHERE key IN (?, ?)")
+      .all(WRITER_OWNER_KEY, WRITER_LEASE_EXPIRES_AT_KEY) as Array<{ key: string; value: string }>;
+    if (rows.length === 0) return undefined;
+    const values = new Map(rows.map((row) => [row.key, row.value]));
+    const ownerId = values.get(WRITER_OWNER_KEY);
+    const expiresAt = Number(values.get(WRITER_LEASE_EXPIRES_AT_KEY));
+    if (!ownerId || !values.has(WRITER_LEASE_EXPIRES_AT_KEY) || !Number.isFinite(expiresAt)) {
+      throw new Error("Corrupt writer lease metadata");
+    }
+    return { ownerId, expiresAt };
+  }
+
+  private writeMeta(key: string, value: string): void {
+    this.database.prepare(`
+      INSERT INTO index_meta(key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(key, value);
+  }
+
+  private validateLeaseInput(ownerId: string, ttlMs: number): void {
+    if (!ownerId) throw new Error("Writer lease owner ID is required");
+    if (!Number.isFinite(ttlMs) || ttlMs <= 0) throw new Error("Writer lease TTL must be positive");
   }
 
   private transaction<T>(operation: () => T): T {

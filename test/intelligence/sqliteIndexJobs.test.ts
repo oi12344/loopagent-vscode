@@ -26,16 +26,18 @@ function createStoreFixture(now: () => number = () => Date.now()): {
   directories.push(directory);
   const database = openIndexDatabase(join(directory, "index.sqlite"));
   databases.push(database);
-  return { store: new SqliteIndexStore(database.database, { now }), database };
+  const store = new SqliteIndexStore(database.database, { now });
+  store.acquireWriterLease("owner-a", 1_000_000);
+  return { store, database };
 }
 
 describe("SqliteIndexStore jobs", () => {
   it("merges queued events to the latest filesystem intent", () => {
     const store = createStore(() => 1_000);
-    store.enqueueFileEvent("file:///src/a.ts", "create");
-    store.enqueueFileEvent("file:///src/a.ts", "change");
-    store.enqueueFileEvent("file:///src/b.ts", "change");
-    store.enqueueFileEvent("file:///src/b.ts", "delete");
+    store.enqueueFileEvent("owner-a", "file:///src/a.ts", "create");
+    store.enqueueFileEvent("owner-a", "file:///src/a.ts", "change");
+    store.enqueueFileEvent("owner-a", "file:///src/b.ts", "change");
+    store.enqueueFileEvent("owner-a", "file:///src/b.ts", "delete");
 
     expect(store.listPendingJobs()).toMatchObject([
       { fileUri: "file:///src/a.ts", eventKind: "change", status: "pending", attempts: 0 },
@@ -46,12 +48,12 @@ describe("SqliteIndexStore jobs", () => {
   it("keeps a new event queued when it arrives during a running job", () => {
     let now = 1_000;
     const store = createStore(() => now);
-    store.enqueueFileEvent("file:///src/a.ts", "change");
+    store.enqueueFileEvent("owner-a", "file:///src/a.ts", "change");
     now = 2_000;
     const claimed = store.claimNextJob("owner-a")!;
     now = 3_000;
-    store.enqueueFileEvent("file:///src/a.ts", "delete");
-    store.completeJob(claimed);
+    store.enqueueFileEvent("owner-a", "file:///src/a.ts", "delete");
+    store.completeJob("owner-a", claimed);
 
     expect(store.listPendingJobs()).toMatchObject([
       { fileUri: "file:///src/a.ts", eventKind: "delete", status: "pending", attempts: 1 },
@@ -60,13 +62,13 @@ describe("SqliteIndexStore jobs", () => {
 
   it("does not let an old completion delete a same-millisecond re-claim", () => {
     const store = createStore(() => 1_000);
-    store.enqueueFileEvent("file:///src/a.ts", "change");
+    store.enqueueFileEvent("owner-a", "file:///src/a.ts", "change");
     const first = store.claimNextJob("owner-a")!;
-    store.enqueueFileEvent("file:///src/a.ts", "delete");
+    store.enqueueFileEvent("owner-a", "file:///src/a.ts", "delete");
     const second = store.claimNextJob("owner-a")!;
 
     expect(second.claimedAt).toBeGreaterThan(first.claimedAt);
-    store.completeJob(first);
+    store.completeJob("owner-a", first);
     expect(store.listJobs()).toEqual(expect.arrayContaining([
       expect.objectContaining({ fileUri: "file:///src/a.ts", status: "running", eventKind: "delete" }),
     ]));
@@ -80,7 +82,7 @@ describe("SqliteIndexStore jobs", () => {
       BEGIN SELECT RAISE(ABORT, 'test enqueue failure'); END;
     `);
 
-    expect(() => store.enqueueChanges([
+    expect(() => store.enqueueChanges("owner-a", [
       { fileUri: "file:///src/ok.ts", eventKind: "change" },
       { fileUri: "file:///src/fail.ts", eventKind: "change" },
     ])).toThrow(/test enqueue failure/i);
@@ -90,11 +92,11 @@ describe("SqliteIndexStore jobs", () => {
   it("records a matching running job failure", () => {
     let now = 1_000;
     const store = createStore(() => now);
-    store.enqueueFileEvent("file:///src/a.ts", "change");
+    store.enqueueFileEvent("owner-a", "file:///src/a.ts", "change");
     now = 2_000;
     const claimed = store.claimNextJob("owner-a")!;
     now = 3_000;
-    store.failJob(claimed, "parse failed");
+    store.failJob("owner-a", claimed, "parse failed");
 
     expect(store.listJobs()).toMatchObject([
       { fileUri: "file:///src/a.ts", status: "failed", lastError: "parse failed", attempts: 1 },
@@ -104,14 +106,14 @@ describe("SqliteIndexStore jobs", () => {
   it("recovers only stale running jobs", () => {
     let now = 1_000;
     const store = createStore(() => now);
-    store.enqueueFileEvent("file:///src/stale.ts", "change");
+    store.enqueueFileEvent("owner-a", "file:///src/stale.ts", "change");
     store.claimNextJob("owner-a");
     now = 8_000;
-    store.enqueueFileEvent("file:///src/fresh.ts", "change");
+    store.enqueueFileEvent("owner-a", "file:///src/fresh.ts", "change");
     store.claimNextJob("owner-a");
     now = 10_000;
 
-    expect(store.recoverInterruptedJobs({ staleAfterMs: 5_000 })).toBe(1);
+    expect(store.recoverInterruptedJobs("owner-a", { staleAfterMs: 5_000 })).toBe(1);
     expect(store.listJobs()).toEqual(expect.arrayContaining([
       expect.objectContaining({ fileUri: "file:///src/stale.ts", status: "pending" }),
       expect.objectContaining({ fileUri: "file:///src/fresh.ts", status: "running" }),
@@ -120,9 +122,9 @@ describe("SqliteIndexStore jobs", () => {
 
   it("lists only claimable jobs through the pending API", () => {
     const store = createStore(() => 1_000);
-    store.enqueueFileEvent("file:///src/running.ts", "change");
+    store.enqueueFileEvent("owner-a", "file:///src/running.ts", "change");
     store.claimNextJob("owner-a");
-    store.enqueueFileEvent("file:///src/pending.ts", "change");
+    store.enqueueFileEvent("owner-a", "file:///src/pending.ts", "change");
 
     expect(store.listPendingJobs()).toMatchObject([
       { fileUri: "file:///src/pending.ts", status: "pending" },
