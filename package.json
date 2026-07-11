@@ -89,7 +89,7 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "npm run compile -- --production",
     "lint": "echo \"No lint configured yet\"",
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",

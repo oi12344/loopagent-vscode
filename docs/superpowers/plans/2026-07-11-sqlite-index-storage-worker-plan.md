@@ -222,6 +222,7 @@ git commit -m "feat(intelligence): add sqlite index worker rpc"
 
 **Files:**
 
+- Create: `.vscodeignore`
 - Create: `scripts/run-sqlite-vscode-probe.mjs`
 - Create: `test/integration/sqliteCapabilityExtension.test.ts`
 - Create: `test/fixtures/sqlite-probe/.gitkeep`
@@ -301,6 +302,20 @@ const sqliteProbeTestConfig = {
 
 只在普通测试构建生成该 entry；production VSIX 不包含 integration test。
 
+发布入口必须走 production 构建，并通过 VSIX ignore 规则排除测试 bundle，即使开发构建留下 stale `dist/test` 也不能打包：
+
+```json
+"vscode:prepublish": "npm run compile -- --production"
+```
+
+`.vscodeignore` 至少包含：
+
+```text
+dist/test/**
+```
+
+先在 `test/packageManifest.test.ts` 增加失败断言，验证 prepublish 命令和 `.vscodeignore` 规则；当前普通 compile 和缺失 ignore 文件必须产生 RED，再添加最小配置得到 GREEN。完整 VSIX 文件清单仍由生命周期计划复验。
+
 Extension Host entry 只导出 `run()`，不是 Vitest suite；编译产物也不得被单元测试收集。在 `vitest.config.ts` 中保留 Vitest 默认排除项并追加：
 
 ```ts
@@ -329,7 +344,7 @@ Expected: exit code 0；报告 VS Code `1.103.0`、Node `v22.17.0`，以及 sqli
 - [ ] **Step 5：提交**
 
 ```powershell
-git add package.json package-lock.json esbuild.js vitest.config.ts scripts/run-sqlite-vscode-probe.mjs test/packageManifest.test.ts test/integration/sqliteCapabilityExtension.test.ts test/fixtures/sqlite-probe/.gitkeep docs/superpowers/plans/2026-07-11-sqlite-index-storage-worker-plan.md
+git add .vscodeignore package.json package-lock.json esbuild.js vitest.config.ts scripts/run-sqlite-vscode-probe.mjs test/packageManifest.test.ts test/integration/sqliteCapabilityExtension.test.ts test/fixtures/sqlite-probe/.gitkeep docs/superpowers/plans/2026-07-11-sqlite-index-storage-worker-plan.md
 git diff --cached --check
 git commit -m "test(intelligence): verify sqlite worker in minimum vscode host"
 ```

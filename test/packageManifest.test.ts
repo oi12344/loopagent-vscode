@@ -10,6 +10,15 @@ describe("package manifest", () => {
     expect(manifest.devDependencies["@types/vscode"]).toBe("^1.103.0");
   });
 
+  it("excludes integration probes from production VSIX", () => {
+    expect(manifest.scripts["vscode:prepublish"]).toBe("npm run compile -- --production");
+
+    const vscodeIgnoreLines = readFileSync(resolve(process.cwd(), ".vscodeignore"), "utf8").split(
+      /\r?\n/,
+    );
+    expect(vscodeIgnoreLines).toContain("dist/test/**");
+  });
+
   it("contributes LoopAgent as a side bar chat view instead of an editor tab command", () => {
     expect(manifest.activationEvents).toContain("onView:loopagent.chat");
     expect(manifest.activationEvents).toContain("onCommand:loopagent.focusChat");
