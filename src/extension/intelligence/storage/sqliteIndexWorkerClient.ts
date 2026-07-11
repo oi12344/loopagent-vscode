@@ -2,7 +2,9 @@ import type { SqliteCapabilities } from "./sqliteCapabilities";
 import type {
   ClaimedIndexJob,
   IndexChange,
+  IndexWorkerStatus,
   StoredIndexJob,
+  SqliteWorkerMessage,
   SqliteWorkerRequest,
   SqliteWorkerResponse,
 } from "./sqliteIndexWorkerProtocol";
@@ -16,7 +18,7 @@ type SqliteWorkerTransport = {
   postMessage(request: SqliteWorkerRequest): void;
   on(
     event: "message",
-    listener: (response: SqliteWorkerResponse) => void,
+    listener: (response: SqliteWorkerMessage) => void,
   ): unknown;
   on(event: "error", listener: (error: Error) => void): unknown;
   on(event: "exit", listener: (exitCode: number) => void): unknown;
@@ -25,13 +27,14 @@ type SqliteWorkerTransport = {
 
 export type SqliteIndexWorkerClient = {
   probe(databasePath: string): Promise<SqliteCapabilities>;
-  initialize(databasePath: string, ownerId: string): Promise<unknown>;
+  initialize(databasePath: string, ownerId: string): Promise<IndexWorkerStatus>;
   enqueueChanges(changes: readonly IndexChange[]): Promise<void>;
   getPendingJobs(): Promise<StoredIndexJob[]>;
   claimNextJob(ownerId: string): Promise<ClaimedIndexJob | undefined>;
   completeJob(claim: ClaimedIndexJob): Promise<void>;
   failJob(claim: ClaimedIndexJob, error: string): Promise<void>;
-  getStatus(): Promise<unknown>;
+  getStatus(): Promise<IndexWorkerStatus>;
+  onDidChangeStatus(listener: (status: IndexWorkerStatus) => void): { dispose(): void };
   dispose(): Promise<void>;
 };
 
@@ -49,6 +52,7 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
   private stoppedError: Error | undefined;
   private disposed = false;
   private disposePromise: Promise<void> | undefined;
+  private readonly statusListeners = new Set<(status: IndexWorkerStatus) => void>();
 
   constructor(private readonly worker: SqliteWorkerTransport) {
     worker.on("message", this.handleResponse);
@@ -60,7 +64,7 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
     return this.request((id) => ({ id, kind: "probe", databasePath }));
   }
 
-  initialize(databasePath: string, ownerId: string): Promise<unknown> {
+  initialize(databasePath: string, ownerId: string): Promise<IndexWorkerStatus> {
     return this.request((id) => ({ id, kind: "initialize", databasePath, ownerId }));
   }
 
@@ -84,8 +88,13 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
     return this.request((id) => ({ id, kind: "failJob", claim, error }));
   }
 
-  getStatus(): Promise<unknown> {
+  getStatus(): Promise<IndexWorkerStatus> {
     return this.request((id) => ({ id, kind: "getStatus" }));
+  }
+
+  onDidChangeStatus(listener: (status: IndexWorkerStatus) => void): { dispose(): void } {
+    this.statusListeners.add(listener);
+    return { dispose: () => this.statusListeners.delete(listener) };
   }
 
   dispose(): Promise<void> {
@@ -136,7 +145,17 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
     });
   }
 
-  private readonly handleResponse = (response: SqliteWorkerResponse): void => {
+  private readonly handleResponse = (response: SqliteWorkerMessage): void => {
+    if ("kind" in response) {
+      for (const listener of [...this.statusListeners]) {
+        try {
+          listener(response.status);
+        } catch {
+          // A consumer callback must not break other listeners or RPC response handling.
+        }
+      }
+      return;
+    }
     const pendingRequest = this.pendingRequests.get(response.id);
     if (!pendingRequest) {
       return;

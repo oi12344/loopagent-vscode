@@ -1,6 +1,6 @@
 # SQLite 存储与 Worker 设计
 
-> 状态：实施中；运行时探针和 Worker RPC 已完成，最低宿主基线正在纠偏并复验。
+> 状态：已实现并通过本地状态机、真实 Worker 和构建验证；最低 VS Code `1.103.0` 增强 Job 探针因下载网络失败待复验，等待总体验证。
 >
 > 父规格：`docs/superpowers/specs/2026-07-10-sqlite-vector-code-index-design.md`
 >
@@ -317,3 +317,7 @@ writer/read_only --dispose--> closed
 ## 完成门禁
 
 本规格完成后，后续规格可以依赖稳定 schema、类型化 RPC、可恢复 job 和 writer/read-only 状态，但不能假设源码抽取或检索已经存在。
+
+## 实施记录（2026-07-12）
+
+已实现 `initializing/ready/failed/closed` 与 `writer/read_only` 状态机、TTL/3 续租、只读有界重试、周期 stale job 恢复、写 RPC 阻断、状态事件和确定性关闭。状态 listener 异常相互隔离；初始化与清理同时失败时保留原始错误并发布 `failed/read_only`；WAL checkpoint 失败仍保证连接 close。编译后的真实 Worker 已验证 `initialize -> enqueueChanges -> getPendingJobs -> dispose` 和状态事件。最低宿主增强探针已发起，但 VS Code 归档下载发生 `ECONNRESET`，必须在进入 chunk/snapshot 实施前重跑。

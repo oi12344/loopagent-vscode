@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createSqliteIndexWorkerClient } from "../../src/extension/intelligence/storage/sqliteIndexWorkerClient";
 import type {
+  SqliteWorkerMessage,
   SqliteWorkerRequest,
-  SqliteWorkerResponse,
 } from "../../src/extension/intelligence/storage/sqliteIndexWorkerProtocol";
 
 class FakeWorker extends EventEmitter {
@@ -19,7 +19,7 @@ class FakeWorker extends EventEmitter {
     this.requests.push(request);
   }
 
-  respond(response: SqliteWorkerResponse): void {
+  respond(response: SqliteWorkerMessage): void {
     this.emit("message", response);
   }
 
@@ -52,6 +52,51 @@ function observeSettlement(promise: Promise<unknown>): () => boolean {
 }
 
 describe("SqliteIndexWorkerClient", () => {
+  it("notifies status listeners without consuming pending responses", async () => {
+    const worker = new FakeWorker();
+    const client = createSqliteIndexWorkerClient({ worker });
+    const listener = vi.fn();
+    const registration = client.onDidChangeStatus(listener);
+    const status = {
+      state: "ready" as const,
+      role: "writer" as const,
+      schemaVersion: 1,
+      capabilities: { sqlite: true, wal: true, foreignKeys: true, fts5: true },
+    };
+    const pending = client.getStatus();
+
+    worker.respond({ kind: "status", status });
+    expect(listener).toHaveBeenCalledWith(status);
+    expect(pendingRequestCount(client)).toBe(1);
+    registration.dispose();
+    worker.respond({ kind: "status", status: { ...status, role: "read_only" } });
+    expect(listener).toHaveBeenCalledOnce();
+    worker.respond({ id: 1, ok: true, value: status });
+
+    await expect(pending).resolves.toEqual(status);
+    expect(worker.terminate).not.toHaveBeenCalled();
+  });
+
+  it("isolates status listener failures from other listeners and RPC responses", async () => {
+    const worker = new FakeWorker();
+    const client = createSqliteIndexWorkerClient({ worker });
+    const healthyListener = vi.fn();
+    client.onDidChangeStatus(() => { throw new Error("listener failed"); });
+    client.onDidChangeStatus(healthyListener);
+    const status = {
+      state: "ready" as const,
+      role: "writer" as const,
+      schemaVersion: 1,
+      capabilities: { sqlite: true, wal: true, foreignKeys: true, fts5: true },
+    };
+    const pending = client.getStatus();
+
+    expect(() => worker.respond({ kind: "status", status })).not.toThrow();
+    expect(healthyListener).toHaveBeenCalledWith(status);
+    worker.respond({ id: 1, ok: true, value: status });
+    await expect(pending).resolves.toEqual(status);
+  });
+
   it("sends fixed job queue DTOs without exposing SQL", async () => {
     const worker = new FakeWorker();
     const client = createSqliteIndexWorkerClient({ worker });

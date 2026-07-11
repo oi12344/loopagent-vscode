@@ -591,7 +591,7 @@ git commit -m "feat(intelligence): enforce sqlite writer lease"
 
 **实际结果（2026-07-12）：** `index_meta` 使用 `writer_owner` 和 `writer_lease_expires_at` 保存绝对租约；获取、续租和 owner-match 释放均由 `BEGIN IMMEDIATE` 串行化。所有 Store 写 API 在自身事务内断言 owner 和绝对到期时间，部分缺失、空 owner 或非法 expiry 均 fail closed。Worker 初始化尝试获取 lease，每次写前按需获取或续期，Store 在写事务中再次断言；重新初始化和 dispose 仅由匹配 owner 释放。两个真实 SQLite 连接验证互斥、精确到期接管、非 owner 释放无效、过期 owner 无法写入和损坏 meta 拒绝。编译后的真实 Worker 完成 `initialize -> enqueueChanges -> getPendingJobs -> dispose`；最低 VS Code 宿主探针的新 Job 断言因下载连接 `ECONNRESET` 尚未复验，Task 7 阶段门禁必须重跑。定时续租、read_only 状态通知和自动恢复仍属于 Task 7。
 
-## Task 7：接入 Lease 续租、只读降级和恢复
+## Task 7：接入 Lease 续租、只读降级和恢复（已实现，最低宿主待复验）
 
 **Files:**
 
@@ -602,7 +602,7 @@ git commit -m "feat(intelligence): enforce sqlite writer lease"
 - Modify: `src/extension/intelligence/storage/indexDatabase.ts`
 - Modify: `docs/superpowers/specs/2026-07-11-sqlite-index-storage-worker-design.md`
 
-- [ ] **Step 1：写 fake-timer 状态机失败测试**
+- [x] **Step 1：写 fake-timer 状态机失败测试**
 
 ```ts
 it("falls back to read_only after renewal failure and later recovers", async () => {
@@ -622,7 +622,7 @@ it("falls back to read_only after renewal failure and later recovers", async () 
 
 另测 dispose 取消 renewal/retry timer，仅 owner 释放 lease，并 checkpoint WAL。
 
-- [ ] **Step 2：运行确认 RED**
+- [x] **Step 2：运行确认 RED**
 
 ```powershell
 npm test -- test/intelligence/sqliteIndexWorkerLease.test.ts
@@ -630,7 +630,7 @@ npm test -- test/intelligence/sqliteIndexWorkerLease.test.ts
 
 Expected: FAIL，worker 尚无 lease 状态机。
 
-- [ ] **Step 3：实现 worker lease 生命周期**
+- [x] **Step 3：实现 worker lease 生命周期**
 
 status DTO 定义为：
 
@@ -647,7 +647,7 @@ writer 以 TTL/3 续租；失败立即转 read_only 并停止写 RPC。read_only
 
 client 增加 `onDidChangeStatus(listener)`，只传递 `IndexWorkerStatus` DTO。后续 workspace adapter 用它在 writer/read_only 转换时启动或停止 watcher；listener disposal 不终止 worker。
 
-- [ ] **Step 4：运行本阶段全量验证**
+- [ ] **Step 4：运行本阶段全量验证（最低宿主增强探针待复验）**
 
 ```powershell
 npm test -- test/intelligence/sqliteCapabilities.test.ts test/intelligence/indexMigrations.test.ts test/intelligence/sqliteIndexWorkerClient.test.ts test/intelligence/sqliteIndexJobs.test.ts test/intelligence/sqliteWriterLease.test.ts test/intelligence/sqliteIndexWorkerLease.test.ts test/sqliteWorkerBundle.test.ts
@@ -659,7 +659,7 @@ git diff --check
 
 Expected: 全部 exit code 0；最低宿主 probe 仍通过；两个实例测试证明任一时刻最多一个 writer。
 
-- [ ] **Step 5：更新规格状态并提交阶段门禁**
+- [x] **Step 5：更新规格状态并提交阶段门禁**
 
 把存储规格状态改为“已实现并通过最低宿主探针，等待总体验证”，记录实际命令和偏差。提交：
 
@@ -672,3 +672,5 @@ git commit -m "feat(intelligence): manage sqlite writer lifecycle"
 ## 计划完成记录
 
 执行完成后记录：实际提交 hash、最低 VS Code/Electron/Node 版本、capability DTO、测试命令结果、与规格的偏差和技术债。只有 Task 1-7 全部完成后才能进入 chunk/snapshot 计划。
+
+**Task 7 实际结果（2026-07-12）：** 新增可独立测试的 Worker Runtime，writer 每 10 秒续租并周期恢复 stale job，续租失败转 `read_only`，read-only 每 10 秒有界重试，成功恢复后再发布 writer。Client 支持可释放的 `onDidChangeStatus`，单个 listener 抛错不影响其他 listener 或 RPC。dispose 清 timer、owner-match release、checkpoint 并保证 close。定向测试、typecheck、compile 和编译 Worker 真实流程通过；最低 VS Code `1.103.0` 增强探针下载 153.45 MB 归档时发生 `ECONNRESET`，故 Step 4 和存储阶段最低宿主门禁保持未完成。

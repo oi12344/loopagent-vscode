@@ -26,11 +26,18 @@ export function openIndexDatabase(databasePath: string, options: { now?: () => n
   return {
     database,
     backupPath,
-    close: () => {
-      database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-      database.close();
-    },
+    close: () => checkpointAndCloseIndexDatabase(database),
   };
+}
+
+export function checkpointAndCloseIndexDatabase(
+  database: Pick<DatabaseSync, "exec" | "close">,
+): void {
+  try {
+    database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  } finally {
+    database.close();
+  }
 }
 
 function configureDatabase(database: DatabaseSync): void {

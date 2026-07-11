@@ -1,4 +1,5 @@
 import type { ClaimedIndexJob, IndexChange, StoredIndexJob } from "./sqliteIndexStore";
+import type { IndexWorkerStatus } from "./sqliteIndexWorkerRuntime";
 
 export type SqliteWorkerRequest =
   | { id: number; kind: "probe"; databasePath: string }
@@ -15,4 +16,7 @@ export type SqliteWorkerResponse =
   | { id: number; ok: true; value: unknown }
   | { id: number; ok: false; error: string };
 
-export type { ClaimedIndexJob, IndexChange, StoredIndexJob };
+export type SqliteWorkerEvent = { kind: "status"; status: IndexWorkerStatus };
+export type SqliteWorkerMessage = SqliteWorkerResponse | SqliteWorkerEvent;
+
+export type { ClaimedIndexJob, IndexChange, IndexWorkerStatus, StoredIndexJob };
