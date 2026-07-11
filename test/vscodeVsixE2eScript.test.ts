@@ -39,7 +39,10 @@ describe("VS Code VSIX E2E script", () => {
     expect(script).toContain("npm run package:vsix");
     expect(script).toContain("$LASTEXITCODE");
     expect(script).toMatch(/if \(\$LASTEXITCODE -ne 0\)/);
-    expect(script).toMatch(/exit \$LASTEXITCODE/);
+    expect(script).toContain(
+      'throw "VSIX installation failed, exit code: $LASTEXITCODE"',
+    );
+    expect(script).not.toContain('Write-Host "VSIX installation failed');
   });
 
   it("finds the Code CLI and launches an isolated new window", () => {

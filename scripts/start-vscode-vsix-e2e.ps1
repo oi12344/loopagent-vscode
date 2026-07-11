@@ -65,8 +65,7 @@ $installArgs = @(
 
 & $codeCli @installArgs
 if ($LASTEXITCODE -ne 0) {
-  Write-Host "VSIX installation failed with exit code $LASTEXITCODE."
-  exit $LASTEXITCODE
+  throw "VSIX installation failed, exit code: $LASTEXITCODE"
 }
 
 $launchArgs = @(
