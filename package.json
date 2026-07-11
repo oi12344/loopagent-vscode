@@ -94,6 +94,9 @@
     "compile": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "debug:vscode": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-vscode-debug.ps1",
+    "package:vsix": "node scripts/package-vsix.mjs",
+    "start:vscode:vsix-e2e": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-vscode-vsix-e2e.ps1",
+    "test:e2e:code-exploration": "node scripts/run-code-exploration-e2e.mjs",
     "test": "vitest run",
     "test:vscode:sqlite-probe": "node scripts/run-sqlite-vscode-probe.mjs",
     "typecheck": "tsc --noEmit -p ./"
@@ -108,10 +111,12 @@
     "@types/vscode": "^1.103.0",
     "@vitejs/plugin-react": "^6.0.3",
     "@vscode/test-electron": "^2.4.1",
+    "@vscode/vsce": "3.9.2",
     "esbuild": "^0.28.1",
     "jsdom": "^29.1.1",
     "typescript": "^5.7.2",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.9",
+    "yauzl": "3.2.1"
   },
   "dependencies": {
     "@vscode/tree-sitter-wasm": "^0.3.1",
