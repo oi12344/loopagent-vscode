@@ -18,12 +18,12 @@
 - `package-lock.json`：记录 `@vscode/vsce` 与 `yauzl` 的精确依赖图。
 - `.gitignore`：排除 `.artifacts/` 下的 VSIX、截图和机器日志。
 - `.vscodeignore`：定义生产 VSIX 的源码与测试排除边界。
-- `scripts/package-vsix.mjs`：创建固定产物目录、调用本地 `vsce` 并在打包后执行清单验证。
-- `scripts/vsixContents.js`：读取 VSIX ZIP 条目并执行纯清单规则；不负责构建。
+- `scripts/package-vsix.mjs`：清理旧 `dist`、创建固定产物目录、捕获本地 `vsce` 输出，并在打包后执行清单验证。
+- `scripts/vsixContents.js`：读取 VSIX ZIP 条目并执行必需文件、敏感路径、source map 与开发文件规则；不负责构建。
 - `scripts/start-vscode-vsix-e2e.ps1`：停止旧测试窗口、安装 VSIX，并用固定目录和端口启动唯一隔离窗口。
 - `scripts/codeExplorationE2e.js`：保存固定问题和纯语义判定函数。
 - `scripts/run-code-exploration-e2e.mjs`：通过 CDP 操作真实 Workbench/Webview、等待完成、截图并输出无密钥摘要。
-- `test/vsixPackaging.test.ts`：覆盖 package scripts、ignore 规则和 VSIX 清单判定。
+- `test/vsixPackaging.test.ts`：覆盖 package scripts、ignore 规则、打包编排契约、VSIX 清单判定和损坏 ZIP 错误路径。
 - `test/vscodeVsixE2eScript.test.ts`：覆盖隔离安装脚本的固定路径、安装参数和窗口约束。
 - `test/codeExplorationE2e.test.ts`：覆盖语义锚点与路径判定，防止仅凭 `Done` 误报成功。
 - `docs/development.md`：记录稳定 VSIX 的开发者命令和密钥边界。
@@ -124,6 +124,14 @@ describe("stable VSIX packaging", () => {
 });
 ```
 
+测试还必须覆盖以下边界：
+
+- `clientSecret.json`、`authToken.json`、`secrets.json`、`tokenValue.txt`、`.env*`、`api-key.json`、`api_key.json`、`apikey.json` 必须被拒绝。
+- `tokenizer.js`、`secretary.md`、`api-keyboard.json` 和完整生产运行条目必须被接受。
+- `extension/dist/**/*.map`、缺失运行文件、测试/源码/脚本/文档/本地目录必须被拒绝。
+- `readVsixEntries` 对不存在和损坏的 ZIP 必须 reject，`assertVsixContents` 对损坏 ZIP 也必须 reject；不为这些测试增加新的 ZIP writer 依赖。
+- 打包脚本契约必须证明打包前清理整个 `dist`、stdout/stderr 使用 pipe，并且失败时把捕获内容写入 stderr。
+
 - [ ] **Step 2：运行测试确认 RED**
 
 Run:
@@ -139,7 +147,6 @@ Expected: FAIL，首先因为 `scripts/vsixContents.js` 不存在；创建空模
 创建 `scripts/vsixContents.js`，保留两层接口：纯规则函数供 Vitest 使用，ZIP 读取函数供打包脚本使用。
 
 ```js
-const path = require("node:path");
 const yauzl = require("yauzl");
 
 const REQUIRED_ENTRIES = [
@@ -156,24 +163,42 @@ const REQUIRED_ENTRIES = [
   "extension/dist/tree-sitter/tree-sitter-python.wasm",
 ];
 
-const FORBIDDEN_ENTRY_PATTERNS = [
-  /^extension\/dist\/test\//,
-  /^extension\/test\//,
-  /^extension\/src\//,
-  /^extension\/scripts\//,
-  /^extension\/docs\//,
-  /^extension\/(?:\.env(?:\.|$)|.*(?:secret|token|api[_-]?key))/i,
-  /^extension\/\.local-vscode-/,
-  /^extension\/\.artifacts\//,
-];
+const FORBIDDEN_PATH =
+  /^extension\/(?:dist\/test|test|src|scripts|docs|\.local-vscode-[^/]*|\.artifacts)(?:\/|$)/i;
+const FORBIDDEN_SOURCE_MAP = /^extension\/dist\/.*\.map$/i;
+const SENSITIVE_TOKENS = new Set(["secret", "secrets", "token", "tokens", "apikey"]);
+
+function normalizeEntry(entry) {
+  return entry.replaceAll("\\", "/");
+}
+
+function hasSensitivePath(entry) {
+  return entry.split("/").some((segment) => {
+    if (segment.toLowerCase().startsWith(".env")) {
+      return true;
+    }
+
+    const tokens = segment
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .split(/[^A-Za-z0-9]+/)
+      .filter(Boolean)
+      .map((token) => token.toLowerCase());
+
+    return tokens.some(
+      (token, index) =>
+        SENSITIVE_TOKENS.has(token) || (token === "api" && tokens[index + 1] === "key"),
+    );
+  });
+}
 
 function validateVsixEntries(entries) {
-  const normalizedEntries = entries.map((entry) => entry.replace(/\\/g, "/"));
+  const normalizedEntries = entries.map(normalizeEntry);
   const entrySet = new Set(normalizedEntries);
   return {
     missing: REQUIRED_ENTRIES.filter((entry) => !entrySet.has(entry)),
-    forbidden: normalizedEntries.filter((entry) =>
-      FORBIDDEN_ENTRY_PATTERNS.some((pattern) => pattern.test(entry)),
+    forbidden: normalizedEntries.filter(
+      (entry) =>
+        FORBIDDEN_PATH.test(entry) || FORBIDDEN_SOURCE_MAP.test(entry) || hasSensitivePath(entry),
     ),
   };
 }
@@ -181,8 +206,8 @@ function validateVsixEntries(entries) {
 function readVsixEntries(vsixPath) {
   return new Promise((resolve, reject) => {
     yauzl.open(vsixPath, { lazyEntries: true }, (openError, zipFile) => {
-      if (openError || !zipFile) {
-        reject(openError ?? new Error(`无法打开 VSIX: ${vsixPath}`));
+      if (openError) {
+        reject(openError);
         return;
       }
       const entries = [];
@@ -198,10 +223,12 @@ function readVsixEntries(vsixPath) {
 }
 
 async function assertVsixContents(vsixPath) {
-  const entries = await readVsixEntries(path.resolve(vsixPath));
-  const result = validateVsixEntries(entries);
-  if (result.missing.length || result.forbidden.length) {
-    throw new Error(JSON.stringify(result));
+  const entries = await readVsixEntries(vsixPath);
+  const { missing, forbidden } = validateVsixEntries(entries);
+  if (missing.length > 0 || forbidden.length > 0) {
+    throw new Error(
+      `VSIX content validation failed: missing=${JSON.stringify(missing)} forbidden=${JSON.stringify(forbidden)}`,
+    );
   }
   return entries;
 }
@@ -260,47 +287,79 @@ esbuild.js
 创建 `scripts/package-vsix.mjs`：
 
 ```js
-import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import { mkdir } from "node:fs/promises";
+import { resolve } from "node:path";
 
 const require = createRequire(import.meta.url);
 const { assertVsixContents } = require("./vsixContents.js");
 const root = resolve(import.meta.dirname, "..");
-const artifactsDir = resolve(root, ".artifacts");
-const artifactPath = resolve(artifactsDir, "loopagent-vscode-0.0.1.vsix");
+const artifactPath = resolve(root, ".artifacts", "loopagent-vscode-0.0.1.vsix");
 const vscePath = resolve(root, "node_modules", ".bin", process.platform === "win32" ? "vsce.cmd" : "vsce");
+const vsceArgs = ["package", "--no-dependencies", "--out", artifactPath];
 
-mkdirSync(artifactsDir, { recursive: true });
+await mkdir(resolve(root, ".artifacts"), { recursive: true });
+rmSync(resolve(root, "dist"), { recursive: true, force: true });
 
-const result = spawnSync(vscePath, [
-  "package",
-  "--no-dependencies",
-  "--out",
-  artifactPath,
-], { cwd: root, encoding: "utf8", stdio: "inherit", shell: process.platform === "win32" });
+const result = await new Promise((resolveExit, reject) => {
+  const command = process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : vscePath;
+  const args = process.platform === "win32"
+    ? ["/d", "/s", "/c", `""${vscePath}" package --no-dependencies --out "${artifactPath}""`]
+    : vsceArgs;
+  const child = spawn(command, args, {
+    cwd: root,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsVerbatimArguments: process.platform === "win32",
+  });
 
-if (result.status !== 0) {
-  process.exit(result.status ?? 1);
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  child.once("error", reject);
+  child.once("close", (exitCode, signal) => {
+    resolveExit({ exitCode, signal, stdout, stderr });
+  });
+});
+
+if (result.exitCode !== 0) {
+  if (result.stdout) {
+    process.stderr.write(result.stdout);
+    if (!result.stdout.endsWith("\n")) process.stderr.write("\n");
+  }
+  if (result.stderr) {
+    process.stderr.write(result.stderr);
+    if (!result.stderr.endsWith("\n")) process.stderr.write("\n");
+  }
+  process.stderr.write(
+    `VSCE packaging failed (exitCode=${String(result.exitCode)}, signal=${result.signal ?? "none"})\n`,
+  );
+  process.exitCode = result.exitCode ?? 1;
+} else {
+  const entries = await assertVsixContents(artifactPath);
+  console.log(JSON.stringify({ artifactPath, entryCount: entries.length }));
 }
-
-const entries = await assertVsixContents(artifactPath);
-console.log(JSON.stringify({ artifactPath, entryCount: entries.length }, null, 2));
 ```
 
 Run:
 
 ```powershell
 npm test -- test/vsixPackaging.test.ts test/packageManifest.test.ts test/treeSitterAssets.test.ts
+npm run compile
 npm run package:vsix
 ```
 
-Expected: 所有测试通过；生成 `.artifacts/loopagent-vscode-0.0.1.vsix`；清单验证输出 `artifactPath` 和大于 10 的 `entryCount`，不输出密钥或完整文件内容。
+Expected: 所有测试通过；普通 `npm run compile` 先生成 5 个 `.map`，随后打包入口删除整个 `dist` 并由 `vscode:prepublish` 重建 production；生成 `.artifacts/loopagent-vscode-0.0.1.vsix`，实际清单为 16 个合法条目、0 个 `.map`。成功时只输出 `artifactPath` 和 `entryCount`；失败时把捕获的 VSCE stdout/stderr 写到 stderr 并传播失败状态，不在成功路径输出 VSCE 文件列表或密钥。
+
+Task 1 失败路径手动演练：临时让本地 `vsce.cmd` 不可用后运行打包入口，实际 exit code 为 1、stdout 为空、stderr 包含原始命令诊断和 `VSCE packaging failed` 摘要；演练结束后立即恢复 `vsce.cmd`，不保留临时日志。
 
 - [ ] **Step 6：REFACTOR 并提交**
 
-检查 `scripts/vsixContents.js` 只处理 ZIP 与规则，`scripts/package-vsix.mjs` 只编排打包。不要抽取跨脚本通用 CLI 框架。
+检查 `scripts/vsixContents.js` 只处理 ZIP 与规则，`scripts/package-vsix.mjs` 直接编排打包和失败诊断。失败格式化只有一个真实调用点，必须保持内联；不要增加 support module 或抽取跨脚本通用 CLI 框架。
 
 Run:
 

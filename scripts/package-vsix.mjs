@@ -6,7 +6,6 @@ import { resolve } from "node:path";
 
 const require = createRequire(import.meta.url);
 const { assertVsixContents } = require("./vsixContents.js");
-const { formatVsceFailure } = require("./packageVsixSupport.js");
 
 const root = resolve(import.meta.dirname, "..");
 const artifactPath = resolve(root, ".artifacts", "loopagent-vscode-0.0.1.vsix");
@@ -50,7 +49,21 @@ const result = await new Promise((resolveExit, reject) => {
 });
 
 if (result.exitCode !== 0) {
-  process.stderr.write(formatVsceFailure(result));
+  if (result.stdout) {
+    process.stderr.write(result.stdout);
+    if (!result.stdout.endsWith("\n")) {
+      process.stderr.write("\n");
+    }
+  }
+  if (result.stderr) {
+    process.stderr.write(result.stderr);
+    if (!result.stderr.endsWith("\n")) {
+      process.stderr.write("\n");
+    }
+  }
+  process.stderr.write(
+    `VSCE packaging failed (exitCode=${String(result.exitCode)}, signal=${result.signal ?? "none"})\n`,
+  );
   process.exitCode = result.exitCode ?? 1;
 } else {
   const entries = await assertVsixContents(artifactPath);

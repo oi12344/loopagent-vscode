@@ -64,12 +64,16 @@ describe("VSIX packaging contract", () => {
     );
   });
 
-  it("cleans dist before VSCE rebuilds the production bundle", () => {
+  it("cleans dist and preserves failed VSCE diagnostics", () => {
     const packageScript = readFileSync(resolve(root, "scripts/package-vsix.mjs"), "utf8");
 
+    expect(existsSync(resolve(root, "scripts/packageVsixSupport.js"))).toBe(false);
     expect(packageScript).toContain(
       'rmSync(resolve(root, "dist"), { recursive: true, force: true });',
     );
+    expect(packageScript).toContain('stdio: ["ignore", "pipe", "pipe"]');
+    expect(packageScript).toContain("process.stderr.write(result.stdout)");
+    expect(packageScript).toContain("process.stderr.write(result.stderr)");
   });
 
   it("accepts the complete production payload", () => {
@@ -154,20 +158,5 @@ describe("VSIX packaging contract", () => {
     } finally {
       rmSync(tempDirectory, { recursive: true, force: true });
     }
-  });
-
-  it("formats captured VSCE output for failed packaging", async () => {
-    const { formatVsceFailure } = await import("../scripts/packageVsixSupport.js");
-
-    expect(
-      formatVsceFailure({
-        exitCode: null,
-        signal: "SIGTERM",
-        stdout: "prepublish output\n",
-        stderr: "packaging error\n",
-      }),
-    ).toBe(
-      "prepublish output\npackaging error\nVSCE packaging failed (exitCode=null, signal=SIGTERM)\n",
-    );
   });
 });
