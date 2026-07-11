@@ -48,7 +48,33 @@ describe("VS Code VSIX E2E support", () => {
     expect(hasExited).toBe(true);
   });
 
-  it("surfaces a real stop failure for a missing process", () => {
+  it("continues through an exited process in a multi-process snapshot", () => {
+    const hasExited = runPowerShell<boolean[]>([
+      "& {",
+      "$first = Start-Process powershell -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru",
+      "$exited = Start-Process powershell -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru",
+      "$last = Start-Process powershell -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 30' -WindowStyle Hidden -PassThru",
+      "try {",
+      "$exited = Stop-Process -Id $exited.Id -Force -PassThru -ErrorAction Stop",
+      "Wait-Process -InputObject $exited -Timeout 5 -ErrorAction Stop",
+      "$snapshot = @($first.Id, $exited.Id, $last.Id)",
+      "foreach ($targetProcessId in $snapshot) { Stop-VsixE2eProcess -TargetProcessId $targetProcessId -TimeoutSeconds 5 | Out-Null }",
+      "$first.Refresh()",
+      "$last.Refresh()",
+      "@($first.HasExited, $last.HasExited)",
+      "} finally {",
+      "foreach ($child in @($first, $exited, $last)) {",
+      "$child.Refresh()",
+      "if (-not $child.HasExited) { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue }",
+      "}",
+      "}",
+      "}",
+    ].join("\n"));
+
+    expect(hasExited).toEqual([true, true]);
+  });
+
+  it("treats a missing snapshot process as an idempotent success", () => {
     const result = spawnSync(
       "powershell",
       [
@@ -67,8 +93,8 @@ describe("VS Code VSIX E2E support", () => {
       },
     );
 
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("2147483647");
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
   });
 
   it("quotes all three launch path arguments that contain spaces", () => {

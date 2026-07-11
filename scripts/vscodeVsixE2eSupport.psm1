@@ -77,7 +77,15 @@ function Stop-VsixE2eProcess {
     [int]$TimeoutSeconds = 10
   )
 
-  $process = Stop-Process -Id $TargetProcessId -Force -PassThru -ErrorAction Stop
+  try {
+    $process = Stop-Process -Id $TargetProcessId -Force -PassThru -ErrorAction Stop
+  } catch {
+    if ($_.FullyQualifiedErrorId -like "NoProcessFoundForGivenId*") {
+      return
+    }
+    throw
+  }
+
   Wait-Process -InputObject $process -Timeout $TimeoutSeconds -ErrorAction Stop
 
   return $process
