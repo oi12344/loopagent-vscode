@@ -204,7 +204,11 @@ async function openLoopAgentView(session) {
         (element) => element.getAttribute("aria-label") === "LoopAgent",
       );
       if (!(activityEntry instanceof HTMLElement)) return false;
-      activityEntry.click();
+      if (
+        activityEntry.parentElement?.getAttribute("aria-selected") !== "true"
+      ) {
+        activityEntry.click();
+      }
       return true;
     })()`);
     if (opened) {

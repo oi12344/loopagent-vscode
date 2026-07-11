@@ -153,6 +153,7 @@ describe("code exploration CDP runner contract", () => {
     expect(runner).toContain("const WAIT_TIMEOUT_MS = 120_000");
     expect(runner).toContain("code-exploration-e2e.png");
     expect(runner).toContain('getAttribute("aria-label") === "LoopAgent"');
+    expect(runner).toContain('getAttribute("aria-selected") !== "true"');
     expect(runner).toContain("activityEntry.click()");
     expect(runner).toContain("workbench.html");
     expect(runner).toContain("vscode-webview");

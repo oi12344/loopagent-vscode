@@ -2,9 +2,9 @@
 
 ## 验证状态
 
-当前状态：**确定性门禁通过，真实 DeepSeek E2E 待配置密钥**。
+当前状态：**确定性门禁通过，真实 DeepSeek 链路成功，代码探索语义验收失败**。
 
-本记录对应源码基线 `18fca12`。真实模型链路已经完成 VSIX 安装、Workbench 打开、Webview 定位、固定问题提交和当前 assistant turn 读取，最终在模型请求前明确失败为 `DeepSeek API key is not configured`。因此本轮不能记为代码探索 E2E 通过。
+本记录最初对应源码基线 `18fca12`，并包含随后对可见截图状态的修复。密钥已写入固定隔离窗口的 VS Code SecretStorage，没有写入仓库配置。真实模型链路已完成 VSIX 安装、Workbench 打开、Webview 定位、固定问题提交、DeepSeek 请求、流式回答和当前 assistant turn 读取；两次回答均未满足三类语义锚点要求，因此本轮不能记为代码探索 E2E 通过。
 
 ## 验证对象
 
@@ -65,13 +65,37 @@ npm run test:vscode:sqlite-probe
 npm run test:e2e:code-exploration
 ```
 
-当前结果：
+在 SecretStorage 配置完成后执行两次。两次均出现完整过程状态：
 
-```text
-LoopAgent run failed: DeepSeek API key is not configured
+- `Building code context`
+- `Calling DeepSeek deepseek-v4-flash`
+- `Done`
+
+第二次摘要：
+
+```json
+{
+  "passed": false,
+  "matchedAnchors": [
+    "createConfiguredAgentRunner",
+    "createVsCodeWorkspaceIntelligence"
+  ],
+  "matchedPaths": [
+    "src/extension.ts",
+    "src/extension/model/providerRegistry.ts",
+    "src/extension/agentRunner.ts",
+    "src/extension/intelligence/vscodeWorkspaceIntelligence.ts",
+    "src/extension/intelligence/parser/treeSitterRuntime.ts",
+    "src/extension/intelligence/storage/sqliteIndexWorkerClient.ts"
+  ],
+  "missingStates": [],
+  "answerLength": 2935
+}
 ```
 
-该结果证明自动化已经进入安装版 Webview 并提交当前问题，但没有证明 DeepSeek 网络请求、流式回答或代码探索语义判定通过。当前没有成功截图；`.artifacts/code-exploration-e2e.png` 仅在回答完成并执行语义判定后生成。
+第一次回答长度为 1828，命中的锚点和路径集合与第二次相同。回答能够定位入口、模型 provider、agent runner、工作区智能层和解析器，但没有给出 `systemPromptProvider`、`buildCodeIntelligencePrompt` 或准确的源码缓存失效实现；缓存部分包含明确的推断性表述。严格 oracle 因此正确判定失败，没有通过降低阈值制造假通过。
+
+截图：`.artifacts/code-exploration-e2e.png`。已人工检查截图非空，LoopAgent Chat、固定问题、三个过程状态和回答均可见。runner 仅在 Activity Bar 的 LoopAgent 项未选中时点击，避免已选中时再次点击导致侧栏折叠。
 
 自动化兼容 VS Code 1.128 的 Webview 结构：从 Workbench 点击 Activity Bar 的 `LoopAgent` 入口，再通过宿主 target 的 `#active-frame.contentDocument` 访问真实 UI。轮询只接受本次提交后新增的 assistant turn。
 
@@ -86,13 +110,13 @@ LoopAgent run failed: DeepSeek API key is not configured
 ## 日志与安全
 
 - runner 不读取或打印 `DEEPSEEK_API_KEY`，不记录 `Authorization`。
-- 当前环境变量存在性检查结果为 `False`，未读取变量值。
+- 环境变量存在性检查结果为 `False`，未读取变量值；密钥通过扩展命令保存到固定隔离窗口的 SecretStorage。
 - 验证记录不包含 SecretStorage 内容、请求 header 或完整外部响应。
 - Extension Host 日志显示 `local-dev.loopagent-vscode` 由 `onView:loopagent.chat` 正常激活，未发现 LoopAgent 激活错误。
+- 最新日志中的错误仅为无关 Marketplace 扩展推荐请求被取消；未发现 LoopAgent、Tree-sitter、WASM 或未处理异常。
 
 ## 待完成
 
-1. 在唯一的隔离 VS Code 窗口执行 `LoopAgent: Set Model API Key`，把密钥写入 VS Code SecretStorage。
-2. 重新运行 `npm run test:e2e:code-exploration`。
-3. 记录 `passed: true`、实际语义锚点、源码路径、回答长度和截图路径。
-4. 检查最新 Extension Host 日志后，将本记录状态更新为最终结论。
+1. 改进代码上下文检索，使 `startRun` 的下游 prompt 构建链路和真实缓存失效实现进入同一轮上下文。
+2. 保持当前严格 oracle，重新运行单轮 `npm run test:e2e:code-exploration`。
+3. 只有在 `passed: true` 且截图与日志检查同时通过后，才把稳定版本记为最终验收通过。
