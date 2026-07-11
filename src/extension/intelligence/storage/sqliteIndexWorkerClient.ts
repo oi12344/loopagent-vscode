@@ -22,6 +22,7 @@ type SqliteWorkerTransport = {
 
 export type SqliteIndexWorkerClient = {
   probe(databasePath: string): Promise<SqliteCapabilities>;
+  initialize(databasePath: string, ownerId: string): Promise<unknown>;
   getStatus(): Promise<unknown>;
   dispose(): Promise<void>;
 };
@@ -49,6 +50,10 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
 
   probe(databasePath: string): Promise<SqliteCapabilities> {
     return this.request((id) => ({ id, kind: "probe", databasePath }));
+  }
+
+  initialize(databasePath: string, ownerId: string): Promise<unknown> {
+    return this.request((id) => ({ id, kind: "initialize", databasePath, ownerId }));
   }
 
   getStatus(): Promise<unknown> {
