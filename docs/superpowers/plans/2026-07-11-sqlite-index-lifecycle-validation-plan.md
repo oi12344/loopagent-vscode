@@ -339,7 +339,7 @@ npm install --save-dev @vscode/test-electron@3.0.0 @vscode/vsce@3.9.2
 "package:vscode": "vsce package --out dist/loopagent-vscode.vsix"
 ```
 
-runner 使用 VS Code `1.101.0`、临时 user-data/extensions/workspace 目录和编译后的 integration entry；结束时清理临时目录。
+runner 使用 VS Code `1.103.0`、临时 user-data/extensions/workspace 目录和编译后的 integration entry；结束时清理临时目录。固定版本不得降到 `1.102.x`，该版本已实测缺少 FTS5。
 
 - [ ] **Step 2：写真实 Extension Host 工作流断言**
 

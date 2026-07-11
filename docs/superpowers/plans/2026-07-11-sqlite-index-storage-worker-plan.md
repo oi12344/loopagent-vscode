@@ -12,6 +12,8 @@
 
 **前置条件：** 总实施计划的 worktree 基线通过。本计划不依赖其他 SQLite 子计划。
 
+> **运行时纠偏记录（2026-07-11）：** Task 1 最初按 `^1.101.0` 提交，但 Task 3 的真实宿主探针证明 VS Code `1.101.0` 和 `1.102.0` 均未编译 FTS5。相邻版本实测确认 `1.103.0` 首次同时满足 SQLite、WAL、foreign key 和 FTS5。当前执行必须在 Task 3 GREEN 前把 manifest、类型包、lockfile 和固定宿主版本统一纠正为 `^1.103.0`；不得继续使用已经证伪的 `1.101.0`。
+
 ---
 
 ## 文件职责
@@ -43,8 +45,8 @@
 
 ```ts
 it("requires the VS Code Node 22 sqlite baseline", () => {
-  expect(manifest.engines.vscode).toBe("^1.101.0");
-  expect(manifest.devDependencies["@types/vscode"]).toBe("^1.101.0");
+  expect(manifest.engines.vscode).toBe("^1.103.0");
+  expect(manifest.devDependencies["@types/vscode"]).toBe("^1.103.0");
 });
 ```
 
@@ -101,12 +103,12 @@ DROP TABLE __loopagent_fts_probe;
 在 `finally` 中关闭数据库。修改：
 
 ```text
-package.json engines.vscode                   -> ^1.101.0
-package.json devDependencies.@types/vscode    -> ^1.101.0
+package.json engines.vscode                   -> ^1.103.0
+package.json devDependencies.@types/vscode    -> ^1.103.0
 esbuild.js extensionConfig.target             -> node22
 ```
 
-运行 `npm install --save-dev @types/vscode@^1.101.0` 更新 `package-lock.json`，不要手工编辑 lockfile。
+运行 `npm install --save-dev @types/vscode@^1.103.0` 更新 `package-lock.json`，不要手工编辑 lockfile。
 
 - [ ] **Step 4：运行测试、类型检查和构建确认 GREEN**
 
@@ -224,7 +226,9 @@ git commit -m "feat(intelligence): add sqlite index worker rpc"
 - Create: `test/integration/sqliteCapabilityExtension.test.ts`
 - Create: `test/fixtures/sqlite-probe/.gitkeep`
 - Modify: `package.json`
+- Modify: `package-lock.json`
 - Modify: `esbuild.js`
+- Modify: `test/packageManifest.test.ts`
 
 - [ ] **Step 1：写 Extension Host probe runner**
 
@@ -237,7 +241,7 @@ import { runTests } from "@vscode/test-electron";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 await runTests({
-  version: "1.101.0",
+  version: "1.103.0",
   extensionDevelopmentPath: root,
   extensionTestsPath: path.join(root, "dist/test/sqliteCapabilityExtension.test.js"),
   launchArgs: [path.join(root, "test/fixtures/sqlite-probe"), "--disable-extensions"],
@@ -246,18 +250,38 @@ await runTests({
 
 integration entry 导出 `async function run(): Promise<void>`，创建临时数据库，通过真实 `Worker` 加载 `dist/sqliteIndexWorker.js`，发送 `probe`，断言四项 capability 都为 true，最后 dispose worker 并删除临时目录。
 
+当前分支还必须先把 `test/packageManifest.test.ts` 的期望改为 `^1.103.0`，运行该测试观察旧 manifest 的 RED，再执行 `npm install --save-dev @types/vscode@^1.103.0` 更新 `package.json` 和 `package-lock.json`。全新执行若已按修订后的 Task 1 使用 `1.103.0`，该断言保持 GREEN，但仍必须执行下面的 integration bundle RED。
+
 - [ ] **Step 2：运行确认 RED**
 
 ```powershell
+npm test -- test/packageManifest.test.ts
 npm run compile
 node scripts/run-sqlite-vscode-probe.mjs
 ```
 
-Expected: FAIL，integration bundle 和 npm script 尚未接入。
+Expected: 当前分支的 manifest 测试先因仍为 `^1.101.0` 而 FAIL；integration runner 因 bundle 尚未接入而 FAIL。两项失败原因必须分别记录。
 
 - [ ] **Step 3：接入 integration bundle 和 script**
 
-在 `package.json` 增加：
+把 `package.json` 的运行时和类型基线统一改为：
+
+```json
+"engines": {
+  "vscode": "^1.103.0"
+},
+"devDependencies": {
+  "@types/vscode": "^1.103.0"
+}
+```
+
+运行 npm 命令更新类型依赖和 lockfile，不要手工编辑 `package-lock.json`：
+
+```powershell
+npm install --save-dev @types/vscode@^1.103.0
+```
+
+同时在 `package.json` 增加：
 
 ```json
 "test:vscode:sqlite-probe": "node scripts/run-sqlite-vscode-probe.mjs"
@@ -279,16 +303,17 @@ const sqliteProbeTestConfig = {
 - [ ] **Step 4：运行最低宿主确认 GREEN**
 
 ```powershell
+npm test -- test/packageManifest.test.ts
 npm run compile
 npm run test:vscode:sqlite-probe
 ```
 
-Expected: exit code 0；报告 VS Code `1.101.0` 的 Node 版本，以及 sqlite/WAL/foreignKeys/FTS5 全部为 true。失败时停止本计划，不继续 schema 实现。
+Expected: exit code 0；报告 VS Code `1.103.0`、Node `v22.17.0`，以及 sqlite/WAL/foreignKeys/FTS5 全部为 true。失败时停止本计划，不继续 schema 实现。
 
 - [ ] **Step 5：提交**
 
 ```powershell
-git add package.json esbuild.js scripts/run-sqlite-vscode-probe.mjs test/integration/sqliteCapabilityExtension.test.ts test/fixtures/sqlite-probe/.gitkeep
+git add package.json package-lock.json esbuild.js scripts/run-sqlite-vscode-probe.mjs test/packageManifest.test.ts test/integration/sqliteCapabilityExtension.test.ts test/fixtures/sqlite-probe/.gitkeep
 git diff --cached --check
 git commit -m "test(intelligence): verify sqlite worker in minimum vscode host"
 ```

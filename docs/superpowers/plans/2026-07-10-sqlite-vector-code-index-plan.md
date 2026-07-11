@@ -14,7 +14,7 @@
 
 | 顺序 | 子系统 | 设计规格 | 实施计划 | 状态 |
 | --- | --- | --- | --- | --- |
-| 1 | 存储与 worker | [设计](../specs/2026-07-11-sqlite-index-storage-worker-design.md) | [计划](2026-07-11-sqlite-index-storage-worker-plan.md) | 待执行 |
+| 1 | 存储与 worker | [设计](../specs/2026-07-11-sqlite-index-storage-worker-design.md) | [计划](2026-07-11-sqlite-index-storage-worker-plan.md) | 执行中：Task 1-2 已完成，Task 3 纠偏最低宿主 |
 | 2 | chunk 与 snapshot | [设计](../specs/2026-07-11-sqlite-index-chunk-snapshot-design.md) | [计划](2026-07-11-sqlite-index-chunk-snapshot-plan.md) | 阻塞于 1 |
 | 3 | workspace 增量 | [设计](../specs/2026-07-11-sqlite-index-workspace-incremental-design.md) | [计划](2026-07-11-sqlite-index-workspace-incremental-plan.md) | 阻塞于 2 |
 | 4 | 检索与上下文 | [设计](../specs/2026-07-11-sqlite-index-retrieval-context-design.md) | [计划](2026-07-11-sqlite-index-retrieval-context-plan.md) | 阻塞于 3 |
@@ -66,7 +66,7 @@ git status --short
 ## 最终验收
 
 - [ ] 数据库只位于 `context.storageUri`，仓库中没有 SQLite、WAL 或 SHM。
-- [ ] VS Code `1.101.0` 和当前版本均可加载 `node:sqlite`、FTS5、WAL 和 worker。
+- [ ] VS Code `1.103.0` 和当前版本均可加载 `node:sqlite`、FTS5、WAL 和 worker。
 - [ ] 扩展重启后未变化文件不重新 parser/chunker。
 - [ ] 单函数变化只更新对应 chunk、出边、FTS 和 embedding 状态。
 - [ ] 纯行号移动只更新范围，不更新 FTS 或 embedding。

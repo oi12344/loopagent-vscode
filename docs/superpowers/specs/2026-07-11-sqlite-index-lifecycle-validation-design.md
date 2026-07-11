@@ -126,7 +126,7 @@ set 命令写 SecretStorage；clear 命令删除 secret 并停止新 embedding �
 - Tree-sitter runtime 和语言 WASM assets
 - Extension Host integration test bundle（仅测试构建）
 
-使用固定版本 `@vscode/test-electron` 运行最低 VS Code `1.101.0`，使用固定 `@vscode/vsce` 打包 `dist/loopagent-vscode.vsix`。VSIX 内容测试必须验证 worker 和 WASM 未被忽略。
+使用固定版本 `@vscode/test-electron` 运行最低 VS Code `1.103.0`，使用固定 `@vscode/vsce` 打包 `dist/loopagent-vscode.vsix`。该下限来自相邻宿主实测：`1.102.0` 缺少 FTS5，`1.103.0` 四项 SQLite 能力全部通过。VSIX 内容测试必须验证 worker 和 WASM 未被忽略。
 
 ## 自动化宿主验证
 

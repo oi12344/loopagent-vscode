@@ -1,6 +1,6 @@
 # SQLite 持久化与向量代码索引总览
 
-> 状态：总体设计、六份子规格和六份实施计划已批准，等待执行。
+> 状态：总体设计和六份子规格已批准；存储与 worker 子计划执行中。
 >
 > 本文只维护跨子系统目标、全局约束、依赖顺序和最终验收。字段、算法和局部失败处理以对应子规格为准。
 
@@ -29,7 +29,7 @@
 
 ## 全局决策
 
-1. 最低 VS Code 版本为 `^1.101.0`，extension bundle target 为 Node 22，数据库使用内置 `node:sqlite`。
+1. 最低 VS Code 版本为 `^1.103.0`，extension bundle target 为 Node 22，数据库使用内置 `node:sqlite`。
 2. SQLite 是唯一持久化索引事实源；Extension Host 通过独立 `worker_threads` worker 访问数据库。
 3. 文件变化后完整解析当前文件，但数据库、FTS 和 embedding 只更新发生变化的稳定 chunk。
 4. 敏感路径在扫描或 watcher 入队前过滤，并在读取文件前再次过滤；第二次检查是不可绕过的安全边界。
@@ -37,6 +37,8 @@
 6. writer 租约覆盖获取、续租、丢失后只读降级、定期重试和释放；任何写事务都验证有效租约。
 7. 所有查询和写入都有明确预算，不提供读取完整数据库图或全部向量的生产接口。
 8. `contextBudget.ts` 继续控制最终发给模型的源码规模。
+
+运行时基线由真实宿主能力决定，而不是只按 `node:sqlite` API 是否存在判断。Windows x64 相邻稳定版实测结果为：VS Code `1.102.0` 的 Node `v22.15.1` / SQLite `3.49.1` 不含 `ENABLE_FTS5`，实际创建 FTS5 虚表失败；VS Code `1.103.0` 的 Node `v22.17.0` / SQLite `3.50.0` 同时通过 SQLite、WAL、foreign key 和 FTS5 探针。因此 `1.103.0` 是本设计使用内置 FTS5 的最低宿主门禁。
 
 ## 总体数据流
 
@@ -78,7 +80,7 @@ VS Code scan / watcher
 
 ## 最终验收
 
-1. VS Code `1.101.x` 和当前版本都能加载 `node:sqlite`、FTS5、WAL 和数据库 worker。
+1. VS Code `1.103.x` 和当前版本都能加载 `node:sqlite`、FTS5、WAL 和数据库 worker。
 2. 重启后未变化文件不重新运行 parser 或 chunker。
 3. 单函数变化只影响对应 chunk、出边、FTS 和 embedding 状态；纯行号移动不更新 FTS 或 embedding。
 4. 新增、删除、重命名后不存在旧 chunk、孤立边、错误 FTS hit 或失效 embedding 映射。

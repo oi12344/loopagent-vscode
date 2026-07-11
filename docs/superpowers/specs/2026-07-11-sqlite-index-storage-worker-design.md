@@ -1,6 +1,6 @@
 # SQLite 存储与 Worker 设计
 
-> 状态：设计和实施计划已批准，等待执行。
+> 状态：实施中；运行时探针和 Worker RPC 已完成，最低宿主基线正在纠偏并复验。
 >
 > 父规格：`docs/superpowers/specs/2026-07-10-sqlite-vector-code-index-design.md`
 >
@@ -24,11 +24,13 @@
 
 ## 运行时边界
 
-- `package.json` 的 `engines.vscode` 提升到 `^1.101.0`。
+- `package.json` 的 `engines.vscode` 提升到 `^1.103.0`。
 - `esbuild.js` 的 extension 和 worker target 使用 `node22`。
 - Extension Host 不直接调用 `DatabaseSync`；所有数据库操作在 `SqliteIndexWorker` 中完成。
 - worker 使用独立 Node 22 CJS bundle `dist/sqliteIndexWorker.js`，并把 `vscode` 保持 external。
 - 初始化必须在真实 Extension Host 和打包 VSIX 中再次验证，系统 Node 单元测试不能替代宿主验证。
+
+最低版本必须固定为已经实际提供 FTS5 的宿主。VS Code `1.102.0`（Node `v22.15.1`、SQLite `3.49.1`）的 `PRAGMA compile_options` 不含 `ENABLE_FTS5`，实际返回 `no such module: fts5`；VS Code `1.103.0`（Node `v22.17.0`、SQLite `3.50.0`）的四项能力全部为 true。运行时、类型包和宿主测试统一使用 `1.103.0`，bundle target 仍为 `node22`。
 
 worker 打开数据库后执行：
 
@@ -310,7 +312,7 @@ writer/read_only --dispose--> closed
 3. fake worker 验证 RPC 配对、错误传播、exit 和 dispose。
 4. fake clock + 两个数据库实例验证任一时刻最多一个 writer。
 5. 验证续租失败转只读、只读查询、过期后接管和 stale job 恢复。
-6. 编译后确认 `dist/sqliteIndexWorker.js` 存在，并在最低 VS Code `1.101.0` 中运行最小 capability probe；完整打包工作流复测归生命周期规格负责。
+6. 编译后确认 `dist/sqliteIndexWorker.js` 存在，并在最低 VS Code `1.103.0` 中运行最小 capability probe；完整打包工作流复测归生命周期规格负责。
 
 ## 完成门禁
 
