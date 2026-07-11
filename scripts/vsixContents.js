@@ -16,11 +16,30 @@ const REQUIRED_ENTRIES = [
 
 const FORBIDDEN_PATH =
   /^extension\/(?:dist\/test|test|src|scripts|docs|\.local-vscode-[^/]*|\.artifacts)(?:\/|$)/i;
-const SENSITIVE_PATH =
-  /(?:^|\/)\.env(?:[./_-]|$)|secret|token|api[-_]?key/i;
+const FORBIDDEN_SOURCE_MAP = /^extension\/dist\/.*\.map$/i;
+const SENSITIVE_TOKENS = new Set(["secret", "secrets", "token", "tokens", "apikey"]);
 
 function normalizeEntry(entry) {
   return entry.replaceAll("\\", "/");
+}
+
+function hasSensitivePath(entry) {
+  return entry.split("/").some((segment) => {
+    if (segment.toLowerCase().startsWith(".env")) {
+      return true;
+    }
+
+    const tokens = segment
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .split(/[^A-Za-z0-9]+/)
+      .filter(Boolean)
+      .map((token) => token.toLowerCase());
+
+    return tokens.some(
+      (token, index) =>
+        SENSITIVE_TOKENS.has(token) || (token === "api" && tokens[index + 1] === "key"),
+    );
+  });
 }
 
 function validateVsixEntries(entries) {
@@ -30,7 +49,8 @@ function validateVsixEntries(entries) {
   return {
     missing: REQUIRED_ENTRIES.filter((entry) => !entrySet.has(entry)),
     forbidden: normalizedEntries.filter(
-      (entry) => FORBIDDEN_PATH.test(entry) || SENSITIVE_PATH.test(entry),
+      (entry) =>
+        FORBIDDEN_PATH.test(entry) || FORBIDDEN_SOURCE_MAP.test(entry) || hasSensitivePath(entry),
     ),
   };
 }

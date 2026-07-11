@@ -1,9 +1,20 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { validateVsixEntries } from "../scripts/vsixContents";
+import {
+  assertVsixContents,
+  readVsixEntries,
+  validateVsixEntries,
+} from "../scripts/vsixContents";
 
 const root = process.cwd();
 const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
@@ -53,6 +64,14 @@ describe("VSIX packaging contract", () => {
     );
   });
 
+  it("cleans dist before VSCE rebuilds the production bundle", () => {
+    const packageScript = readFileSync(resolve(root, "scripts/package-vsix.mjs"), "utf8");
+
+    expect(packageScript).toContain(
+      'rmSync(resolve(root, "dist"), { recursive: true, force: true });',
+    );
+  });
+
   it("accepts the complete production payload", () => {
     expect(validateVsixEntries(requiredProductionEntries)).toEqual({
       missing: [],
@@ -72,12 +91,25 @@ describe("VSIX packaging contract", () => {
   });
 
   it.each([
+    "extension/dist/extension.js.map",
+    "extension/dist/tree-sitter/parser.wasm.map",
+  ])("rejects production source map %s", (sourceMapEntry) => {
+    expect(validateVsixEntries([...requiredProductionEntries, sourceMapEntry])).toEqual({
+      missing: [],
+      forbidden: [sourceMapEntry],
+    });
+  });
+
+  it.each([
     "extension/dist/test/probe.js",
     "extension/test/vsixPackaging.test.ts",
     "extension/src/extension.ts",
     "extension/scripts/package-vsix.mjs",
     "extension/docs/development.md",
     "extension/.env",
+    "extension/.env.local",
+    "extension/.envrc",
+    "extension/.environment",
     "extension/config/secret.json",
     "extension/config/clientSecret.json",
     "extension/config/secrets.json",
@@ -94,5 +126,48 @@ describe("VSIX packaging contract", () => {
       missing: [],
       forbidden: [forbiddenEntry],
     });
+  });
+
+  it.each([
+    "extension/dist/tokenizer.js",
+    "extension/resources/secretary.md",
+    "extension/resources/api-keyboard.json",
+  ])("accepts non-sensitive entry %s", (entry) => {
+    expect(validateVsixEntries([...requiredProductionEntries, entry])).toEqual({
+      missing: [],
+      forbidden: [],
+    });
+  });
+
+  it("rejects missing and damaged VSIX files", async () => {
+    const tempDirectory = mkdtempSync(join(tmpdir(), "loopagent-vsix-"));
+    const missingPath = join(tempDirectory, "missing.vsix");
+    const damagedPath = join(tempDirectory, "damaged.vsix");
+
+    try {
+      expect(existsSync(missingPath)).toBe(false);
+      await expect(readVsixEntries(missingPath)).rejects.toThrow();
+
+      writeFileSync(damagedPath, "not a zip archive");
+      await expect(readVsixEntries(damagedPath)).rejects.toThrow();
+      await expect(assertVsixContents(damagedPath)).rejects.toThrow();
+    } finally {
+      rmSync(tempDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("formats captured VSCE output for failed packaging", async () => {
+    const { formatVsceFailure } = await import("../scripts/packageVsixSupport.js");
+
+    expect(
+      formatVsceFailure({
+        exitCode: null,
+        signal: "SIGTERM",
+        stdout: "prepublish output\n",
+        stderr: "packaging error\n",
+      }),
+    ).toBe(
+      "prepublish output\npackaging error\nVSCE packaging failed (exitCode=null, signal=SIGTERM)\n",
+    );
   });
 });
