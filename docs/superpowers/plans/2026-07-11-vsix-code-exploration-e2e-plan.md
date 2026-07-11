@@ -384,12 +384,17 @@ git commit -m "build: add reproducible loopagent vsix"
 **Files:**
 
 - Create: `scripts/start-vscode-vsix-e2e.ps1`
+- Create: `scripts/vscodeVsixE2eSupport.psm1`
 - Create: `test/vscodeVsixE2eScript.test.ts`
 - Modify: `docs/development.md`
+
+质量复审发现初版仅按用户数据目录子串筛选进程，并把未引用的路径参数直接交给 `Start-Process -ArgumentList`。前者可能关闭相似路径或仅把目录作为 workspace 打开的普通窗口，后者在仓库路径含空格时会破坏参数边界。本任务最终实现必须使用可执行纯函数测试覆盖精确参数匹配和 Windows 标准参数 quoting，并让 CIM、停止、等待和残留检查的失败全部可见。
 
 - [ ] **Step 1：先写隔离启动脚本契约测试**
 
 创建 `test/vscodeVsixE2eScript.test.ts`：
+
+测试除读取主脚本契约外，还必须通过子进程实际执行 PowerShell 并导入 `scripts/vscodeVsixE2eSupport.psm1`，验证三个含空格的启动路径参数、嵌入双引号与结尾反斜杠的 quoting，以及精确 `--user-data-dir=<path>` 参数的正反边界。不得用注释或仅匹配 helper 名称代替纯函数行为测试。
 
 ```ts
 import { readFileSync } from "node:fs";
@@ -443,6 +448,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+Import-Module (Join-Path $PSScriptRoot "vscodeVsixE2eSupport.psm1") -Force -ErrorAction Stop
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $vsixPath = Join-Path $projectRoot ".artifacts\loopagent-vscode-0.0.1.vsix"
 $userDataDir = Join-Path $projectRoot ".local-vscode-user-data"
@@ -454,8 +460,8 @@ if (-not (Test-Path -LiteralPath $vsixPath)) {
 }
 
 function Find-CodeCli {
-  $command = Get-Command code -ErrorAction SilentlyContinue
-  if ($command) { return $command.Source }
+  $command = Get-Command code -CommandType Application -ErrorAction SilentlyContinue
+  if ($command) { return $command.Path }
   $candidates = @(
     (Join-Path $env:LOCALAPPDATA "Programs\Microsoft VS Code\bin\code.cmd"),
     (Join-Path $env:ProgramFiles "Microsoft VS Code\bin\code.cmd")
@@ -466,11 +472,23 @@ function Find-CodeCli {
   throw "未找到 VS Code CLI。"
 }
 
+function Get-ExistingLoopAgentVsixProcesses {
+  return @(
+    Get-CimInstance Win32_Process -Filter "name = 'Code.exe'" -ErrorAction Stop |
+      Where-Object { Test-VsixE2eProcessCommandLine $_.CommandLine $userDataDir }
+  )
+}
+
 if (-not $KeepExisting) {
-  $escapedUserDataDir = [Regex]::Escape($userDataDir)
-  Get-CimInstance Win32_Process -Filter "name = 'Code.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match $escapedUserDataDir } |
-    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  $processes = @(Get-ExistingLoopAgentVsixProcesses)
+  foreach ($process in $processes) {
+    Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+    Wait-Process -Id $process.ProcessId -Timeout 10 -ErrorAction Stop
+  }
+  $remainingProcesses = @(Get-ExistingLoopAgentVsixProcesses)
+  if ($remainingProcesses.Count -gt 0) {
+    throw "VSIX E2E process remained after termination"
+  }
 }
 
 New-Item -ItemType Directory -Force -Path $userDataDir, $extensionsDir | Out-Null
@@ -480,11 +498,11 @@ if ($LASTEXITCODE -ne 0) { throw "VSIX 安装失败，exit code: $LASTEXITCODE" 
 
 $args = @(
   "--new-window",
-  "--user-data-dir=$userDataDir",
-  "--extensions-dir=$extensionsDir",
+  (ConvertTo-WindowsCommandLineArgument "--user-data-dir=$userDataDir"),
+  (ConvertTo-WindowsCommandLineArgument "--extensions-dir=$extensionsDir"),
   "--remote-debugging-port=$debugPort",
   "--disable-workspace-trust",
-  "$projectRoot"
+  (ConvertTo-WindowsCommandLineArgument "$projectRoot")
 )
 Start-Process -FilePath $codeCli -ArgumentList $args -WindowStyle Hidden
 Write-Host "已启动单一 LoopAgent VSIX E2E 窗口。"
@@ -495,6 +513,8 @@ Write-Host "remote-debugging-port: $debugPort"
 
 实现时允许为 `code.cmd` 的 Windows 启动行为增加最小兼容处理，但不得加入 `--extensionDevelopmentPath`，也不得创建带编号目录。
 
+`scripts/vscodeVsixE2eSupport.psm1` 只导出两个有真实调用点的纯函数：`ConvertTo-WindowsCommandLineArgument` 使用标准 Windows quoting 算法处理空白、嵌入双引号和结尾反斜杠；`Test-VsixE2eProcessCommandLine` 仅接受大小写不敏感、独立且完整的 `--user-data-dir=<exact path>` 参数。默认停止流程必须使用后者完成初次和停止后复查，`Stop-Process`、`Wait-Process` 或残留检查失败都必须终止脚本；`KeepExisting` 必须继续跳过整段停止与复查流程。
+
 - [ ] **Step 4：GREEN、文档同步与提交**
 
 Run:
@@ -504,6 +524,8 @@ npm test -- test/vscodeVsixE2eScript.test.ts test/vscodeDebugScript.test.ts test
 ```
 
 Expected: 全部通过，且原有 `npm run debug:vscode` 契约没有回归。
+
+质量复审修复还必须运行全量 `npm test`、`npm run typecheck`、主脚本与 helper module 的 PowerShell AST 解析，以及 `git diff --check`。修复提交使用 `fix(test): isolate vsix e2e launch`，不得 amend 初版提交。
 
 更新 `docs/development.md`，增加：
 

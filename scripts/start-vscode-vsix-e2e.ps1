@@ -4,6 +4,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+Import-Module (Join-Path $PSScriptRoot "vscodeVsixE2eSupport.psm1") -Force -ErrorAction Stop
+
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $vsixPath = Join-Path $projectRoot ".artifacts\loopagent-vscode-0.0.1.vsix"
 $userDataDir = Join-Path $projectRoot ".local-vscode-user-data"
@@ -11,9 +13,9 @@ $extensionsDir = Join-Path $projectRoot ".local-vscode-extensions"
 $debugPort = 9333
 
 function Find-CodeCli {
-  $command = Get-Command code -ErrorAction SilentlyContinue
+  $command = Get-Command code -CommandType Application -ErrorAction SilentlyContinue
   if ($command) {
-    return $command.Source
+    return $command.Path
   }
 
   $candidates = @(
@@ -30,15 +32,27 @@ function Find-CodeCli {
   throw "VS Code CLI was not found. Add code to PATH or install Visual Studio Code."
 }
 
-function Stop-ExistingLoopAgentVsixWindow {
-  $escapedUserDataDir = [Regex]::Escape($userDataDir)
-  $processes = Get-CimInstance Win32_Process -Filter "name = 'Code.exe'" -ErrorAction SilentlyContinue |
+function Get-ExistingLoopAgentVsixProcesses {
+  return @(
+    Get-CimInstance Win32_Process -Filter "name = 'Code.exe'" -ErrorAction Stop |
     Where-Object {
-      $_.CommandLine -and $_.CommandLine -match $escapedUserDataDir
+      Test-VsixE2eProcessCommandLine $_.CommandLine $userDataDir
     }
+  )
+}
+
+function Stop-ExistingLoopAgentVsixWindow {
+  $processes = @(Get-ExistingLoopAgentVsixProcesses)
 
   foreach ($process in $processes) {
-    Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+    Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+    Wait-Process -Id $process.ProcessId -Timeout 10 -ErrorAction Stop
+  }
+
+  $remainingProcesses = @(Get-ExistingLoopAgentVsixProcesses)
+  if ($remainingProcesses.Count -gt 0) {
+    $remainingProcessIds = $remainingProcesses.ProcessId -join ", "
+    throw "VSIX E2E process remained after termination: $remainingProcessIds"
   }
 }
 
@@ -70,11 +84,11 @@ if ($LASTEXITCODE -ne 0) {
 
 $launchArgs = @(
   "--new-window",
-  "--user-data-dir=$userDataDir",
-  "--extensions-dir=$extensionsDir",
+  (ConvertTo-WindowsCommandLineArgument "--user-data-dir=$userDataDir"),
+  (ConvertTo-WindowsCommandLineArgument "--extensions-dir=$extensionsDir"),
   "--remote-debugging-port=$debugPort",
   "--disable-workspace-trust",
-  "$projectRoot"
+  (ConvertTo-WindowsCommandLineArgument "$projectRoot")
 )
 
 Start-Process -FilePath $codeCli -ArgumentList $launchArgs -WindowStyle Hidden
