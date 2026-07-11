@@ -93,3 +93,17 @@ npm run start:vscode:vsix-e2e
 该入口把 `.artifacts\loopagent-vscode-0.0.1.vsix` 安装到固定的 `.local-vscode-extensions`，并复用固定的 `.local-vscode-user-data` 和 `9333` 远程调试端口。启动参数不包含 `--extensionDevelopmentPath`，因此验证对象是已安装的 VSIX，而不是当前源码目录中的开发扩展。
 
 默认启动前会关闭使用该固定用户数据目录的已有 VS Code 窗口，保证本项目只保留一个 VSIX E2E 窗口。真实 DeepSeek 验证可以继承当前进程的环境变量，但启动脚本、测试输出和验证记录不得输出任何密钥。
+
+真实代码探索按以下安全顺序执行：
+
+```powershell
+Test-Path Env:DEEPSEEK_API_KEY
+npm run start:vscode:vsix-e2e
+npm run test:e2e:code-exploration
+```
+
+`Test-Path` 只检查环境变量是否存在，不读取或输出它的值。若结果为 `False`，应在隔离窗口中执行 `LoopAgent: Set Model API Key`，让 VS Code SecretStorage 保存密钥；不得把真实值写入 PowerShell history、仓库文件或验证记录。
+
+自动化使用固定问题“追踪 LoopAgentChatViewProvider.startRun 到生成代码语义上下文的调用链，并说明工作区源码缓存何时失效。请列出关键源码文件和函数。”。语义判定同时要求可见的代码上下文构建、模型调用和完成状态，并检查回答是否命中至少三个下游语义锚点、至少两个真实源码路径，以及 `providerRegistry.ts` 或 `vscodeWorkspaceIntelligence.ts` 中至少一个关键实现文件。判定结果只输出锚点、路径、缺失状态、回答长度和截图路径，不保存完整回答。
+
+CDP runner 只覆盖单轮 Webview 提交和结果读取，不负责多轮对话、工具调用或 SQLite 索引接入。若当前 VS Code 版本不暴露可访问的 Webview CDP target，人工 fallback 必须复用同一个隔离窗口，提交同一固定问题，并按相同语义规则结合可见 Process 状态和截图验收；不得为 fallback 启动第二个 VS Code 窗口。
