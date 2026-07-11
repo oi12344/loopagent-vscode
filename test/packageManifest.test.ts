@@ -6,8 +6,8 @@ const manifest = JSON.parse(readFileSync(resolve(process.cwd(), "package.json"),
 
 describe("package manifest", () => {
   it("requires the VS Code Node 22 sqlite baseline", () => {
-    expect(manifest.engines.vscode).toBe("^1.101.0");
-    expect(manifest.devDependencies["@types/vscode"]).toBe("^1.101.0");
+    expect(manifest.engines.vscode).toBe("^1.103.0");
+    expect(manifest.devDependencies["@types/vscode"]).toBe("^1.103.0");
   });
 
   it("contributes LoopAgent as a side bar chat view instead of an editor tab command", () => {

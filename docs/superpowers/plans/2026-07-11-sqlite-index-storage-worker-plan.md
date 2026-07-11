@@ -229,6 +229,7 @@ git commit -m "feat(intelligence): add sqlite index worker rpc"
 - Modify: `package-lock.json`
 - Modify: `esbuild.js`
 - Modify: `test/packageManifest.test.ts`
+- Modify: `vitest.config.ts`
 
 - [ ] **Step 1：写 Extension Host probe runner**
 
@@ -300,12 +301,27 @@ const sqliteProbeTestConfig = {
 
 只在普通测试构建生成该 entry；production VSIX 不包含 integration test。
 
+Extension Host entry 只导出 `run()`，不是 Vitest suite；编译产物也不得被单元测试收集。在 `vitest.config.ts` 中保留 Vitest 默认排除项并追加：
+
+```ts
+import { configDefaults, defineConfig } from "vitest/config";
+
+test: {
+  environment: "jsdom",
+  setupFiles: ["./test/setup.ts"],
+  exclude: [...configDefaults.exclude, "test/integration/**", "dist/**"],
+},
+```
+
+修改前运行一次全量 `npm test`，Expected: FAIL，源码 integration entry 和 `dist/test` bundle 均报告 `No test suite found`；修改后两者都不再进入 Vitest 收集列表。不要通过给 Extension Host entry 添加虚假 suite 或把 Vitest 打进宿主 bundle 来绕过失败。
+
 - [ ] **Step 4：运行最低宿主确认 GREEN**
 
 ```powershell
 npm test -- test/packageManifest.test.ts
 npm run compile
 npm run test:vscode:sqlite-probe
+npm test
 ```
 
 Expected: exit code 0；报告 VS Code `1.103.0`、Node `v22.17.0`，以及 sqlite/WAL/foreignKeys/FTS5 全部为 true。失败时停止本计划，不继续 schema 实现。
@@ -313,7 +329,7 @@ Expected: exit code 0；报告 VS Code `1.103.0`、Node `v22.17.0`，以及 sqli
 - [ ] **Step 5：提交**
 
 ```powershell
-git add package.json package-lock.json esbuild.js scripts/run-sqlite-vscode-probe.mjs test/packageManifest.test.ts test/integration/sqliteCapabilityExtension.test.ts test/fixtures/sqlite-probe/.gitkeep
+git add package.json package-lock.json esbuild.js vitest.config.ts scripts/run-sqlite-vscode-probe.mjs test/packageManifest.test.ts test/integration/sqliteCapabilityExtension.test.ts test/fixtures/sqlite-probe/.gitkeep docs/superpowers/plans/2026-07-11-sqlite-index-storage-worker-plan.md
 git diff --cached --check
 git commit -m "test(intelligence): verify sqlite worker in minimum vscode host"
 ```

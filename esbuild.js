@@ -22,6 +22,13 @@ const sqliteWorkerConfig = {
   outfile: "dist/sqliteIndexWorker.js",
 };
 
+const sqliteProbeTestConfig = {
+  ...extensionConfig,
+  entryPoints: ["test/integration/sqliteCapabilityExtension.test.ts"],
+  outfile: "dist/test/sqliteCapabilityExtension.test.js",
+  external: ["vscode"],
+};
+
 const webviewConfig = {
   entryPoints: ["src/webview/main.tsx"],
   bundle: true,
@@ -39,12 +46,18 @@ async function build() {
     const extensionContext = await esbuild.context(extensionConfig);
     const webviewContext = await esbuild.context(webviewConfig);
     const sqliteWorkerContext = await esbuild.context(sqliteWorkerConfig);
+    const sqliteProbeTestContext = production
+      ? undefined
+      : await esbuild.context(sqliteProbeTestConfig);
     await Promise.all([
       extensionContext.watch(),
       webviewContext.watch(),
       sqliteWorkerContext.watch(),
+      ...(sqliteProbeTestContext ? [sqliteProbeTestContext.watch()] : []),
     ]);
-    console.log("Watching extension, webview, and sqlite worker builds...");
+    console.log(
+      `Watching extension, webview, sqlite worker${production ? "" : ", and sqlite probe test"} builds...`,
+    );
     return;
   }
 
@@ -52,6 +65,7 @@ async function build() {
     esbuild.build(extensionConfig),
     esbuild.build(webviewConfig),
     esbuild.build(sqliteWorkerConfig),
+    ...(!production ? [esbuild.build(sqliteProbeTestConfig)] : []),
   ]);
   await copyTreeSitterAssets();
 }
@@ -66,6 +80,7 @@ if (require.main === module) {
 module.exports = {
   build,
   extensionConfig,
+  sqliteProbeTestConfig,
   sqliteWorkerConfig,
   webviewConfig,
 };
