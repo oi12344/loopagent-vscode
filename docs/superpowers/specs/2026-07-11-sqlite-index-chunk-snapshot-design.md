@@ -53,7 +53,7 @@ snapshot 只能包含可结构化克隆的数据，不能保存 Tree-sitter tree
 
 ## 稳定身份
 
-- 文件：规范化 workspace-relative path。规范化统一使用 `/` 分隔符，折叠重复分隔符、`.` 和 `..`，去除前导 `./`，但保持大小写。`SnapshotInput.filePath` 和 `resolvedFilePath` 必须来自同一次 canonical workspace 枚举并保留文件系统返回的真实 casing，不根据 `process.platform` 强制转小写。`SnapshotFile.uri` 仍保存调用方提供的原始 URI，URI 不参与主身份计算。
+- 文件：规范化 workspace-relative path。规范化统一使用 `/` 分隔符，折叠重复分隔符、`.` 和 `..`，去除前导 `./`，但保持大小写。`SnapshotFile.uri` 仍保存调用方提供的原始 URI，URI 不参与主身份计算。
 - 顶层符号：`kind + qualified_name + normalized_signature`。
 - 类成员：父类语义键 + 成员 kind + 名称 + normalized signature。
 - 文件卡片：固定语义键 `file_card`。
@@ -69,9 +69,7 @@ createStableNodeId(fileId: string, semanticKey: string): string;
 createStableChunkId(fileId: string, chunkKind: CodeChunkKind, semanticKey: string): string;
 ```
 
-ID 不包含行号、mtime 或索引时间。文件选择 path 身份域，是因为当前文件和已解析 import 目标都具备 workspace-relative `filePath`，而目标 URI 不一定可得；两者必须使用同一输入规则生成可连接的 file ID。符号语义键中的 qualified name path 前缀执行相同规范化。符号重命名视为删除旧身份并新增新身份。TypeScript function、method、constructor 和 arrow function 的稳定身份签名只由 type parameters、parameters 和 return type 等语法字段组成，不包含 body 或 range；真实 overload 必须由规范化签名区分。无 body 的 overload declaration 标记 `metadata.declarationOnly`；引用解析优先选择 concrete implementation，仅在没有实现时回退到 declaration。
-
-同一文件内 edge、binding、unresolved reference 或 diagnostic 出现相同语义 tuple 时，按抽取输入的稳定顺序分配从 0 开始的 occurrence ordinal，并把 ordinal 纳入关系 ID hash。ordinal 不包含行号，因此整体行移不改变对应关系 ID；同时每条关系仍有唯一 ID，满足 `edges`、`import_bindings`、`unresolved_references` 和 `diagnostics` 表的 `id TEXT PRIMARY KEY` 契约。
+ID 不包含行号、mtime 或索引时间。文件选择 path 身份域，是因为当前文件和已解析 import 目标都具备 workspace-relative `filePath`，而目标 URI 不一定可得；两者必须使用同一输入规则生成可连接的 file ID。符号重命名视为删除旧身份并新增新身份。TypeScript function、method、constructor 和 arrow function 的稳定身份签名只由 type parameters、parameters 和 return type 等语法字段组成，不包含 body 或 range；真实 overload 必须由规范化签名区分。
 
 ## Chunk 数据契约
 

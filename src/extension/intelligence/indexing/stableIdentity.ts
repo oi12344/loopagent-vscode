@@ -22,21 +22,13 @@ function normalizeSignature(signature: string | undefined): string {
     .replace(/\s*([()[\]{},:;<>?=|&])\s*/g, "$1");
 }
 
-export function normalizeWorkspaceRelativePath(workspaceRelativePath: string): string {
-  return path.posix.normalize(workspaceRelativePath.replace(/\\/g, "/")).replace(/^\.\//, "");
-}
-
 export function createFileId(workspaceRelativePath: string): string {
-  const normalizedPath = normalizeWorkspaceRelativePath(workspaceRelativePath);
+  const normalizedPath = path.posix.normalize(workspaceRelativePath.replace(/\\/g, "/")).replace(/^\.\//, "");
   return sha256(["file", normalizedPath]);
 }
 
 export function createSymbolSemanticKey(node: CodeNode, parentKey?: string): string {
-  const normalizedFilePath = normalizeWorkspaceRelativePath(node.filePath);
-  const normalizedQualifiedName = node.qualifiedName.startsWith(node.filePath)
-    ? `${normalizedFilePath}${node.qualifiedName.slice(node.filePath.length)}`
-    : node.qualifiedName;
-  return [parentKey ?? "", node.kind, normalizedQualifiedName, normalizeSignature(node.signature)].join("\u0000");
+  return [parentKey ?? "", node.kind, node.qualifiedName, normalizeSignature(node.signature)].join("\u0000");
 }
 
 export function createStableNodeId(fileId: string, semanticKey: string): string {

@@ -50,27 +50,21 @@ function findTargetNode(
   );
 
   if (imported?.resolvedFilePath) {
-    const target = preferConcreteNode(
-      graph
-        .getAllNodes()
-        .filter((node) => node.filePath === imported.resolvedFilePath && isImportedTarget(node, imported)),
-    );
+    const target = graph
+      .getAllNodes()
+      .find((node) => node.filePath === imported.resolvedFilePath && isImportedTarget(node, imported));
     return target ? { node: target, confidence: "exact" } : undefined;
   }
 
-  const namedCandidates = graph.getNodesByName(reference.referenceName);
-  const sameFile = preferConcreteNode(namedCandidates.filter((node) => node.filePath === reference.filePath));
+  const sameFile = graph
+    .getNodesByName(reference.referenceName)
+    .find((node) => node.filePath === reference.filePath);
   if (sameFile) {
     return { node: sameFile, confidence: "probable" };
   }
 
-  const concreteCandidates = namedCandidates.filter((node) => node.metadata?.declarationOnly !== true);
-  const candidates = concreteCandidates.length > 0 ? concreteCandidates : namedCandidates;
+  const candidates = graph.getNodesByName(reference.referenceName);
   return candidates.length === 1 ? { node: candidates[0]!, confidence: "heuristic" } : undefined;
-}
-
-function preferConcreteNode(nodes: CodeNode[]): CodeNode | undefined {
-  return nodes.find((node) => node.metadata?.declarationOnly !== true) ?? nodes[0];
 }
 
 function isImportedTarget(node: CodeNode, binding: ImportBinding): boolean {
