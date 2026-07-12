@@ -1,5 +1,8 @@
 # ReAct Agent Runtime 状态机设计
 
+> 状态：最小状态机已实现；真实 provider、原生 tool call 和代码搜索工具的生产接入由
+> `docs/superpowers/specs/2026-07-13-production-react-code-search-tool-design.md` 继续定义。
+
 ## 背景
 
 LoopAgent 目前已经具备 React Webview、模型选择、DeepSeek provider、`thinking` 信号展示、`CodeRuntimeContext` 和 `WorkspaceIntelligence` 注入能力。当前 `src/extension/model/modelRunner.ts` 仍是一次性模型流式调用：它把用户任务和系统上下文发给 provider，然后把 `contentDelta`、`reasoningDelta` 转成 Webview 消息。
