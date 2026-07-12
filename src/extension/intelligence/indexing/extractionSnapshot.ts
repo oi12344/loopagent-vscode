@@ -35,6 +35,7 @@ export function buildExtractionSnapshot(input: SnapshotInput): ExtractionSnapsho
   );
   const nodeByOldId = new Map(input.extraction.nodes.map((node) => [node.id, node]));
   const semanticKeyByOldId = new Map<string, string>();
+  const semanticKeyOccurrences = new Map<string, number>();
 
   function semanticKeyFor(oldId: string, ancestors = new Set<string>()): string {
     const cached = semanticKeyByOldId.get(oldId);
@@ -44,7 +45,10 @@ export function buildExtractionSnapshot(input: SnapshotInput): ExtractionSnapsho
     if (ancestors.has(oldId)) throw new Error(`Contains relationship cycle detected at node: ${oldId}`);
     const parentId = parentByNodeId.get(oldId);
     const parentKey = parentId ? semanticKeyFor(parentId, new Set([...ancestors, oldId])) : undefined;
-    const semanticKey = createSymbolSemanticKey(node, parentKey);
+    const baseSemanticKey = createSymbolSemanticKey(node, parentKey);
+    const occurrence = semanticKeyOccurrences.get(baseSemanticKey) ?? 0;
+    semanticKeyOccurrences.set(baseSemanticKey, occurrence + 1);
+    const semanticKey = `${baseSemanticKey}\u0000occurrence:${occurrence}`;
     semanticKeyByOldId.set(oldId, semanticKey);
     return semanticKey;
   }
