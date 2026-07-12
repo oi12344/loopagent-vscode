@@ -6,21 +6,11 @@ import type { ModelMessage, ModelProvider } from "../src/extension/model/types";
 import type { HostToWebviewMessage } from "../src/shared/messages";
 
 describe("createConfiguredAgentRunner code intelligence context", () => {
-  it("sends VS Code workspace search results to the model system prompt", async () => {
-    const workspaceRoot = "E:\\work\\repo";
-    const workspaceFiles = new Map<string, string>([
-      [
-        `${workspaceRoot}\\src\\modelAccess.ts`,
-        [
-          "export function createDeepSeekProvider() {",
-          "  return { provider: \"deepseek\" };",
-          "}",
-          "",
-        ].join("\n"),
-      ],
-      [`${workspaceRoot}\\.env`, "DEEPSEEK_API_KEY=should-not-be-indexed"],
-    ]);
+  it("runs native exploreCode tool calls and returns observations to the next model turn", async () => {
     const capturedMessages: ModelMessage[][] = [];
+    const workspaceIntelligence = {
+      buildCodeIntelligencePrompt: vi.fn(async () => "代码语义索引上下文\nsrc/modelAccess.ts"),
+    };
 
     vi.resetModules();
     vi.doMock("../src/extension/model/modelConfig", () => ({
@@ -44,17 +34,32 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
         displayName: "Mock model",
         stream: async function* ({ messages }) {
           capturedMessages.push(messages);
-          yield { type: "contentDelta", content: "ok" };
+          if (capturedMessages.length === 1) {
+            yield {
+              type: "toolCallDelta",
+              index: 0,
+              id: "call_1",
+              name: "exploreCode",
+              argumentsDelta: '{"query":"provider registry model context"}',
+            };
+            yield { type: "finishReason", reason: "tool_calls" };
+            return;
+          }
+
+          yield { type: "contentDelta", content: "providerRegistry 负责接入代码上下文。" };
+          yield { type: "finishReason", reason: "stop" };
         },
       }),
     }));
 
     const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
-    const runner: AgentRunner = await createConfiguredAgentRunner({} as never, { provider: "deepseek" }, {
-      vscodeApi: createFakeVsCodeWorkspaceApi(workspaceRoot, workspaceFiles),
-    });
+    const runner: AgentRunner = await createConfiguredAgentRunner(
+      {} as never,
+      { provider: "deepseek" },
+      { workspaceIntelligence },
+    );
 
-    await collectHostMessages(runner, "模型接入 createDeepSeekProvider");
+    const hostMessages = await collectHostMessages(runner, "谁负责把代码上下文加入模型请求？");
 
     const systemPrompt = capturedMessages[0]!
       .filter((message) => message.role === "system")
@@ -62,10 +67,42 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
       .join("\n\n");
 
     expect(systemPrompt).toContain("runtime context");
-    expect(systemPrompt).toContain("代码语义索引上下文");
-    expect(systemPrompt).toContain("createDeepSeekProvider");
-    expect(systemPrompt).toContain("src/modelAccess.ts");
-    expect(systemPrompt).not.toContain("DEEPSEEK_API_KEY");
+    expect(systemPrompt).toContain("exploreCode");
+    expect(systemPrompt).not.toContain("代码语义索引上下文");
+    expect(workspaceIntelligence.buildCodeIntelligencePrompt).toHaveBeenCalledTimes(1);
+    expect(workspaceIntelligence.buildCodeIntelligencePrompt).toHaveBeenCalledWith("provider registry model context");
+    expect(capturedMessages[1]!.slice(-2)).toEqual([
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [
+          {
+            id: "call_1",
+            type: "function",
+            function: {
+              name: "exploreCode",
+              arguments: '{"query":"provider registry model context"}',
+            },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: "代码语义索引上下文\nsrc/modelAccess.ts",
+        toolCallId: "call_1",
+        name: "exploreCode",
+      },
+    ]);
+    expect(hostMessages).toContainEqual({
+      type: "agentEvent",
+      runId: "run-1",
+      message: "Running tool exploreCode",
+    });
+    expect(hostMessages).toContainEqual({
+      type: "assistantDelta",
+      runId: "run-1",
+      content: "providerRegistry 负责接入代码上下文。",
+    });
   });
 
   it("wires tree-sitter parser runtime into VS Code workspace intelligence", async () => {
