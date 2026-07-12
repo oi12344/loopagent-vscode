@@ -175,4 +175,43 @@ describe("stable extraction snapshots", () => {
     expect(snapshot.file.uri).toBe("file:///workspace/src/sample.ts");
     expect(snapshot.importBindings[0]?.resolvedFileId).toBe(createFileId("src/helper.ts"));
   });
+
+  it("disambiguates duplicate relations while preserving ordinal identity across range moves", () => {
+    const firstFixture = snapshotInput(5, 6);
+    const movedFixture = snapshotInput(25, 26);
+    for (const fixture of [firstFixture, movedFixture]) {
+      const { extraction } = fixture.input;
+      extraction.edges.push({ ...extraction.edges[0]!, id: "duplicate-edge", line: extraction.edges[0]!.line! + 1 });
+      extraction.unresolvedReferences.push({
+        ...extraction.unresolvedReferences[0]!,
+        line: extraction.unresolvedReferences[0]!.line + 1,
+      });
+      extraction.importBindings.push({ ...extraction.importBindings[0]! });
+      extraction.diagnostics.push({ ...extraction.diagnostics[0]! });
+    }
+
+    const first = buildExtractionSnapshot(firstFixture.input);
+    const moved = buildExtractionSnapshot(movedFixture.input);
+    for (const key of ["edges", "unresolvedReferences", "importBindings", "diagnostics"] as const) {
+      const firstIds = first[key].map((item) => item.id);
+      const movedIds = moved[key].map((item) => item.id);
+      expect(new Set(firstIds).size).toBe(firstIds.length);
+      expect(movedIds).toEqual(firstIds);
+    }
+  });
+
+  it("normalizes qualified-name path prefixes when creating snapshot node identities", () => {
+    const windowsFixture = snapshotInput(5, 6);
+    windowsFixture.input.filePath = ".\\src\\nested\\..\\sample.ts";
+    windowsFixture.input.parsed.filePath = windowsFixture.input.filePath;
+    for (const node of windowsFixture.input.extraction.nodes) {
+      node.filePath = windowsFixture.input.filePath;
+      node.qualifiedName = node.qualifiedName.replace("src/sample.ts", windowsFixture.input.filePath);
+    }
+    const posix = buildExtractionSnapshot(snapshotInput(5, 6).input);
+    const windows = buildExtractionSnapshot(windowsFixture.input);
+
+    expect(windows.file.id).toBe(posix.file.id);
+    expect(windows.nodes.map((node) => node.id)).toEqual(posix.nodes.map((node) => node.id));
+  });
 });

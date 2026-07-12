@@ -63,12 +63,24 @@ export function buildExtractionSnapshot(input: SnapshotInput): ExtractionSnapsho
     return stableId;
   }
 
+  function createOccurrenceIdFactory(): (kind: string, semanticParts: readonly string[]) => string {
+    const occurrences = new Map<string, number>();
+    return (kind, semanticParts) => {
+      const baseKey = JSON.stringify([kind, ...semanticParts]);
+      const ordinal = occurrences.get(baseKey) ?? 0;
+      occurrences.set(baseKey, ordinal + 1);
+      return createStableRelationId(kind, ...semanticParts, String(ordinal));
+    };
+  }
+
+  const createOccurrenceId = createOccurrenceIdFactory();
+
   const edges: SnapshotEdge[] = input.extraction.edges.map((edge) => {
     const sourceNodeId = stableNodeId(edge.source);
     const targetNodeId = stableNodeId(edge.target);
     return {
       ...edge,
-      id: createStableRelationId("edge", fileId, edge.kind, sourceNodeId, targetNodeId),
+      id: createOccurrenceId("edge", [fileId, edge.kind, sourceNodeId, targetNodeId]),
       source: sourceNodeId,
       target: targetNodeId,
       sourceNodeId,
@@ -79,13 +91,7 @@ export function buildExtractionSnapshot(input: SnapshotInput): ExtractionSnapsho
 
   const importBindings: SnapshotImportBinding[] = input.extraction.importBindings.map((binding) => ({
     ...binding,
-    id: createStableRelationId(
-      "binding",
-      fileId,
-      binding.localName,
-      binding.importedName,
-      binding.source,
-    ),
+    id: createOccurrenceId("binding", [fileId, binding.localName, binding.importedName, binding.source]),
     fileId,
     resolvedFileId: binding.resolvedFilePath ? createFileId(binding.resolvedFilePath) : undefined,
   }));
@@ -93,20 +99,19 @@ export function buildExtractionSnapshot(input: SnapshotInput): ExtractionSnapsho
     const fromNodeId = stableNodeId(reference.fromNodeId);
     return {
       ...reference,
-      id: createStableRelationId(
-        "reference",
+      id: createOccurrenceId("reference", [
         fileId,
         fromNodeId,
         reference.referenceKind,
         reference.referenceName,
-      ),
+      ]),
       fileId,
       fromNodeId,
     };
   });
   const diagnostics: SnapshotDiagnostic[] = input.extraction.diagnostics.map((diagnostic) => ({
     ...diagnostic,
-    id: createStableRelationId("diagnostic", fileId, diagnostic.severity, diagnostic.message),
+    id: createOccurrenceId("diagnostic", [fileId, diagnostic.severity, diagnostic.message]),
     fileId,
   }));
 
