@@ -63,7 +63,7 @@ Expected: FAIL，稳定身份和 snapshot builder 不存在。
 - [x] **Step 3：实现稳定身份和引用重写**
 
 ```ts
-export function createFileId(workspaceRelativePath: string): string;
+export function createFileId(fileUri: string): string;
 export function createSymbolSemanticKey(node: CodeNode, parentKey?: string): string;
 export function createStableNodeId(fileId: string, semanticKey: string): string;
 ```
@@ -87,7 +87,7 @@ git diff --cached --check
 git commit -m "feat(intelligence): create stable extraction snapshots"
 ```
 
-**Task 1 完成记录（2026-07-12）：** 已实现 UTF-8 SHA-256 文件/符号稳定身份和不含 range、mtime、时间的 snapshot core；文件主身份使用规范化 workspace-relative path，使当前文件与仅提供 `resolvedFilePath` 的 import 目标处于同一身份域，原始 URI 仅作为 snapshot 元数据保存。先建立旧 node ID 到 stable ID 映射，再重写 edge、binding 和 unresolved reference。真实 TypeScript tree-sitter overload 通过 type parameters、parameters 和 return type 等无 body/range 语法字段生成规范化签名并区分 stable ID；等价路径、范围移动、现有 TypeScript/Python adapter 回归及 `npm run typecheck` 均通过。本阶段按计划不包含 chunks，且 snapshot builder 不释放 `parsed.tree`。
+**Task 1 完成记录（2026-07-12）：** 已实现 UTF-8 SHA-256 文件/符号稳定身份和不含 range、mtime、时间的 snapshot core；先建立旧 node ID 到 stable ID 映射，再重写 edge、binding 和 unresolved reference。范围移动与 overload 测试、现有 TypeScript/Python adapter 回归及 `npm run typecheck` 均通过；本阶段按计划不包含 chunks，且 snapshot builder 不释放 `parsed.tree`。
 
 ## Task 2：生成稳定 Card Chunks 和三层 Hash
 

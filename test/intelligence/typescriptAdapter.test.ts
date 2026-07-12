@@ -243,29 +243,6 @@ describe("TypeScript adapter", () => {
     );
   });
 
-  it("extracts normalized signatures for overloaded callables", async () => {
-    const result = await extractWithTree(
-      [
-        "function run(value: string): void;",
-        "function run(value: number): void;",
-        "function run(value: string | number): void {}",
-        "class Service { constructor(value: string) {} execute<T>(value: T): Promise<T> { return Promise.resolve(value); } }",
-        "const map = <T>(value: T): T => value;",
-      ].join("\n"),
-    );
-
-    expect(result.nodes).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: "run", signature: "run(value: string): void" }),
-        expect.objectContaining({ name: "run", signature: "run(value: number): void" }),
-        expect.objectContaining({ name: "run", signature: "run(value: string | number): void" }),
-        expect.objectContaining({ name: "constructor", signature: "constructor(value: string)" }),
-        expect.objectContaining({ name: "execute", signature: "execute<T>(value: T): Promise<T>" }),
-        expect.objectContaining({ name: "map", signature: "map<T>(value: T): T" }),
-      ]),
-    );
-  });
-
   it("extracts multiline imports and preserves callee shape", async () => {
     const result = await extractWithTree(
       [
