@@ -1,12 +1,20 @@
+import path from "node:path";
+import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 
 import type { CodeNode } from "../../src/extension/intelligence/graph/graphTypes";
+import { createTypeScriptAdapter } from "../../src/extension/intelligence/languages/typescriptAdapter";
 import { buildExtractionSnapshot } from "../../src/extension/intelligence/indexing/extractionSnapshot";
 import {
   createFileId,
   createStableNodeId,
   createSymbolSemanticKey,
 } from "../../src/extension/intelligence/indexing/stableIdentity";
+import { createTreeSitterParserRuntime } from "../../src/extension/intelligence/parser/treeSitterRuntime";
+
+const require = createRequire(import.meta.url);
+const parserWasmPath = require.resolve("web-tree-sitter/web-tree-sitter.wasm");
+const grammarWasmDirectory = path.join(process.cwd(), "node_modules", "@vscode", "tree-sitter-wasm", "wasm");
 
 function functionNode(name: string, signature: string, startLine = 5): CodeNode {
   return {
@@ -116,12 +124,55 @@ describe("stable extraction snapshots", () => {
     expect(stringKey).not.toBe(numberKey);
   });
 
+  it("distinguishes overload identities extracted from a real TypeScript syntax tree", async () => {
+    const runtime = createTreeSitterParserRuntime({ parserWasmPath, grammarWasmDirectory });
+    const parsed = await runtime.parse(
+      "src/sample.ts",
+      "typescript",
+      [
+        "export function run(value: string): void;",
+        "export function run(value: number): void;",
+        "export function run(value: string | number): void {}",
+      ].join("\n"),
+    );
+    try {
+      const extraction = createTypeScriptAdapter().extract(parsed);
+      const snapshot = buildExtractionSnapshot({
+        fileUri: "file:///workspace/src/sample.ts",
+        filePath: "src/sample.ts",
+        parsed,
+        extraction,
+      });
+      const overloads = snapshot.nodes.filter((node) => node.kind === "function" && node.name === "run");
+
+      expect(overloads.map((node) => node.signature)).toEqual([
+        "run(value: string): void",
+        "run(value: number): void",
+        "run(value: string | number): void",
+      ]);
+      expect(new Set(overloads.map((node) => node.id)).size).toBe(3);
+    } finally {
+      parsed.tree?.delete();
+    }
+  });
+
   it("hashes UTF-8 semantic inputs without volatile location data", () => {
-    const fileId = createFileId("file:///workspace/src/\u793a\u4f8b.ts");
+    const fileId = createFileId("src/\u793a\u4f8b.ts");
     const semanticKey = createSymbolSemanticKey(functionNode("run", "run(): void"));
 
     expect(fileId).toMatch(/^[a-f0-9]{64}$/);
     expect(createStableNodeId(fileId, semanticKey)).toMatch(/^[a-f0-9]{64}$/);
     expect(createSymbolSemanticKey(functionNode("run", "run(): void", 100))).toBe(semanticKey);
+  });
+
+  it("uses normalized workspace-relative paths for files and resolved bindings", () => {
+    const fixture = snapshotInput(5, 6);
+    const snapshot = buildExtractionSnapshot(fixture.input);
+
+    expect(createFileId(".\\src\\nested\\..\\sample.ts")).toBe(createFileId("src/sample.ts"));
+    expect(createFileId("./src//sample.ts")).toBe(createFileId("src/sample.ts"));
+    expect(snapshot.file.id).toBe(createFileId("src/sample.ts"));
+    expect(snapshot.file.uri).toBe("file:///workspace/src/sample.ts");
+    expect(snapshot.importBindings[0]?.resolvedFileId).toBe(createFileId("src/helper.ts"));
   });
 });
