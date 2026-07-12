@@ -29,7 +29,7 @@ function contentHash(text: string): string {
 }
 
 export function buildExtractionSnapshot(input: SnapshotInput): ExtractionSnapshot {
-  const fileId = createFileId(input.fileUri);
+  const fileId = createFileId(input.filePath);
   const parentByNodeId = new Map(
     input.extraction.edges.filter((edge) => edge.kind === "contains").map((edge) => [edge.target, edge.source]),
   );

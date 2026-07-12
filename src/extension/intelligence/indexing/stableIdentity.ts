@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 import type { CodeNode } from "../graph/graphTypes";
 
@@ -21,8 +22,9 @@ function normalizeSignature(signature: string | undefined): string {
     .replace(/\s*([()[\]{},:;<>?=|&])\s*/g, "$1");
 }
 
-export function createFileId(fileUri: string): string {
-  return sha256(["file", fileUri]);
+export function createFileId(workspaceRelativePath: string): string {
+  const normalizedPath = path.posix.normalize(workspaceRelativePath.replace(/\\/g, "/")).replace(/^\.\//, "");
+  return sha256(["file", normalizedPath]);
 }
 
 export function createSymbolSemanticKey(node: CodeNode, parentKey?: string): string {

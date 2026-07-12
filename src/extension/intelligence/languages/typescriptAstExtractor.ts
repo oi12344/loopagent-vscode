@@ -10,7 +10,7 @@ import {
   visitNamedNodes,
 } from "./treeSitterAst";
 
-const FUNCTION_NODE_TYPES = new Set(["function_declaration", "generator_function_declaration"]);
+const FUNCTION_NODE_TYPES = new Set(["function_declaration", "generator_function_declaration", "function_signature"]);
 const VARIABLE_FUNCTION_NODE_TYPES = new Set(["arrow_function", "function_expression"]);
 const CALLABLE_NODE_TYPES = new Set([...FUNCTION_NODE_TYPES, ...VARIABLE_FUNCTION_NODE_TYPES, "method_definition"]);
 
@@ -148,6 +148,7 @@ export function extractTypeScriptAst(parsed: ParsedSource): ExtractionResult {
       filePath: parsed.filePath,
       languageId: parsed.languageId,
       ...range,
+      signature: createCallableSignature(rangeNode, name),
       isExported: exported,
       metadata: isDefaultExport(ancestors) ? { isDefaultExport: true } : undefined,
     };
@@ -189,6 +190,19 @@ export function extractTypeScriptAst(parsed: ParsedSource): ExtractionResult {
     const callable = getNearestCallableSyntaxNode(ancestors);
     return callable ? codeNodeBySyntaxNode.get(callable) : fileNode;
   }
+}
+
+function createCallableSignature(node: SyntaxNode, name: string): string | undefined {
+  if (!CALLABLE_NODE_TYPES.has(node.type) && node.type !== "function_signature") {
+    return undefined;
+  }
+  const typeParameters = getField(node, "type_parameters")?.text ?? "";
+  const parameters = getField(node, "parameters")?.text;
+  const returnType = getField(node, "return_type")?.text ?? "";
+  if (!parameters) {
+    return undefined;
+  }
+  return `${name}${typeParameters}${parameters}${returnType}`.trim().replace(/\s+/g, " ");
 }
 
 function getNearestCallableSyntaxNode(ancestors: readonly SyntaxNode[]): SyntaxNode | undefined {
