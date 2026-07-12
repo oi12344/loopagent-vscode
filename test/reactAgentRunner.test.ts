@@ -38,6 +38,8 @@ describe("createReactAgentRunner", () => {
       tools: [
         {
           name: "echoObservation",
+          description: "Echo a test observation.",
+          inputSchema: { type: "string" },
           invoke: async ({ input }: { input: unknown }) => `observed ${String(input)}`,
         },
       ],
@@ -47,16 +49,30 @@ describe("createReactAgentRunner", () => {
         if (turn === 1) {
           return {
             kind: "toolRequests",
-            requests: [{ id: "tool-1", name: "echoObservation", input: "workspace" }],
+            assistantMessage: {
+              role: "assistant",
+              content: "",
+              toolCalls: [
+                {
+                  id: "tool-1",
+                  type: "function",
+                  function: { name: "echoObservation", arguments: '"workspace"' },
+                },
+              ],
+            },
+            requests: [{ id: "tool-1", name: "echoObservation", rawArguments: '"workspace"', input: "workspace" }],
           };
         }
 
-        expect(messages).toContainEqual({
-          role: "tool",
-          requestId: "tool-1",
-          name: "echoObservation",
-          content: "observed workspace",
-        });
+        expect(messages.slice(-2)).toEqual([
+          expect.objectContaining({ role: "assistant", toolCalls: [expect.objectContaining({ id: "tool-1" })] }),
+          {
+            role: "tool",
+            requestId: "tool-1",
+            name: "echoObservation",
+            content: "observed workspace",
+          },
+        ]);
         return { kind: "final", content: "Used observation." };
       },
     });
@@ -69,6 +85,33 @@ describe("createReactAgentRunner", () => {
       { type: "assistantThinking", runId: "run-1", message: "Planning step 2" },
       { type: "assistantDelta", runId: "run-1", content: "Used observation." },
       { type: "runFinished", runId: "run-1" },
+    ]);
+  });
+
+  it("prepends a runtime system prompt and continues when the provider fails", async () => {
+    const seenMessages: unknown[] = [];
+    const runner = createReactAgentRunner({
+      systemPromptProvider: async ({ task }) => {
+        if (task === "fallback") {
+          throw new Error("runtime unavailable");
+        }
+        return "Use tools when repository facts are needed.";
+      },
+      modelTurn: async ({ messages }) => {
+        seenMessages.push(messages);
+        return { kind: "final", content: "done" };
+      },
+    });
+
+    await collectRunnerMessages(runner, "normal");
+    await collectRunnerMessages(runner, "fallback");
+
+    expect(seenMessages).toEqual([
+      [
+        { role: "system", content: "Use tools when repository facts are needed." },
+        { role: "user", content: "normal" },
+      ],
+      [{ role: "user", content: "fallback" }],
     ]);
   });
 
@@ -125,6 +168,8 @@ describe("createReactAgentRunner", () => {
       tools: [
         {
           name: "echoObservation",
+          description: "Echo a test observation.",
+          inputSchema: { type: "string" },
           invoke: async ({ input }: { input: unknown }) => `observed ${String(input)}`,
         },
       ],

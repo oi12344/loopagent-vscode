@@ -1,7 +1,14 @@
+import type { ModelToolCall } from "../model/types";
+
 export type ReactAgentMessage =
   | {
-      role: "system" | "user" | "assistant";
+      role: "system" | "user";
       content: string;
+    }
+  | {
+      role: "assistant";
+      content: string;
+      toolCalls?: ModelToolCall[];
     }
   | {
       role: "tool";
@@ -13,6 +20,7 @@ export type ReactAgentMessage =
 export type ReactAgentToolRequest = {
   id: string;
   name: string;
+  rawArguments: string;
   input: unknown;
 };
 
@@ -24,6 +32,8 @@ export type ReactAgentToolInvocation = {
 
 export type ReactAgentTool = {
   name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
   invoke(invocation: ReactAgentToolInvocation): string | Promise<string>;
 };
 
@@ -34,6 +44,7 @@ export type ReactModelTurnResult =
     }
   | {
       kind: "toolRequests";
+      assistantMessage: Extract<ReactAgentMessage, { role: "assistant" }>;
       requests: ReactAgentToolRequest[];
     };
 

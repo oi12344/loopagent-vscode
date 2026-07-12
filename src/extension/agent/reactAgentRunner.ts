@@ -1,5 +1,5 @@
 import type { HostToWebviewMessage } from "../../shared/messages";
-import type { AgentRunner } from "../agentRunner";
+import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import type { ReactAgentMessage, ReactAgentTool, ReactModelTurn } from "./reactTypes";
 import { createToolRegistry } from "./toolRegistry";
 import { createDefaultReactTools } from "./tools";
@@ -10,6 +10,7 @@ export type CreateReactAgentRunnerOptions = {
   tools?: ReactAgentTool[];
   maxSteps?: number;
   maxToolRequestsPerStep?: number;
+  systemPromptProvider?: (request: AgentRunRequest) => string | Promise<string>;
 };
 
 export function createReactAgentRunner({
@@ -18,11 +19,13 @@ export function createReactAgentRunner({
   tools = createDefaultReactTools(),
   maxSteps = 4,
   maxToolRequestsPerStep = 3,
+  systemPromptProvider,
 }: CreateReactAgentRunnerOptions): AgentRunner {
   const toolRegistry = createToolRegistry(tools);
 
   return {
-    async *run({ runId, task, signal }) {
+    async *run(request) {
+      const { runId, task, signal } = request;
       if (signal.aborted) {
         return;
       }
@@ -31,7 +34,14 @@ export function createReactAgentRunner({
         yield { type: "runStarted", runId, task } satisfies HostToWebviewMessage;
         yield { type: "assistantStarted", runId, provider: providerName } satisfies HostToWebviewMessage;
 
-        const messages: ReactAgentMessage[] = [{ role: "user", content: task }];
+        const messages: ReactAgentMessage[] = [];
+        const systemPrompt = await resolveSystemPrompt(systemPromptProvider, request);
+
+        if (systemPrompt) {
+          messages.push({ role: "system", content: systemPrompt });
+        }
+
+        messages.push({ role: "user", content: task });
 
         for (let step = 1; step <= maxSteps; step++) {
           if (signal.aborted) {
@@ -55,6 +65,8 @@ export function createReactAgentRunner({
           if (result.requests.length > maxToolRequestsPerStep) {
             throw new Error(`Too many tool requests in one step: ${result.requests.length}`);
           }
+
+          messages.push(result.assistantMessage);
 
           for (const request of result.requests) {
             if (signal.aborted) {
@@ -88,6 +100,22 @@ export function createReactAgentRunner({
       }
     },
   };
+}
+
+async function resolveSystemPrompt(
+  provider: CreateReactAgentRunnerOptions["systemPromptProvider"],
+  request: AgentRunRequest,
+): Promise<string | undefined> {
+  if (!provider) {
+    return undefined;
+  }
+
+  try {
+    const prompt = await provider(request);
+    return prompt.trim().length > 0 ? prompt : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function formatRunError(error: unknown): string {
