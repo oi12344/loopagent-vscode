@@ -21,6 +21,13 @@ async function extractWithTree(text: string) {
 }
 
 describe("Python adapter", () => {
+  it("includes the AST start column in transient symbol IDs", async () => {
+    const result = await extractWithTree("def run():\n    pass");
+    const run = result.nodes.find((node) => node.name === "run");
+
+    expect(run?.id).toBe("symbol:app/sample.py:function:run:1:0");
+  });
+
   it("extracts imports, classes, functions, methods, and calls", () => {
     const adapter = createPythonAdapter();
     const result = adapter.extract({
