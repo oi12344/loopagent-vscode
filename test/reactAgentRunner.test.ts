@@ -115,33 +115,36 @@ describe("createReactAgentRunner", () => {
     ]);
   });
 
-  it("provides the default read-only echoObservation tool", async () => {
-    let turn = 0;
+  it("does not expose test tools by default", async () => {
     const runner = createReactAgentRunner({
-      modelTurn: async ({ messages }) => {
-        turn += 1;
-
-        if (turn === 1) {
-          return {
-            kind: "toolRequests",
-            requests: [{ id: "tool-1", name: "echoObservation", input: "default tool" }],
-          };
-        }
-
-        expect(messages).toContainEqual({
-          role: "tool",
-          requestId: "tool-1",
-          name: "echoObservation",
-          content: "default tool",
-        });
-        return { kind: "final", content: "Default tool worked." };
-      },
+      modelTurn: async () => ({
+        kind: "toolRequests",
+        assistantMessage: {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "tool-1",
+              type: "function",
+              function: { name: "echoObservation", arguments: '"default tool"' },
+            },
+          ],
+        },
+        requests: [
+          {
+            id: "tool-1",
+            name: "echoObservation",
+            rawArguments: '"default tool"',
+            input: "default tool",
+          },
+        ],
+      }),
     });
 
     await expect(collectRunnerMessages(runner)).resolves.toContainEqual({
-      type: "assistantDelta",
+      type: "runFailed",
       runId: "run-1",
-      content: "Default tool worked.",
+      message: "Unknown tool: echoObservation",
     });
   });
 
