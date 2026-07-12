@@ -67,6 +67,103 @@ describe("createOpenAiCompatibleClient", () => {
       stream_options: { include_usage: true },
       thinking: { type: "disabled" },
     });
+    expect(body).not.toHaveProperty("tools");
+    expect(body).not.toHaveProperty("tool_choice");
+  });
+
+  it("sends tool definitions and history and streams tool call deltas", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        [
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"exploreCode","arguments":"{\\"query\\":"}}]}}]}',
+          "",
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"provider registry\\"}"}}]},"finish_reason":"tool_calls"}]}',
+          "",
+          "data: [DONE]",
+          "",
+        ].join("\n"),
+        { status: 200 },
+      ),
+    );
+    const client = createOpenAiCompatibleClient({
+      baseUrl: "https://api.deepseek.com",
+      apiKey: "test-api-key",
+      model: "deepseek-v4-flash",
+      fetch: fetchMock,
+    });
+    const tool = {
+      type: "function" as const,
+      function: {
+        name: "exploreCode",
+        description: "Search the current workspace code.",
+        parameters: {
+          type: "object",
+          properties: { query: { type: "string" } },
+          required: ["query"],
+          additionalProperties: false,
+        },
+      },
+    };
+    const events = [];
+
+    for await (const event of client.stream({
+      messages: [
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "call_0",
+              type: "function",
+              function: { name: "exploreCode", arguments: '{"query":"model runner"}' },
+            },
+          ],
+        },
+        { role: "tool", content: "model runner context", toolCallId: "call_0", name: "exploreCode" },
+        { role: "user", content: "Where is the provider registry?" },
+      ],
+      signal: new AbortController().signal,
+      tools: [tool],
+      toolChoice: "auto",
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: "toolCallDelta",
+        index: 0,
+        id: "call_1",
+        name: "exploreCode",
+        argumentsDelta: '{"query":',
+      },
+      { type: "toolCallDelta", index: 0, argumentsDelta: '"provider registry"}' },
+      { type: "finishReason", reason: "tool_calls" },
+    ]);
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(body.tools).toEqual([tool]);
+    expect(body.tool_choice).toBe("auto");
+    expect(body.messages).toEqual([
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "call_0",
+            type: "function",
+            function: { name: "exploreCode", arguments: '{"query":"model runner"}' },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: "model runner context",
+        tool_call_id: "call_0",
+        name: "exploreCode",
+      },
+      { role: "user", content: "Where is the provider registry?" },
+    ]);
   });
 
   it.each([

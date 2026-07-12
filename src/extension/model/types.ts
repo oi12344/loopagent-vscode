@@ -1,13 +1,45 @@
 export type ModelRole = "system" | "user" | "assistant" | "tool";
 
-export type ModelMessage = {
-  role: ModelRole;
-  content: string;
+export type ModelToolDefinition = {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
 };
+
+export type ModelToolCall = {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
+export type ModelMessage =
+  | {
+      role: "system" | "user";
+      content: string;
+    }
+  | {
+      role: "assistant";
+      content: string;
+      toolCalls?: ModelToolCall[];
+    }
+  | {
+      role: "tool";
+      content: string;
+      toolCallId: string;
+      name?: string;
+    };
 
 export type ModelRequest = {
   messages: ModelMessage[];
   signal: AbortSignal;
+  tools?: ModelToolDefinition[];
+  toolChoice?: "auto";
 };
 
 export type ModelStreamEvent =
@@ -22,6 +54,17 @@ export type ModelStreamEvent =
   | {
       type: "usage";
       usage: unknown;
+    }
+  | {
+      type: "toolCallDelta";
+      index: number;
+      id?: string;
+      name?: string;
+      argumentsDelta?: string;
+    }
+  | {
+      type: "finishReason";
+      reason: string;
     };
 
 export type ModelProvider = {

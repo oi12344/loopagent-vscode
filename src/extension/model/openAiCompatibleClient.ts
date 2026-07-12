@@ -15,7 +15,16 @@ type ChatCompletionChunk = {
     delta?: {
       content?: string;
       reasoning_content?: string;
+      tool_calls?: Array<{
+        index: number;
+        id?: string;
+        function?: {
+          name?: string;
+          arguments?: string;
+        };
+      }>;
     };
+    finish_reason?: string | null;
   }>;
   usage?: unknown;
 };
@@ -61,9 +70,15 @@ async function* streamChatCompletion({
     },
     body: JSON.stringify({
       model,
-      messages: request.messages satisfies ModelMessage[],
+      messages: request.messages.map(serializeMessage),
       stream: true,
       stream_options: { include_usage: true },
+      ...(request.tools
+        ? {
+            tools: request.tools,
+            tool_choice: request.toolChoice ?? "auto",
+          }
+        : {}),
       ...body,
     }),
     signal: request.signal,
@@ -90,6 +105,26 @@ async function* streamChatCompletion({
     for (const event of mapChunkEvents(parsedChunk)) {
       yield event;
     }
+  }
+}
+
+function serializeMessage(message: ModelMessage): Record<string, unknown> {
+  switch (message.role) {
+    case "assistant":
+      return {
+        role: message.role,
+        content: message.content,
+        ...(message.toolCalls ? { tool_calls: message.toolCalls } : {}),
+      };
+    case "tool":
+      return {
+        role: message.role,
+        content: message.content,
+        tool_call_id: message.toolCallId,
+        ...(message.name ? { name: message.name } : {}),
+      };
+    default:
+      return message;
   }
 }
 
@@ -204,6 +239,22 @@ function* mapChunkEvents(chunk: ChatCompletionChunk) {
     const content = choice.delta?.content;
     if (content) {
       yield { type: "contentDelta" as const, content };
+    }
+
+    for (const toolCall of choice.delta?.tool_calls ?? []) {
+      yield {
+        type: "toolCallDelta" as const,
+        index: toolCall.index,
+        ...(toolCall.id ? { id: toolCall.id } : {}),
+        ...(toolCall.function?.name ? { name: toolCall.function.name } : {}),
+        ...(toolCall.function?.arguments !== undefined
+          ? { argumentsDelta: toolCall.function.arguments }
+          : {}),
+      };
+    }
+
+    if (choice.finish_reason) {
+      yield { type: "finishReason" as const, reason: choice.finish_reason };
     }
   }
 
