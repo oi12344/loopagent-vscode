@@ -36,7 +36,10 @@ export function createSymbolSemanticKey(node: CodeNode, parentKey?: string): str
   const normalizedQualifiedName = node.qualifiedName.startsWith(node.filePath)
     ? `${normalizedFilePath}${node.qualifiedName.slice(node.filePath.length)}`
     : node.qualifiedName;
-  return [parentKey ?? "", node.kind, normalizedQualifiedName, normalizeSignature(node.signature)].join("\u0000");
+  const declarationRole = node.metadata?.declarationOnly === true ? "declaration" : "concrete";
+  return [parentKey ?? "", node.kind, normalizedQualifiedName, normalizeSignature(node.signature), declarationRole].join(
+    "\u0000",
+  );
 }
 
 export function createStableNodeId(fileId: string, semanticKey: string): string {
