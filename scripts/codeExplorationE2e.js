@@ -1,22 +1,23 @@
 const CODE_EXPLORATION_QUESTION =
-  "追踪 LoopAgentChatViewProvider.startRun 到生成代码语义上下文的调用链，并说明工作区源码缓存何时失效。请列出关键源码文件和函数。";
+  "谁负责把代码上下文加入模型请求？请列出关键源码文件和函数。";
 
 const REQUIRED_STATES = [
-  "Building code context",
-  "Calling DeepSeek deepseek-v4-flash",
+  "Planning step 1",
+  "Running tool exploreCode",
+  "Planning step 2",
   "Done",
 ];
 const ANCHOR_GROUPS = [
-  ["createConfiguredAgentRunner"],
-  ["systemPromptProvider"],
+  ["createExploreCodeTool"],
   ["buildCodeIntelligencePrompt"],
-  ["createVsCodeWorkspaceIntelligence"],
-  ["sourceCache", "dirtyPaths", "watcher"],
+  ["WorkspaceIntelligence"],
+  ["createOpenAiReactModelTurn"],
 ];
 const PATH_PATTERN =
   /src\/(?:extension\.ts|extension\/[A-Za-z0-9_./-]+\.ts)(?![A-Za-z0-9_])/g;
 const REQUIRED_INTELLIGENCE_PATHS = new Set([
   "src/extension/model/providerRegistry.ts",
+  "src/extension/agent/exploreCodeTool.ts",
   "src/extension/intelligence/vscodeWorkspaceIntelligence.ts",
 ]);
 

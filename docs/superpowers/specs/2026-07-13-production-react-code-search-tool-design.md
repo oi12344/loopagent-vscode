@@ -1,8 +1,12 @@
 # 生产 ReAct 与代码搜索工具设计
 
-> 状态：设计已批准，等待实施计划与实现。
+> 状态：实现完成，自动化验证通过；真实 DeepSeek 验证等待调试 profile 配置 API key。
 >
 > 前置规格：`docs/superpowers/specs/2026-07-09-react-agent-runtime-design.md`
+>
+> 实施计划：`docs/superpowers/plans/2026-07-13-production-react-code-search-tool-plan.md`
+>
+> 验证记录：`docs/superpowers/plans/2026-07-13-production-react-code-search-tool-verification.md`
 
 ## 背景
 

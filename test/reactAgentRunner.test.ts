@@ -152,7 +152,20 @@ describe("createReactAgentRunner", () => {
     const runner = createReactAgentRunner({
       modelTurn: async () => ({
         kind: "toolRequests",
-        requests: [{ id: "tool-1", name: "missingTool", input: "workspace" }],
+        assistantMessage: {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "tool-1",
+              type: "function",
+              function: { name: "missingTool", arguments: '"workspace"' },
+            },
+          ],
+        },
+        requests: [
+          { id: "tool-1", name: "missingTool", rawArguments: '"workspace"', input: "workspace" },
+        ],
       }),
     });
 
@@ -178,7 +191,20 @@ describe("createReactAgentRunner", () => {
       ],
       modelTurn: async () => ({
         kind: "toolRequests",
-        requests: [{ id: "tool-1", name: "echoObservation", input: "workspace" }],
+        assistantMessage: {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            {
+              id: "tool-1",
+              type: "function",
+              function: { name: "echoObservation", arguments: '"workspace"' },
+            },
+          ],
+        },
+        requests: [
+          { id: "tool-1", name: "echoObservation", rawArguments: '"workspace"', input: "workspace" },
+        ],
       }),
     });
 

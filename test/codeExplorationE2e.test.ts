@@ -18,7 +18,7 @@ const { CODE_EXPLORATION_QUESTION, evaluateCodeExploration } = require(
 };
 
 const expectedQuestion =
-  "追踪 LoopAgentChatViewProvider.startRun 到生成代码语义上下文的调用链，并说明工作区源码缓存何时失效。请列出关键源码文件和函数。";
+  "谁负责把代码上下文加入模型请求？请列出关键源码文件和函数。";
 
 describe("code exploration E2E oracle", () => {
   it("asks the fixed entry-only question without leaking downstream anchors", () => {
@@ -29,24 +29,24 @@ describe("code exploration E2E oracle", () => {
 
   it("accepts required states, three anchors, and two real source paths", () => {
     const result = evaluateCodeExploration({
-      process: "Building code context\nCalling DeepSeek deepseek-v4-flash\nDone",
+      process: "Planning step 1\nRunning tool exploreCode\nPlanning step 2\nDone",
       answer: [
-        "`src/extension.ts` calls createConfiguredAgentRunner.",
-        "`src/extension/model/providerRegistry.ts` uses systemPromptProvider,",
-        "then invokes buildCodeIntelligencePrompt.",
+        "`src/extension/model/providerRegistry.ts` calls createExploreCodeTool.",
+        "`src/extension/agent/exploreCodeTool.ts` invokes",
+        "WorkspaceIntelligence.buildCodeIntelligencePrompt.",
       ].join("\n"),
     });
 
     expect(result).toEqual({
       passed: true,
       matchedAnchors: [
-        "createConfiguredAgentRunner",
-        "systemPromptProvider",
+        "createExploreCodeTool",
         "buildCodeIntelligencePrompt",
+        "WorkspaceIntelligence",
       ],
       matchedPaths: [
-        "src/extension.ts",
         "src/extension/model/providerRegistry.ts",
+        "src/extension/agent/exploreCodeTool.ts",
       ],
       missingStates: [],
     });
@@ -62,16 +62,17 @@ describe("code exploration E2E oracle", () => {
     expect(result.matchedAnchors).toEqual([]);
     expect(result.matchedPaths).toEqual([]);
     expect(result.missingStates).toEqual([
-      "Building code context",
-      "Calling DeepSeek deepseek-v4-flash",
+      "Planning step 1",
+      "Running tool exploreCode",
+      "Planning step 2",
     ]);
   });
 
   it("rejects an otherwise semantic answer with only one source path", () => {
     const result = evaluateCodeExploration({
-      process: "Building code context\nCalling DeepSeek deepseek-v4-flash\nDone",
+      process: "Planning step 1\nRunning tool exploreCode\nPlanning step 2\nDone",
       answer:
-        "src/extension/model/providerRegistry.ts links createConfiguredAgentRunner, systemPromptProvider, and buildCodeIntelligencePrompt.",
+        "src/extension/model/providerRegistry.ts links createExploreCodeTool, buildCodeIntelligencePrompt, and WorkspaceIntelligence.",
     });
 
     expect(result.passed).toBe(false);
@@ -83,10 +84,10 @@ describe("code exploration E2E oracle", () => {
 
   it("rejects two paths when neither is a required intelligence implementation", () => {
     const result = evaluateCodeExploration({
-      process: "Building code context\nCalling DeepSeek deepseek-v4-flash\nDone",
+      process: "Planning step 1\nRunning tool exploreCode\nPlanning step 2\nDone",
       answer: [
-        "src/extension.ts calls createConfiguredAgentRunner.",
-        "src/extension/chat/LoopAgentChatViewProvider.ts mentions systemPromptProvider and watcher.",
+        "src/extension.ts calls createExploreCodeTool.",
+        "src/extension/chat/LoopAgentChatViewProvider.ts mentions buildCodeIntelligencePrompt and WorkspaceIntelligence.",
       ].join("\n"),
     });
 
@@ -96,38 +97,38 @@ describe("code exploration E2E oracle", () => {
 
   it("normalizes markdown backslashes and deduplicates anchors and paths", () => {
     const result = evaluateCodeExploration({
-      process: "Building code context\nCalling DeepSeek deepseek-v4-flash\nDone",
+      process: "Planning step 1\nRunning tool exploreCode\nPlanning step 2\nDone",
       answer: [
-        "`src\\extension\\intelligence\\vscodeWorkspaceIntelligence.ts`,, uses createConfiguredAgentRunner and sourceCache.",
-        "src/extension/intelligence/vscodeWorkspaceIntelligence.ts... sourceCache and dirtyPaths!",
-        "**src\\extension.ts** connects systemPromptProvider and watcher; watcher.",
+        "`src\\extension\\intelligence\\vscodeWorkspaceIntelligence.ts`,, uses createExploreCodeTool and WorkspaceIntelligence.",
+        "src/extension/intelligence/vscodeWorkspaceIntelligence.ts... WorkspaceIntelligence.",
+        "**src\\extension\\agent\\exploreCodeTool.ts** connects buildCodeIntelligencePrompt.",
       ].join("\n"),
     });
 
     expect(result.passed).toBe(true);
     expect(result.matchedAnchors).toEqual([
-      "createConfiguredAgentRunner",
-      "systemPromptProvider",
-      "sourceCache",
+      "createExploreCodeTool",
+      "buildCodeIntelligencePrompt",
+      "WorkspaceIntelligence",
     ]);
     expect(result.matchedPaths).toEqual([
       "src/extension/intelligence/vscodeWorkspaceIntelligence.ts",
-      "src/extension.ts",
+      "src/extension/agent/exploreCodeTool.ts",
     ]);
   });
 
-  it("counts cache invalidation as one anchor and rejects a tsx path prefix", () => {
+  it("deduplicates tool anchors and rejects a tsx path prefix", () => {
     const result = evaluateCodeExploration({
-      process: "Building code context\nCalling DeepSeek deepseek-v4-flash\nDone",
+      process: "Planning step 1\nRunning tool exploreCode\nPlanning step 2\nDone",
       answer: [
         "src/extension/model/providerRegistry.ts",
         "src/extension/not-real.tsx",
-        "sourceCache dirtyPaths watcher",
+        "createExploreCodeTool createExploreCodeTool",
       ].join("\n"),
     });
 
     expect(result.passed).toBe(false);
-    expect(result.matchedAnchors).toEqual(["sourceCache"]);
+    expect(result.matchedAnchors).toEqual(["createExploreCodeTool"]);
     expect(result.matchedPaths).toEqual([
       "src/extension/model/providerRegistry.ts",
     ]);
