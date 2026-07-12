@@ -148,7 +148,7 @@ export function extractTypeScriptAst(parsed: ParsedSource): ExtractionResult {
     const range = toCodeRange(rangeNode);
     const exported = parentNode.kind === "file" && isExported(ancestors);
     const codeNode: CodeNode = {
-      id: `symbol:${parsed.filePath}:${kind}:${name}:${range.startLine}:${range.startColumn}`,
+      id: `symbol:${parsed.filePath}:${kind}:${name}:${range.startLine}`,
       kind,
       name,
       qualifiedName,

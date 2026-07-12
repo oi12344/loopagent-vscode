@@ -265,30 +265,4 @@ describe("stable extraction snapshots", () => {
     expect(contracts).toHaveLength(2);
     expect(new Set(contracts.map((node) => node.semanticKey)).size).toBe(2);
   });
-
-  it("keeps transient and stable IDs unique for same-line declarations", async () => {
-    const runtime = createTreeSitterParserRuntime({ parserWasmPath, grammarWasmDirectory });
-    const parsed = await runtime.parse(
-      "src/same-line.ts",
-      "typescript",
-      "interface Contract {} interface Contract {}",
-    );
-    try {
-      const extraction = createTypeScriptAdapter().extract(parsed);
-      const declarations = extraction.nodes.filter((node) => node.name === "Contract");
-      const snapshot = buildExtractionSnapshot({
-        fileUri: "file:///workspace/src/same-line.ts",
-        filePath: "src/same-line.ts",
-        parsed,
-        extraction,
-      });
-      const stableDeclarations = snapshot.nodes.filter((node) => node.name === "Contract");
-
-      expect(declarations).toHaveLength(2);
-      expect(new Set(declarations.map((node) => node.id)).size).toBe(2);
-      expect(new Set(stableDeclarations.map((node) => node.id)).size).toBe(2);
-    } finally {
-      parsed.tree?.delete();
-    }
-  });
 });

@@ -226,15 +226,14 @@ function createSymbolNode(
   qualifiedName = `${parsed.filePath}::${name}`,
   metadata?: Record<string, unknown>,
 ): CodeNode {
-  const range = toCodeRange(syntaxNode);
   return {
-    id: `symbol:${parsed.filePath}:${kind}:${name}:${range.startLine}:${range.startColumn}`,
+    id: `symbol:${parsed.filePath}:${kind}:${name}:${toCodeRange(syntaxNode).startLine}`,
     kind,
     name,
     qualifiedName,
     filePath: parsed.filePath,
     languageId: parsed.languageId,
-    ...range,
+    ...toCodeRange(syntaxNode),
     isExported: false,
     metadata,
   };
