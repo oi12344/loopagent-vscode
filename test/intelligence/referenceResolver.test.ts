@@ -100,6 +100,24 @@ describe("resolveReferences", () => {
     expect(edges).toEqual([expect.objectContaining({ source: caller.id, target: sameFileTarget.id })]);
   });
 
+  it("prefers a concrete implementation over declaration-only overloads", () => {
+    const graph = createSemanticGraph();
+    const caller = createFunctionNode("src/a.ts", "run");
+    const declaration = {
+      ...createFunctionNode("src/a.ts", "helper", 5),
+      id: "helper:string-overload",
+      metadata: { declarationOnly: true },
+    };
+    const implementation = { ...createFunctionNode("src/a.ts", "helper", 10), id: "helper:implementation" };
+    graph.upsertNode(caller);
+    graph.upsertNode(declaration);
+    graph.upsertNode(implementation);
+
+    const edges = resolveReferences({ graph, references: [createReference()], importBindings: [] });
+
+    expect(edges[0]?.target).toBe(implementation.id);
+  });
+
   it("does not resolve ambiguous global references", () => {
     const graph = createSemanticGraph();
     const caller = createFunctionNode("src/a.ts", "run");

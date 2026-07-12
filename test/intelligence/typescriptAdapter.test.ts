@@ -266,6 +266,34 @@ describe("TypeScript adapter", () => {
     );
   });
 
+  it("extracts declaration-only method and constructor overload signatures", async () => {
+    const result = await extractWithTree(
+      [
+        "class Service {",
+        "  constructor(value: string);",
+        "  constructor(value: number);",
+        "  constructor(value: string | number) {}",
+        "  run(value: string): void;",
+        "  run(value: number): void;",
+        "  run(value: string | number): void {}",
+        "}",
+        "interface Contract { run(value: string): void; }",
+      ].join("\n"),
+    );
+    const callableNodes = result.nodes.filter((node) => node.name === "constructor" || node.name === "run");
+
+    expect(callableNodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ signature: "constructor(value: string)", metadata: { declarationOnly: true } }),
+        expect.objectContaining({ signature: "constructor(value: number)", metadata: { declarationOnly: true } }),
+        expect.objectContaining({ signature: "constructor(value: string | number)", metadata: undefined }),
+        expect.objectContaining({ signature: "run(value: string): void", metadata: { declarationOnly: true } }),
+        expect.objectContaining({ signature: "run(value: number): void", metadata: { declarationOnly: true } }),
+        expect.objectContaining({ signature: "run(value: string | number): void", metadata: undefined }),
+      ]),
+    );
+  });
+
   it("extracts multiline imports and preserves callee shape", async () => {
     const result = await extractWithTree(
       [

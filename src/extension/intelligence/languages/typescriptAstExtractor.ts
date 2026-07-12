@@ -51,6 +51,10 @@ export function extractTypeScriptAst(parsed: ParsedSource): ExtractionResult {
       case "method_definition":
         addMethod(node, ancestors);
         break;
+      case "method_signature":
+      case "abstract_method_signature":
+        addMethod(node, ancestors);
+        break;
       case "interface_declaration":
         addTopLevelDeclaration(node, "interface", ancestors);
         break;
@@ -118,7 +122,10 @@ export function extractTypeScriptAst(parsed: ParsedSource): ExtractionResult {
   function addMethod(node: SyntaxNode, ancestors: readonly SyntaxNode[]): void {
     const classSyntaxNode = getNearestAncestor(
       ancestors,
-      (ancestor) => ancestor.type === "class_declaration" || ancestor.type === "abstract_class_declaration",
+      (ancestor) =>
+        ancestor.type === "class_declaration" ||
+        ancestor.type === "abstract_class_declaration" ||
+        ancestor.type === "interface_declaration",
     );
     const classNode = classSyntaxNode ? codeNodeBySyntaxNode.get(classSyntaxNode) : undefined;
     const name = getField(node, "name")?.text;
@@ -150,7 +157,7 @@ export function extractTypeScriptAst(parsed: ParsedSource): ExtractionResult {
       ...range,
       signature: createCallableSignature(rangeNode, name),
       isExported: exported,
-      metadata: isDefaultExport(ancestors) ? { isDefaultExport: true } : undefined,
+      metadata: createNodeMetadata(identityNode, ancestors),
     };
     nodes.push(codeNode);
     edges.push(createEdge(parentNode.id, codeNode.id, "contains", parsed.filePath, range.startLine));
@@ -192,8 +199,22 @@ export function extractTypeScriptAst(parsed: ParsedSource): ExtractionResult {
   }
 }
 
+function createNodeMetadata(node: SyntaxNode, ancestors: readonly SyntaxNode[]): CodeNode["metadata"] {
+  const metadata: Record<string, unknown> = {};
+  if (isDefaultExport(ancestors)) metadata.isDefaultExport = true;
+  if (node.type === "function_signature" || node.type === "method_signature" || node.type === "abstract_method_signature") {
+    metadata.declarationOnly = true;
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
 function createCallableSignature(node: SyntaxNode, name: string): string | undefined {
-  if (!CALLABLE_NODE_TYPES.has(node.type) && node.type !== "function_signature") {
+  if (
+    !CALLABLE_NODE_TYPES.has(node.type) &&
+    node.type !== "function_signature" &&
+    node.type !== "method_signature" &&
+    node.type !== "abstract_method_signature"
+  ) {
     return undefined;
   }
   const typeParameters = getField(node, "type_parameters")?.text ?? "";
