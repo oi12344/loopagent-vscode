@@ -68,6 +68,8 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
 
     expect(systemPrompt).toContain("runtime context");
     expect(systemPrompt).toContain("exploreCode");
+    expect(systemPrompt).toContain("current production entry points");
+    expect(systemPrompt).toContain("verify every claimed call edge");
     expect(systemPrompt).not.toContain("代码语义索引上下文");
     expect(workspaceIntelligence.buildCodeIntelligencePrompt).toHaveBeenCalledTimes(1);
     expect(workspaceIntelligence.buildCodeIntelligencePrompt).toHaveBeenCalledWith("provider registry model context");

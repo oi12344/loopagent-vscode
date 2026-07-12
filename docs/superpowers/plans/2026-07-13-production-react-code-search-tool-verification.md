@@ -4,7 +4,7 @@
 >
 > 分支：`codex/production-react-code-search`
 >
-> 结论：实现和自动化门禁通过；真实 DeepSeek 远端 `tool_calls` 因调试 profile 未配置 API key，尚未完成最终验收。
+> 结论：实现、自动化门禁和真实 DeepSeek ReAct 用户路径均通过验收。
 
 ## 实现范围
 
@@ -50,19 +50,30 @@ npm run debug:vscode
 - CDP 页面标题包含 `[Extension Development Host]`。
 - 真实 Webview 已选择 `DeepSeek v4 Flash` 并提交问题：`谁负责把代码上下文加入模型请求？请列出关键源码文件和函数。`
 
-实际结果：
+API key 通过 `LoopAgent: Set Model API Key` 写入当前调试 profile 的 VS Code SecretStorage。随后原地执行 `Developer: Reload Window`，没有启动第二个调试窗口。
+
+最终执行：
 
 ```text
-LoopAgent run failed: DeepSeek API key is not configured
+npm run test:e2e:code-exploration
+passed: true
+missingStates: []
 ```
 
-该失败发生在远端模型请求之前，因此当前证据不能证明真实 DeepSeek 返回了原生 `tool_calls`，也不能证明真实最终回答。它是调试 profile 的外部配置缺失，不是自动化测试发现的协议或 runner 失败。
+过程包含：
 
-## 待完成验收
+- `Planning step 1`
+- `Running tool exploreCode`
+- `Planning step 2`
+- `Done`
 
-1. 在当前唯一调试窗口执行 `LoopAgent: Set Model API Key`，只写入 VS Code SecretStorage。
-2. 原地刷新窗口，不启动第二个 Extension Development Host。
-3. 重新执行 `npm run test:e2e:code-exploration`。
-4. 通过标准：过程包含 `Running tool exploreCode`，最终回答引用真实源码文件/符号，且命令退出 0。
+最终回答命中函数：`createConfiguredAgentRunner`、`collectCodeRuntimeContext`、`renderCodeRuntimeContextPrompt`、`createOpenAiReactModelTurn`；命中源码路径：
+
+- `src/extension/model/providerRegistry.ts`
+- `src/extension/runtime/vscodeRuntimeContext.ts`
+- `src/extension/runtime/codeRuntimeContext.ts`
+- `src/extension/runtime/contextPrompt.ts`
+
+命令退出 0，截图保存于忽略目录 `.artifacts/code-exploration-e2e.png`。首次真实回答错误关联了未被当前生产入口调用的 `modelRunner.ts`；随后收紧 system prompt，要求从当前生产入口追踪并逐条验证调用边。E2E oracle 同时保留两个独立条件：过程必须实际运行 `exploreCode`，答案必须命中当前 runtime 注入链或 semantic-tool 链的真实函数和路径。
 
 验证记录不包含 API key、完整请求正文或完整源码 observation。

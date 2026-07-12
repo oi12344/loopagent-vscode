@@ -31,22 +31,23 @@ describe("code exploration E2E oracle", () => {
     const result = evaluateCodeExploration({
       process: "Planning step 1\nRunning tool exploreCode\nPlanning step 2\nDone",
       answer: [
-        "`src/extension/model/providerRegistry.ts` calls createExploreCodeTool.",
-        "`src/extension/agent/exploreCodeTool.ts` invokes",
-        "WorkspaceIntelligence.buildCodeIntelligencePrompt.",
+        "`src/extension/runtime/vscodeRuntimeContext.ts` calls collectVsCodeRuntimeContext.",
+        "`src/extension/runtime/codeRuntimeContext.ts` implements collectCodeRuntimeContext.",
+        "`src/extension/runtime/contextPrompt.ts` invokes renderCodeRuntimeContextPrompt.",
       ].join("\n"),
     });
 
     expect(result).toEqual({
       passed: true,
       matchedAnchors: [
-        "createExploreCodeTool",
-        "buildCodeIntelligencePrompt",
-        "WorkspaceIntelligence",
+        "collectVsCodeRuntimeContext",
+        "collectCodeRuntimeContext",
+        "renderCodeRuntimeContextPrompt",
       ],
       matchedPaths: [
-        "src/extension/model/providerRegistry.ts",
-        "src/extension/agent/exploreCodeTool.ts",
+        "src/extension/runtime/vscodeRuntimeContext.ts",
+        "src/extension/runtime/codeRuntimeContext.ts",
+        "src/extension/runtime/contextPrompt.ts",
       ],
       missingStates: [],
     });
@@ -72,13 +73,13 @@ describe("code exploration E2E oracle", () => {
     const result = evaluateCodeExploration({
       process: "Planning step 1\nRunning tool exploreCode\nPlanning step 2\nDone",
       answer:
-        "src/extension/model/providerRegistry.ts links createExploreCodeTool, buildCodeIntelligencePrompt, and WorkspaceIntelligence.",
+        "src/extension/runtime/vscodeRuntimeContext.ts links collectVsCodeRuntimeContext, collectCodeRuntimeContext, and renderCodeRuntimeContextPrompt.",
     });
 
     expect(result.passed).toBe(false);
     expect(result.matchedAnchors).toHaveLength(3);
     expect(result.matchedPaths).toEqual([
-      "src/extension/model/providerRegistry.ts",
+      "src/extension/runtime/vscodeRuntimeContext.ts",
     ]);
   });
 
@@ -86,8 +87,8 @@ describe("code exploration E2E oracle", () => {
     const result = evaluateCodeExploration({
       process: "Planning step 1\nRunning tool exploreCode\nPlanning step 2\nDone",
       answer: [
-        "src/extension.ts calls createExploreCodeTool.",
-        "src/extension/chat/LoopAgentChatViewProvider.ts mentions buildCodeIntelligencePrompt and WorkspaceIntelligence.",
+        "src/extension.ts calls collectVsCodeRuntimeContext.",
+        "src/extension/chat/LoopAgentChatViewProvider.ts mentions collectCodeRuntimeContext and renderCodeRuntimeContextPrompt.",
       ].join("\n"),
     });
 
@@ -99,21 +100,21 @@ describe("code exploration E2E oracle", () => {
     const result = evaluateCodeExploration({
       process: "Planning step 1\nRunning tool exploreCode\nPlanning step 2\nDone",
       answer: [
-        "`src\\extension\\intelligence\\vscodeWorkspaceIntelligence.ts`,, uses createExploreCodeTool and WorkspaceIntelligence.",
-        "src/extension/intelligence/vscodeWorkspaceIntelligence.ts... WorkspaceIntelligence.",
-        "**src\\extension\\agent\\exploreCodeTool.ts** connects buildCodeIntelligencePrompt.",
+        "`src\\extension\\runtime\\vscodeRuntimeContext.ts`,, uses collectVsCodeRuntimeContext and collectCodeRuntimeContext.",
+        "src/extension/runtime/vscodeRuntimeContext.ts... collectCodeRuntimeContext.",
+        "**src\\extension\\runtime\\contextPrompt.ts** connects renderCodeRuntimeContextPrompt.",
       ].join("\n"),
     });
 
     expect(result.passed).toBe(true);
     expect(result.matchedAnchors).toEqual([
-      "createExploreCodeTool",
-      "buildCodeIntelligencePrompt",
-      "WorkspaceIntelligence",
+      "collectVsCodeRuntimeContext",
+      "collectCodeRuntimeContext",
+      "renderCodeRuntimeContextPrompt",
     ]);
     expect(result.matchedPaths).toEqual([
-      "src/extension/intelligence/vscodeWorkspaceIntelligence.ts",
-      "src/extension/agent/exploreCodeTool.ts",
+      "src/extension/runtime/vscodeRuntimeContext.ts",
+      "src/extension/runtime/contextPrompt.ts",
     ]);
   });
 
@@ -123,12 +124,12 @@ describe("code exploration E2E oracle", () => {
       answer: [
         "src/extension/model/providerRegistry.ts",
         "src/extension/not-real.tsx",
-        "createExploreCodeTool createExploreCodeTool",
+        "collectVsCodeRuntimeContext collectVsCodeRuntimeContext",
       ].join("\n"),
     });
 
     expect(result.passed).toBe(false);
-    expect(result.matchedAnchors).toEqual(["createExploreCodeTool"]);
+    expect(result.matchedAnchors).toEqual(["collectVsCodeRuntimeContext"]);
     expect(result.matchedPaths).toEqual([
       "src/extension/model/providerRegistry.ts",
     ]);

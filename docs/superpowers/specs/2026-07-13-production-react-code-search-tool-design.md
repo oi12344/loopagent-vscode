@@ -1,6 +1,6 @@
 # 生产 ReAct 与代码搜索工具设计
 
-> 状态：实现完成，自动化验证通过；真实 DeepSeek 验证等待调试 profile 配置 API key。
+> 状态：实现完成，自动化门禁和真实 DeepSeek ReAct 用户路径均已验证通过。
 >
 > 前置规格：`docs/superpowers/specs/2026-07-09-react-agent-runtime-design.md`
 >

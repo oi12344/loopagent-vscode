@@ -8,9 +8,10 @@ const REQUIRED_STATES = [
   "Done",
 ];
 const ANCHOR_GROUPS = [
-  ["createExploreCodeTool"],
-  ["buildCodeIntelligencePrompt"],
-  ["WorkspaceIntelligence"],
+  ["createConfiguredAgentRunner", "systemPromptProvider", "collectVsCodeRuntimeContext"],
+  ["collectCodeRuntimeContext"],
+  ["renderCodeRuntimeContextPrompt"],
+  ["createExploreCodeTool", "buildCodeIntelligencePrompt", "renderCodeIntelligencePrompt"],
   ["createOpenAiReactModelTurn"],
 ];
 const PATH_PATTERN =
@@ -19,6 +20,10 @@ const REQUIRED_INTELLIGENCE_PATHS = new Set([
   "src/extension/model/providerRegistry.ts",
   "src/extension/agent/exploreCodeTool.ts",
   "src/extension/intelligence/vscodeWorkspaceIntelligence.ts",
+  "src/extension/runtime/vscodeRuntimeContext.ts",
+  "src/extension/runtime/codeRuntimeContext.ts",
+  "src/extension/runtime/contextPrompt.ts",
+  "src/extension/intelligence/context/codeIntelligencePrompt.ts",
 ]);
 
 function evaluateCodeExploration({ process, answer }) {
