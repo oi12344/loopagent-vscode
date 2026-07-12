@@ -33,7 +33,7 @@
 - Create: `test/intelligence/extractionSnapshot.test.ts`
 - Modify: `src/extension/intelligence/storage/indexTypes.ts`
 
-- [x] **Step 1：写范围移动和 overload 失败测试**
+- [ ] **Step 1：写范围移动和 overload 失败测试**
 
 ```ts
 it("keeps node and edge identities stable when ranges move", () => {
@@ -52,7 +52,7 @@ it("distinguishes overloads by normalized signature", () => {
 });
 ```
 
-- [x] **Step 2：运行确认 RED**
+- [ ] **Step 2：运行确认 RED**
 
 ```powershell
 npm test -- test/intelligence/extractionSnapshot.test.ts
@@ -60,7 +60,7 @@ npm test -- test/intelligence/extractionSnapshot.test.ts
 
 Expected: FAIL，稳定身份和 snapshot builder 不存在。
 
-- [x] **Step 3：实现稳定身份和引用重写**
+- [ ] **Step 3：实现稳定身份和引用重写**
 
 ```ts
 export function createFileId(fileUri: string): string;
@@ -70,7 +70,7 @@ export function createStableNodeId(fileId: string, semanticKey: string): string;
 
 所有 ID 使用 UTF-8 SHA-256 hex，不包含 range、mtime 或时间。`buildExtractionSnapshot` 先建立旧 node ID -> stable ID map，再重写 edge、binding 和 unresolved reference；不释放 `parsed.tree`。本任务的 snapshot core 暂不包含 `chunks`，保证中间提交独立 typecheck。
 
-- [x] **Step 4：运行确认 GREEN**
+- [ ] **Step 4：运行确认 GREEN**
 
 ```powershell
 npm test -- test/intelligence/extractionSnapshot.test.ts test/intelligence/typescriptAdapter.test.ts test/intelligence/pythonAdapter.test.ts
@@ -79,15 +79,13 @@ npm run typecheck
 
 Expected: 全部通过，现有 adapter DTO 行为不变。
 
-- [x] **Step 5：提交**
+- [ ] **Step 5：提交**
 
 ```powershell
 git add src/extension/intelligence/indexing/stableIdentity.ts src/extension/intelligence/indexing/extractionSnapshot.ts src/extension/intelligence/storage/indexTypes.ts test/intelligence/extractionSnapshot.test.ts
 git diff --cached --check
 git commit -m "feat(intelligence): create stable extraction snapshots"
 ```
-
-**Task 1 完成记录（2026-07-12）：** 已实现 UTF-8 SHA-256 文件/符号稳定身份和不含 range、mtime、时间的 snapshot core；先建立旧 node ID 到 stable ID 映射，再重写 edge、binding 和 unresolved reference。范围移动与 overload 测试、现有 TypeScript/Python adapter 回归及 `npm run typecheck` 均通过；本阶段按计划不包含 chunks，且 snapshot builder 不释放 `parsed.tree`。
 
 ## Task 2：生成稳定 Card Chunks 和三层 Hash
 
