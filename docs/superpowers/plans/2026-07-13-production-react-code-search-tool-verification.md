@@ -25,7 +25,7 @@ npm run compile
 git diff --check
 ```
 
-结果：`44` 个测试文件、`238` 个测试用例全部通过；类型检查、构建和 diff 检查均退出 0。定向测试覆盖：
+结果：`45` 个测试文件、`239` 个测试用例全部通过；类型检查、构建和 diff 检查均退出 0。根目录 Vitest 配置显式排除 `.worktrees/**`，避免并存的隔离 worktree 被重复扫描。定向测试覆盖：
 
 - 工具 schema 和 OpenAI wire 消息序列化。
 - 流式 tool-call delta 聚合、非法 JSON、重复 ID 和空响应。
