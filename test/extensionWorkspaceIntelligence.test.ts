@@ -11,6 +11,7 @@ describe("LoopAgent extension workspace intelligence lifecycle", () => {
       buildCodeIntelligencePrompt: vi.fn(async () => ""),
       getStatus: vi.fn(() => "ready"),
       getDiagnostics: vi.fn(() => []),
+      dispose: vi.fn(async () => undefined),
     };
     const parserRuntime = {
       parse: vi.fn(),
@@ -52,8 +53,9 @@ describe("LoopAgent extension workspace intelligence lifecycle", () => {
       createVsCodeWorkspaceIntelligence,
     }));
 
-    const { activate } = await import("../src/extension");
-    activate({ subscriptions: [], extensionUri: { fsPath: "E:\\work\\extension" } } as never);
+    const { activate, deactivate } = await import("../src/extension");
+    const storageUri = { fsPath: "E:\\storage" };
+    activate({ subscriptions: [], extensionUri: { fsPath: "E:\\work\\extension" }, storageUri } as never);
 
     registeredProvider?.resolveWebviewView(createFakeWebviewView((listener) => {
       messageListener = listener;
@@ -63,10 +65,13 @@ describe("LoopAgent extension workspace intelligence lifecycle", () => {
 
     expect(createTreeSitterParserRuntime).toHaveBeenCalledTimes(1);
     expect(createVsCodeWorkspaceIntelligence).toHaveBeenCalledTimes(1);
-    expect(createVsCodeWorkspaceIntelligence).toHaveBeenCalledWith(expect.anything(), { parserRuntime });
+    expect(createVsCodeWorkspaceIntelligence.mock.calls[0]?.[1]).toEqual({ parserRuntime, storageUri });
     expect(createConfiguredAgentRunner).toHaveBeenCalledTimes(2);
     expect(createConfiguredAgentRunner.mock.calls[0]?.[2]?.workspaceIntelligence).toBe(workspaceIntelligence);
     expect(createConfiguredAgentRunner.mock.calls[1]?.[2]?.workspaceIntelligence).toBe(workspaceIntelligence);
+
+    await deactivate();
+    expect(workspaceIntelligence.dispose).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -10,9 +10,11 @@ import type { WebviewToHostMessage } from "./shared/messages";
 
 const chatViewId = "loopagent.chat";
 const viewContainerId = "workbench.view.extension.loopagent";
+let activeChatProvider: LoopAgentChatViewProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const chatProvider = new LoopAgentChatViewProvider(context);
+  activeChatProvider = chatProvider;
 
   const helloCommand = vscode.commands.registerCommand("loopagent.hello", () => {
     vscode.window.showInformationMessage("Hello from LoopAgent");
@@ -46,17 +48,27 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
-export function deactivate(): void {
-  // Nothing to clean up yet.
+export async function deactivate(): Promise<void> {
+  const provider = activeChatProvider;
+  activeChatProvider = undefined;
+  await provider?.dispose();
 }
 
 class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private activeRun: AgentRunHandle | undefined;
-  private readonly workspaceIntelligence = createVsCodeWorkspaceIntelligence(vscode, {
-    parserRuntime: createTreeSitterParserRuntime(),
-  });
+  private readonly workspaceIntelligence;
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  constructor(private readonly context: vscode.ExtensionContext) {
+    this.workspaceIntelligence = createVsCodeWorkspaceIntelligence(vscode, {
+      parserRuntime: createTreeSitterParserRuntime(),
+      storageUri: context.storageUri,
+    });
+  }
+
+  async dispose(): Promise<void> {
+    this.activeRun?.cancel();
+    await this.workspaceIntelligence.dispose();
+  }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     webviewView.webview.options = {

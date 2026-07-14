@@ -1,6 +1,6 @@
 # 工作区持久化增量索引最小设计
 
-> 状态：设计已确认，等待实施计划。
+> 状态：最小阶段已实现，等待后续 SQLite 检索接入。
 >
 > 上位规格：`docs/superpowers/specs/2026-07-11-sqlite-index-workspace-incremental-design.md`
 >
@@ -150,3 +150,7 @@ Tree-sitter tree 必须在 `finally` 中释放一次。解析和 snapshot 构建
 ## 完成门禁
 
 在真实扩展入口启动后，允许索引的工作区文件能自动写入 SQLite；新增、修改、删除会持续同步；重启不会重新解析未变化文件；失败不损坏旧 snapshot；关闭不遗留 watcher、tree 或 worker。达到这些条件后再进入 SQLite 检索接入，跨文件关系重算仍保留在完整增量规格中。
+
+## 实施记录
+
+2026-07-14 完成：新增 `WorkspaceIndexer`、共享路径策略、文件元数据和删除 RPC，并接入唯一 VS Code watcher、`context.storageUri/index/code-index.sqlite` 和 `deactivate` 清理。全量 `49` 个测试文件、`259` 个用例通过；`npm run typecheck`、`npm run compile` 和 `git diff --check` 通过。整体测试确认重启未变化文件不调用 parser，删除后 file/chunk/FTS 残留为零，解析失败保留旧 card。跨文件关系重算、SQLite 检索、embedding 和管理命令仍未实现。

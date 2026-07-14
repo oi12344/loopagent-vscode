@@ -6,6 +6,7 @@ export function isIndexableWorkspacePath(filePath: string): boolean {
   const normalized = normalizePathSeparators(filePath).toLowerCase();
   const parts = normalized.split("/").filter(Boolean);
   const fileName = parts.at(-1) ?? "";
+  const sensitiveName = /(^|[._-])(secret|secrets|token|tokens|api[_-]?key|apikey|key)([._-]|$)/i;
 
   if (
     parts.some(
@@ -17,7 +18,7 @@ export function isIndexableWorkspacePath(filePath: string): boolean {
   if (fileName === ".env" || fileName.startsWith(".env.")) {
     return false;
   }
-  return !/(^|[._-])(secret|secrets|token|tokens|api[_-]?key|apikey|key)([._-]|$)/i.test(fileName);
+  return !parts.some((part) => sensitiveName.test(part));
 }
 
 export function detectWorkspaceLanguageId(filePath: string): string | undefined {

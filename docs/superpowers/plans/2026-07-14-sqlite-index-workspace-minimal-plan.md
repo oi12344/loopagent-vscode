@@ -201,7 +201,7 @@ new Worker(join(__dirname, "sqliteIndexWorker.js"));
 createSqliteIndexWorkerClient({ worker });
 ```
 
-- [ ] **Step 1：写生产接线 RED 测试**
+- [x] **Step 1：写生产接线 RED 测试**
 
 在 `vscodeWorkspaceIntelligence.test.ts` 扩展现有 fake VS Code API，加入 `fs.stat`、`Uri.parse`、`storageUri` 和 fake index client。验证初始化路径、watcher 入队、单次 watcher/client dispose；另测无 `storageUri` 时不创建 client，但 watcher change 后内存查询仍读取新内容。
 
@@ -221,7 +221,7 @@ expect(client.dispose).toHaveBeenCalledTimes(1);
 
 在 `extensionWorkspaceIntelligence.test.ts` 断言 factory 收到 `context.storageUri`，且 `deactivate()` 等待 `workspaceIntelligence.dispose()`。
 
-- [ ] **Step 2：运行确认 RED**
+- [x] **Step 2：运行确认 RED**
 
 Run:
 
@@ -231,7 +231,7 @@ npm test -- test/intelligence/vscodeWorkspaceIntelligence.test.ts test/extension
 
 Expected: FAIL，当前接口没有 `storageUri`、client 初始化和 dispose 接线。
 
-- [ ] **Step 3：实现单 watcher 生产接线**
+- [x] **Step 3：实现单 watcher 生产接线**
 
 `createVsCodeWorkspaceIntelligence` 保留现有 watcher。每个 handler 先更新内存 cache 状态，再在持久化 indexer 已成为 writer 时异步入队；错误写入现有 diagnostics，不产生未处理 rejection。
 
@@ -241,7 +241,7 @@ Expected: FAIL，当前接口没有 `storageUri`、client 初始化和 dispose �
 
 `extension.ts` 在 provider constructor 中创建实例并传入 `context.storageUri`；模块保存当前 provider，`deactivate(): Promise<void>` 取消 active run 并等待 workspace intelligence 关闭。
 
-- [ ] **Step 4：补危险边界回归并运行阶段验证**
+- [x] **Step 4：补危险边界回归并运行阶段验证**
 
 在 `workspaceIndexer.test.ts` 用同一 fixture 增加四个用例：
 
@@ -262,7 +262,7 @@ git diff --check
 
 Expected: 全部测试、类型检查、构建和 diff 检查通过；无第二个 watcher、无未处理 promise、无临时调试代码。
 
-- [ ] **Step 5：更新文档状态并提交**
+- [x] **Step 5：更新文档状态并提交**
 
 在设计和本计划末尾记录中文验证结果：测试文件/用例数、重启 parser 调用数、删除后的残留计数、实际提交和已知限制。只保留“跨文件关系重算、SQLite 检索、embedding、管理命令”作为后续范围。
 
@@ -275,4 +275,4 @@ git commit -m "feat(intelligence): start persistent workspace index"
 
 ## 完成记录
 
-实施完成后填写实际验证统计、提交、与本计划偏差。若真实 VS Code 宿主发现 worker 路径或关闭时序问题，只记录为必要修复；不得在本阶段追加检索、embedding 或跨文件关系功能。
+2026-07-14 完成：Task 1 和 Task 2 均按 RED -> GREEN 执行；全量验证为 49 个测试文件、259 个用例，类型检查和构建通过。实际实现未增加跨文件关系重算、SQLite 检索、embedding 或管理命令；持久化 worker 的真实 VS Code 宿主验证留给后续生命周期阶段。

@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createVsCodeWorkspaceIntelligence,
@@ -12,6 +16,7 @@ import {
 type WorkspaceUri = { fsPath: string };
 
 type FakeWatcher = {
+  dispose: ReturnType<typeof vi.fn>;
   fireCreate(uri: WorkspaceUri): void;
   fireChange(uri: WorkspaceUri): void;
   fireDelete(uri: WorkspaceUri): void;
@@ -22,6 +27,14 @@ type FakeVsCodeWorkspaceApiOptions = {
   onRead?: () => void;
 };
 
+const temporaryDirectories: string[] = [];
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 describe("isIndexableWorkspacePath", () => {
   it("excludes generated, dependency, local debug, and sensitive paths", () => {
     expect(isIndexableWorkspacePath("src/extension.ts")).toBe(true);
@@ -31,6 +44,7 @@ describe("isIndexableWorkspacePath", () => {
     expect(isIndexableWorkspacePath(".local-vscode-user-data/User/settings.json")).toBe(false);
     expect(isIndexableWorkspacePath(".env")).toBe(false);
     expect(isIndexableWorkspacePath(".env.local")).toBe(false);
+    expect(isIndexableWorkspacePath("secrets/model.ts")).toBe(false);
     expect(isIndexableWorkspacePath("secrets/api-token.txt")).toBe(false);
     expect(isIndexableWorkspacePath("config/api_key.json")).toBe(false);
   });
@@ -65,6 +79,38 @@ describe("VS workspace helpers", () => {
 });
 
 describe("createVsCodeWorkspaceIntelligence", () => {
+  it("starts persistent indexing on the existing watcher and disposes it once", async () => {
+    const workspaceRoot = "E:\\work\\repo";
+    const watcher = createFakeWatcher();
+    const sourcePath = `${workspaceRoot}\\src\\modelAccess.ts`;
+    const files = new Map([[sourcePath, "export function createDeepSeekProvider() {}"]]);
+    const client = createFakeIndexClient();
+    const storagePath = mkdtempSync(join(tmpdir(), "loopagent-vscode-index-"));
+    temporaryDirectories.push(storagePath);
+    const intelligence = createVsCodeWorkspaceIntelligence(
+      createFakeVsCodeWorkspaceApi(workspaceRoot, files, { watcher }),
+      {
+        storageUri: { fsPath: storagePath },
+        createIndexClient: () => client,
+      },
+    );
+
+    await vi.waitFor(() => {
+      expect(client.initialize).toHaveBeenCalledWith(
+        join(storagePath, "index", "code-index.sqlite"),
+        expect.any(String),
+      );
+    });
+
+    watcher.fireChange({ fsPath: sourcePath });
+    await vi.waitFor(() => expect(client.enqueueChanges).toHaveBeenCalled());
+    await intelligence.dispose();
+    await intelligence.dispose();
+
+    expect(watcher.dispose).toHaveBeenCalledTimes(1);
+    expect(client.dispose).toHaveBeenCalledTimes(1);
+  });
+
   it("indexes VS Code workspace files and excludes sensitive files", async () => {
     const workspaceRoot = "E:\\work\\repo";
     const files = new Map([
@@ -140,11 +186,22 @@ function createFakeVsCodeWorkspaceApi(
   options: FakeVsCodeWorkspaceApiOptions = {},
 ): VsCodeWorkspaceApi {
   return {
+    Uri: {
+      parse: (value: string) => ({ fsPath: fromFileUri(value), toString: () => value }),
+    },
     workspace: {
       workspaceFolders: [{ uri: { fsPath: workspaceRoot } }],
       findFiles: async (_include, _exclude, maxResults) =>
-        [...files.keys()].slice(0, maxResults ?? files.size).map((fsPath) => ({ fsPath })),
+        [...files.keys()].slice(0, maxResults ?? files.size).map((fsPath) => ({
+          fsPath,
+          toString: () => toFileUri(fsPath),
+        })),
       fs: {
+        stat: async (uri) => {
+          const text = files.get(uri.fsPath);
+          if (text === undefined) throw Object.assign(new Error("FileNotFound"), { code: "FileNotFound" });
+          return { mtime: 1_000, size: Buffer.byteLength(text, "utf8") };
+        },
         readFile: async (uri) => {
           options.onRead?.();
           return new TextEncoder().encode(files.get(uri.fsPath) ?? "");
@@ -155,7 +212,7 @@ function createFakeVsCodeWorkspaceApi(
             onDidCreate: (listener) => createFakeDisposable(registerFakeWatcherHandler(options.watcher!, "create", listener)),
             onDidChange: (listener) => createFakeDisposable(registerFakeWatcherHandler(options.watcher!, "change", listener)),
             onDidDelete: (listener) => createFakeDisposable(registerFakeWatcherHandler(options.watcher!, "delete", listener)),
-            dispose: () => undefined,
+            dispose: options.watcher!.dispose,
           })
         : undefined,
       asRelativePath: (uriOrPath) => {
@@ -174,6 +231,7 @@ function createFakeWatcher(): FakeWatcher {
   };
 
   return {
+    dispose: vi.fn(),
     fireCreate(uri) {
       for (const handler of handlers.create) {
         handler(uri);
@@ -191,6 +249,36 @@ function createFakeWatcher(): FakeWatcher {
     },
     _handlers: handlers,
   } as FakeWatcher & { _handlers: typeof handlers };
+}
+
+function createFakeIndexClient() {
+  const readyWriter = {
+    state: "ready" as const,
+    role: "writer" as const,
+    schemaVersion: 1,
+    capabilities: { sqlite: true, wal: true, foreignKeys: true, fts5: true },
+  };
+  return {
+    initialize: vi.fn(async () => readyWriter),
+    getStatus: vi.fn(async () => readyWriter),
+    listIndexedFiles: vi.fn(async () => []),
+    enqueueChanges: vi.fn(async () => undefined),
+    claimNextJob: vi.fn(async () => undefined),
+    applyFileSnapshot: vi.fn(async () => undefined),
+    updateFileMetadata: vi.fn(async () => undefined),
+    removeFile: vi.fn(async () => undefined),
+    completeJob: vi.fn(async () => undefined),
+    failJob: vi.fn(async () => undefined),
+    dispose: vi.fn(async () => undefined),
+  };
+}
+
+function toFileUri(fsPath: string): string {
+  return `file:///${fsPath.replace(/\\/g, "/")}`;
+}
+
+function fromFileUri(uri: string): string {
+  return uri.replace(/^file:\/\//, "").replace(/^\/(\w:)/, "$1").replace(/\//g, "\\");
 }
 
 function registerFakeWatcherHandler(

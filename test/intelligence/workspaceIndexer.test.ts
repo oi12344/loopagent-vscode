@@ -60,9 +60,22 @@ describe("WorkspaceIndexer", () => {
     await restarted.start();
     expect(parserRuntime.parse).not.toHaveBeenCalled();
 
+    files.set(FILE_URI, source("export function run() {}", 1_500));
+    await restarted.enqueue({ fileUri: FILE_URI, eventKind: "change" });
+    expect(parserRuntime.parse).not.toHaveBeenCalled();
+    expect((await store.listIndexedFiles())[0]?.mtime).toBe(1_500);
+
     files.set(FILE_URI, source("export function renamed() {}", 2_000));
     await restarted.enqueue({ fileUri: FILE_URI, eventKind: "change" });
     expect(cardText(opened)).toContain("renamed");
+
+    parserRuntime.parse.mockRejectedValueOnce(new Error("parse failed"));
+    files.set(FILE_URI, source("export function broken() {}", 3_000));
+    await restarted.enqueue({ fileUri: FILE_URI, eventKind: "change" });
+    expect(cardText(opened)).toContain("renamed");
+    expect(sqliteStore.listJobs()).toEqual([
+      expect.objectContaining({ fileUri: FILE_URI, status: "failed", lastError: "parse failed" }),
+    ]);
 
     files.delete(FILE_URI);
     await restarted.enqueue({ fileUri: FILE_URI, eventKind: "delete" });
