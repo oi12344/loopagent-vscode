@@ -1,8 +1,13 @@
-import { act, render, screen } from "@testing-library/react";
+// @vitest-environment jsdom
+
+import "@testing-library/jest-dom/vitest";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/webview/App";
 import type { HostToWebviewMessage, WebviewToHostMessage } from "../src/shared/messages";
+
+afterEach(cleanup);
 
 function postHostMessage(message: HostToWebviewMessage) {
   act(() => {
