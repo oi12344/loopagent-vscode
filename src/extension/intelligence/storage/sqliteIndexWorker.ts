@@ -60,6 +60,8 @@ function dispatch(request: SqliteWorkerRequest): unknown {
       return runtime.updateFileMetadata(request.update);
     case "removeFile":
       return runtime.removeFile(request.fileUri);
+    case "searchCodeChunks":
+      return runtime.searchCodeChunks(request.query, request.limit);
     case "getPendingJobs":
       return runtime.getPendingJobs();
     case "claimNextJob":

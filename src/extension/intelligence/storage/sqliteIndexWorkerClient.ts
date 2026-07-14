@@ -7,6 +7,7 @@ import type {
   IndexWorkerStatus,
   StoredFileMetadata,
   StoredIndexJob,
+  StoredCodeChunk,
   SqliteWorkerMessage,
   SqliteWorkerRequest,
   SqliteWorkerResponse,
@@ -36,6 +37,7 @@ export type SqliteIndexWorkerClient = {
   listIndexedFiles(): Promise<StoredFileMetadata[]>;
   updateFileMetadata(update: FileMetadataUpdate): Promise<void>;
   removeFile(fileUri: string): Promise<void>;
+  searchCodeChunks(query: string, limit: number): Promise<StoredCodeChunk[]>;
   getPendingJobs(): Promise<StoredIndexJob[]>;
   claimNextJob(ownerId: string): Promise<ClaimedIndexJob | undefined>;
   completeJob(claim: ClaimedIndexJob): Promise<void>;
@@ -93,6 +95,10 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
 
   removeFile(fileUri: string): Promise<void> {
     return this.request((id) => ({ id, kind: "removeFile", fileUri }));
+  }
+
+  searchCodeChunks(query: string, limit: number): Promise<StoredCodeChunk[]> {
+    return this.request((id) => ({ id, kind: "searchCodeChunks", query, limit }));
   }
 
   getPendingJobs(): Promise<StoredIndexJob[]> {

@@ -79,6 +79,72 @@ describe("VS workspace helpers", () => {
 });
 
 describe("createVsCodeWorkspaceIntelligence", () => {
+  it("uses memory context while initial persistent indexing is still draining", async () => {
+    const workspaceRoot = "E:\\work\\repo";
+    const files = new Map([[`${workspaceRoot}\\src\\memoryOnly.ts`, "export function memoryOnly() {}"]]);
+    let releaseFirstJob: (() => void) | undefined;
+    const firstJob = new Promise<undefined>((resolve) => { releaseFirstJob = () => resolve(undefined); });
+    const client = createFakeIndexClient({ claimNextJob: () => firstJob });
+    const storagePath = mkdtempSync(join(tmpdir(), "loopagent-vscode-index-"));
+    temporaryDirectories.push(storagePath);
+    const intelligence = createVsCodeWorkspaceIntelligence(
+      createFakeVsCodeWorkspaceApi(workspaceRoot, files),
+      { storageUri: { fsPath: storagePath }, createIndexClient: () => client },
+    );
+    const promptPromise = intelligence.buildCodeIntelligencePrompt("memoryOnly");
+
+    const prompt = await Promise.race([
+      promptPromise,
+      new Promise<string>((resolve) => setTimeout(() => resolve("timed out"), 25)),
+    ]);
+
+    expect(prompt).toContain("memoryOnly");
+    releaseFirstJob?.();
+    await promptPromise;
+    await intelligence.dispose();
+  });
+
+  it("falls back to memory context when persistent search rejects", async () => {
+    const workspaceRoot = "E:\\work\\repo";
+    const files = new Map([[`${workspaceRoot}\\src\\memoryOnly.ts`, "export function memoryOnly() {}"]]);
+    const client = createFakeIndexClient({ searchError: new Error("search failed") });
+    const storagePath = mkdtempSync(join(tmpdir(), "loopagent-vscode-index-"));
+    temporaryDirectories.push(storagePath);
+    const intelligence = createVsCodeWorkspaceIntelligence(
+      createFakeVsCodeWorkspaceApi(workspaceRoot, files),
+      { storageUri: { fsPath: storagePath }, createIndexClient: () => client },
+    );
+
+    await vi.waitFor(() => expect(client.initialize).toHaveBeenCalled());
+    await expect(intelligence.buildCodeIntelligencePrompt("memoryOnly")).resolves.toContain("memoryOnly");
+    expect(client.searchCodeChunks).toHaveBeenCalledWith("memoryOnly", 6);
+    await intelligence.dispose();
+  });
+
+  it("prefers persisted SQLite chunks before rebuilding the memory index", async () => {
+    const workspaceRoot = "E:\\work\\repo";
+    const files = new Map([[`${workspaceRoot}\\src\\memoryOnly.ts`, "export function memoryOnly() {}"]]);
+    const client = createFakeIndexClient({
+      chunks: [{ filePath: "src/persisted.ts", startLine: 3, endLine: 3, sourceText: "export function persistedHit() {}" }],
+    });
+    let readCount = 0;
+    const storagePath = mkdtempSync(join(tmpdir(), "loopagent-vscode-index-"));
+    temporaryDirectories.push(storagePath);
+    const intelligence = createVsCodeWorkspaceIntelligence(
+      createFakeVsCodeWorkspaceApi(workspaceRoot, files, { onRead: () => { readCount += 1; } }),
+      { storageUri: { fsPath: storagePath }, createIndexClient: () => client },
+    );
+
+    await vi.waitFor(() => expect(client.initialize).toHaveBeenCalled());
+    const prompt = await intelligence.buildCodeIntelligencePrompt("persistedHit");
+
+    expect(client.searchCodeChunks).toHaveBeenCalledWith("persistedHit", 6);
+    expect(prompt).toContain("src/persisted.ts");
+    expect(prompt).toContain("persistedHit");
+    expect(readCount).toBe(0);
+    await intelligence.dispose();
+  });
+
   it("starts persistent indexing on the existing watcher and disposes it once", async () => {
     const workspaceRoot = "E:\\work\\repo";
     const watcher = createFakeWatcher();
@@ -251,7 +317,11 @@ function createFakeWatcher(): FakeWatcher {
   } as FakeWatcher & { _handlers: typeof handlers };
 }
 
-function createFakeIndexClient() {
+function createFakeIndexClient(options: {
+  chunks?: Array<{ filePath: string; startLine?: number; endLine?: number; sourceText: string }>;
+  searchError?: Error;
+  claimNextJob?: () => Promise<undefined>;
+} = {}) {
   const readyWriter = {
     state: "ready" as const,
     role: "writer" as const,
@@ -261,9 +331,13 @@ function createFakeIndexClient() {
   return {
     initialize: vi.fn(async () => readyWriter),
     getStatus: vi.fn(async () => readyWriter),
+    searchCodeChunks: vi.fn(async () => {
+      if (options.searchError) throw options.searchError;
+      return options.chunks ?? [];
+    }),
     listIndexedFiles: vi.fn(async () => []),
     enqueueChanges: vi.fn(async () => undefined),
-    claimNextJob: vi.fn(async () => undefined),
+    claimNextJob: vi.fn(async () => options.claimNextJob ? options.claimNextJob() : undefined),
     applyFileSnapshot: vi.fn(async () => undefined),
     updateFileMetadata: vi.fn(async () => undefined),
     removeFile: vi.fn(async () => undefined),

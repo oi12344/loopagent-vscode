@@ -4,6 +4,7 @@ import type {
   IndexChange,
   StoredFileMetadata,
   StoredIndexJob,
+  StoredCodeChunk,
 } from "./sqliteIndexStore";
 import type { IndexWorkerStatus } from "./sqliteIndexWorkerRuntime";
 import type { ExtractionSnapshot } from "./indexTypes";
@@ -16,6 +17,7 @@ export type SqliteWorkerRequest =
   | { id: number; kind: "listIndexedFiles" }
   | { id: number; kind: "updateFileMetadata"; update: FileMetadataUpdate }
   | { id: number; kind: "removeFile"; fileUri: string }
+  | { id: number; kind: "searchCodeChunks"; query: string; limit: number }
   | { id: number; kind: "getPendingJobs" }
   | { id: number; kind: "claimNextJob"; ownerId: string }
   | { id: number; kind: "completeJob"; claim: ClaimedIndexJob }
@@ -37,4 +39,5 @@ export type {
   IndexWorkerStatus,
   StoredFileMetadata,
   StoredIndexJob,
+  StoredCodeChunk,
 };

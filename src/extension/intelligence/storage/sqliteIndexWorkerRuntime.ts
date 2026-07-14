@@ -7,6 +7,7 @@ import type {
   SqliteIndexStore,
   StoredFileMetadata,
   StoredIndexJob,
+  StoredCodeChunk,
 } from "./sqliteIndexStore";
 import type { ExtractionSnapshot } from "./indexTypes";
 
@@ -28,6 +29,7 @@ export type SqliteWorkerStore = Pick<
   | "listIndexedFiles"
   | "updateFileMetadata"
   | "removeFile"
+  | "searchCodeChunks"
   | "listPendingJobs"
   | "claimNextJob"
   | "completeJob"
@@ -42,6 +44,7 @@ export type SqliteIndexWorkerRuntime = {
   listIndexedFiles(): StoredFileMetadata[];
   updateFileMetadata(update: FileMetadataUpdate): void;
   removeFile(fileUri: string): void;
+  searchCodeChunks(query: string, limit: number): StoredCodeChunk[];
   getPendingJobs(): StoredIndexJob[];
   claimNextJob(ownerId: string): ClaimedIndexJob | undefined;
   completeJob(claim: ClaimedIndexJob): void;
@@ -212,6 +215,9 @@ export function createSqliteIndexWorkerRuntime(deps: RuntimeDependencies): Sqlit
     },
     removeFile(fileUri) {
       runWriter((activeStore, activeOwner) => activeStore.removeFile(activeOwner, fileUri));
+    },
+    searchCodeChunks(query, limit) {
+      return requireStore().searchCodeChunks(query, limit);
     },
     getPendingJobs() {
       return requireStore().listPendingJobs();

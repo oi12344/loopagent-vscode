@@ -4,6 +4,7 @@ import {
   type WorkspaceIntelligenceBudgets,
   type WorkspaceSourceFile,
 } from "./workspaceIntelligence";
+import { renderPersistedCodeIntelligencePrompt } from "./context/codeIntelligencePrompt";
 import { createWorkspaceIndexer, type WorkspaceFileRef, type WorkspaceIndexer } from "./indexing/workspaceIndexer";
 import type { ParserRuntime } from "./parser/parserRuntime";
 import { randomUUID } from "node:crypto";
@@ -91,6 +92,7 @@ export function createVsCodeWorkspaceIntelligence(
   } = options;
   let persistentClient: SqliteIndexWorkerClient | undefined;
   let persistentIndexer: WorkspaceIndexer | undefined;
+  let persistentIndexStart: Promise<void> | undefined;
   let persistentDiagnostic: string | undefined;
   let disposePromise: Promise<void> | undefined;
 
@@ -167,7 +169,18 @@ export function createVsCodeWorkspaceIntelligence(
   const persistenceReady = storageUri ? startPersistentIndex().catch(recordPersistentError) : Promise.resolve();
 
   return {
-    buildCodeIntelligencePrompt: (query) => memoryIntelligence.buildCodeIntelligencePrompt(query),
+    async buildCodeIntelligencePrompt(query) {
+      await persistenceReady;
+      if (persistentClient) {
+        try {
+          const prompt = renderPersistedCodeIntelligencePrompt(query, await persistentClient.searchCodeChunks(query, 6));
+          if (prompt) return prompt;
+        } catch (error) {
+          recordPersistentError(error);
+        }
+      }
+      return memoryIntelligence.buildCodeIntelligencePrompt(query);
+    },
     getStatus: () => memoryIntelligence.getStatus(),
     getDiagnostics: () => [
       ...memoryIntelligence.getDiagnostics(),
@@ -180,6 +193,7 @@ export function createVsCodeWorkspaceIntelligence(
         disposePromise = (async () => {
           watcher?.dispose();
           await persistenceReady;
+          if (persistentIndexStart) await waitForDispose(persistentIndexStart, 5_000);
           if (persistentIndexer) await waitForDispose(persistentIndexer.dispose(), 5_000);
           await persistentClient?.dispose();
         })();
@@ -215,7 +229,7 @@ export function createVsCodeWorkspaceIntelligence(
       },
       maxFileBytes,
     });
-    await persistentIndexer.start();
+    persistentIndexStart = persistentIndexer.start().catch(recordPersistentError);
   }
 
   async function listPersistentFiles(): Promise<WorkspaceFileRef[]> {

@@ -1,4 +1,5 @@
 import type { CodeIntelligenceResult } from "./codeIntelligenceContext";
+import type { StoredCodeChunk } from "../storage/sqliteIndexStore";
 
 export function renderCodeIntelligencePrompt(result: CodeIntelligenceResult): string {
   if (result.entryNodes.length === 0 && result.snippets.length === 0) {
@@ -45,6 +46,24 @@ export function renderCodeIntelligencePrompt(result: CodeIntelligenceResult): st
   lines.push(`- 使用字符: ${result.budget.usedChars}/${result.budget.maxChars}`);
   lines.push(`- 是否截断: ${result.budget.truncated ? "是" : "否"}`);
 
+  return lines.join("\n").trim();
+}
+
+export function renderPersistedCodeIntelligencePrompt(query: string, chunks: readonly StoredCodeChunk[]): string {
+  if (chunks.length === 0) return "";
+  const lines: string[] = ["## 代码语义索引上下文", "", `查询: ${query}`, "", "### 源码片段"];
+  let remainingChars = 6_000;
+  for (const chunk of chunks) {
+    if (remainingChars <= 0) break;
+    const range = chunk.startLine ? `:${chunk.startLine}-${chunk.endLine ?? chunk.startLine}` : "";
+    lines.push(`#### ${chunk.filePath}${range}`);
+    lines.push(`\`\`\`${languageFromPath(chunk.filePath)}`);
+    const text = chunk.sourceText.slice(0, remainingChars).replace(/```/g, "``\\`");
+    remainingChars -= text.length;
+    lines.push(text);
+    lines.push("```");
+  }
+  lines.push("", "### 语义索引预算", "- 来源: SQLite FTS", `- 源码片段: ${chunks.length}/6`);
   return lines.join("\n").trim();
 }
 

@@ -1,5 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 
+import { createSearchTokens } from "../chunking/searchText";
+import { isIndexableWorkspacePath } from "../indexing/workspaceFilePolicy";
 import type { ExtractionSnapshot, IndexJobEvent, IndexJobStatus } from "./indexTypes";
 
 export type IndexChange = {
@@ -36,6 +38,13 @@ export type StoredFileMetadata = {
 
 export type FileMetadataUpdate = Omit<StoredFileMetadata, "contentHash">;
 
+export type StoredCodeChunk = {
+  filePath: string;
+  startLine?: number;
+  endLine?: number;
+  sourceText: string;
+};
+
 type JobRow = {
   id: number;
   file_uri: string;
@@ -49,6 +58,7 @@ type JobRow = {
 
 const WRITER_OWNER_KEY = "writer_owner";
 const WRITER_LEASE_EXPIRES_AT_KEY = "writer_lease_expires_at";
+const MAX_CODE_SEARCH_CHUNKS = 6;
 
 export class SqliteIndexStore {
   private readonly now: () => number;
@@ -218,6 +228,36 @@ export class SqliteIndexStore {
       extractorVersion: row.extractor_ver,
       chunkerVersion: row.chunker_ver,
     }));
+  }
+
+  searchCodeChunks(query: string, limit: number): StoredCodeChunk[] {
+    if (!Number.isInteger(limit) || limit <= 0 || limit > MAX_CODE_SEARCH_CHUNKS) {
+      throw new Error("Code chunk search limit must be a positive integer");
+    }
+    const expression = createSearchTokens(query).map((token) => `"${token}"`).join(" OR ");
+    if (!expression) return [];
+    const rows = this.database.prepare(`
+      SELECT files.path AS file_path, chunks.start_line, chunks.end_line, chunks.source_text
+      FROM chunk_fts
+      JOIN chunks ON chunks.id = chunk_fts.chunk_id
+      JOIN files ON files.id = chunks.file_id
+      WHERE files.index_state = 'ready' AND chunk_fts MATCH ?
+      ORDER BY bm25(chunk_fts), chunks.id
+      LIMIT ?
+    `).all(expression, limit) as Array<{
+      file_path: string;
+      start_line: number | null;
+      end_line: number | null;
+      source_text: string;
+    }>;
+    return rows
+      .filter((row) => isIndexableWorkspacePath(row.file_path))
+      .map((row) => ({
+        filePath: row.file_path,
+        startLine: row.start_line ?? undefined,
+        endLine: row.end_line ?? undefined,
+        sourceText: row.source_text,
+      }));
   }
 
   updateFileMetadata(ownerId: string, update: FileMetadataUpdate): void {

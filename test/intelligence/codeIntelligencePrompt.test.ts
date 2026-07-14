@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import type { CodeIntelligenceResult } from "../../src/extension/intelligence/context/codeIntelligenceContext";
-import { renderCodeIntelligencePrompt } from "../../src/extension/intelligence/context/codeIntelligencePrompt";
+import {
+  renderCodeIntelligencePrompt,
+  renderPersistedCodeIntelligencePrompt,
+} from "../../src/extension/intelligence/context/codeIntelligencePrompt";
 
 const baseResult: CodeIntelligenceResult = {
   query: "configured runner",
@@ -88,5 +91,13 @@ describe("renderCodeIntelligencePrompt", () => {
 
     expect(prompt).toContain("```python");
     expect(prompt).toContain("``\\`");
+  });
+
+  it("caps persisted chunk text at the existing context budget", () => {
+    const prompt = renderPersistedCodeIntelligencePrompt("large", [
+      { filePath: "src/large.ts", startLine: 1, endLine: 1, sourceText: "x".repeat(8_001) },
+    ]);
+
+    expect(prompt.length).toBeLessThan(7_000);
   });
 });
