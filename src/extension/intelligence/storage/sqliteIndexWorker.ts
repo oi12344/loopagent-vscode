@@ -54,6 +54,12 @@ function dispatch(request: SqliteWorkerRequest): unknown {
       return runtime.enqueueChanges(request.changes);
     case "applyFileSnapshot":
       return runtime.applyFileSnapshot(request.snapshot);
+    case "listIndexedFiles":
+      return runtime.listIndexedFiles();
+    case "updateFileMetadata":
+      return runtime.updateFileMetadata(request.update);
+    case "removeFile":
+      return runtime.removeFile(request.fileUri);
     case "getPendingJobs":
       return runtime.getPendingJobs();
     case "claimNextJob":

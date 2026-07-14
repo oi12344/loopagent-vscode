@@ -2,8 +2,10 @@ import type { SqliteCapabilities } from "./sqliteCapabilities";
 import type { ExtractionSnapshot } from "./indexTypes";
 import type {
   ClaimedIndexJob,
+  FileMetadataUpdate,
   IndexChange,
   IndexWorkerStatus,
+  StoredFileMetadata,
   StoredIndexJob,
   SqliteWorkerMessage,
   SqliteWorkerRequest,
@@ -31,6 +33,9 @@ export type SqliteIndexWorkerClient = {
   initialize(databasePath: string, ownerId: string): Promise<IndexWorkerStatus>;
   enqueueChanges(changes: readonly IndexChange[]): Promise<void>;
   applyFileSnapshot(snapshot: ExtractionSnapshot): Promise<void>;
+  listIndexedFiles(): Promise<StoredFileMetadata[]>;
+  updateFileMetadata(update: FileMetadataUpdate): Promise<void>;
+  removeFile(fileUri: string): Promise<void>;
   getPendingJobs(): Promise<StoredIndexJob[]>;
   claimNextJob(ownerId: string): Promise<ClaimedIndexJob | undefined>;
   completeJob(claim: ClaimedIndexJob): Promise<void>;
@@ -76,6 +81,18 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
 
   applyFileSnapshot(snapshot: ExtractionSnapshot): Promise<void> {
     return this.request((id) => ({ id, kind: "applyFileSnapshot", snapshot }));
+  }
+
+  listIndexedFiles(): Promise<StoredFileMetadata[]> {
+    return this.request((id) => ({ id, kind: "listIndexedFiles" }));
+  }
+
+  updateFileMetadata(update: FileMetadataUpdate): Promise<void> {
+    return this.request((id) => ({ id, kind: "updateFileMetadata", update }));
+  }
+
+  removeFile(fileUri: string): Promise<void> {
+    return this.request((id) => ({ id, kind: "removeFile", fileUri }));
   }
 
   getPendingJobs(): Promise<StoredIndexJob[]> {

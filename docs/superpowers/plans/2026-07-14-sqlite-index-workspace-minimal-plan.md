@@ -79,7 +79,7 @@ removeFile(ownerId: string, fileUri: string): void;
 
 worker runtime/client 增加无 `ownerId` 的 `listIndexedFiles()`、`updateFileMetadata(update)` 和 `removeFile(fileUri)`；runtime 使用当前 writer owner。
 
-- [ ] **Step 1：写整体 RED 测试**
+- [x] **Step 1：写整体 RED 测试**
 
 在 `workspaceIndexer.test.ts` 使用临时真实 SQLite、真实 `SqliteIndexStore` 和内存文件系统。一个主测试依次执行：首次 `start()` 后存在 file/symbol card；change 后只出现新符号；delete 后 file/chunk/FTS 均为零；用同一数据库重启时 parser 调用数为零。
 
@@ -102,7 +102,7 @@ expect(fileFacts(database, uri)).toEqual({ files: 0, chunks: 0, fts: 0 });
 
 在 `sqliteSnapshotStore.test.ts` 增加一个删除事务断言：`removeFile` 后 file/chunk/node/FTS 全部为零；无 writer lease 时删除抛错且数据不变。
 
-- [ ] **Step 2：运行确认 RED**
+- [x] **Step 2：运行确认 RED**
 
 Run:
 
@@ -112,7 +112,7 @@ npm test -- test/intelligence/workspaceIndexer.test.ts test/intelligence/sqliteS
 
 Expected: FAIL，`createWorkspaceIndexer`、文件元数据方法和共享路径策略尚不存在。
 
-- [ ] **Step 3：实现最小存储生命周期**
+- [x] **Step 3：实现最小存储生命周期**
 
 在 `sqliteIndexStore.ts` 用结构化查询实现三项能力：
 
@@ -130,7 +130,7 @@ DELETE FROM files WHERE uri = ?;
 
 更新和删除必须调用 `assertWriterLease` 并包在现有 `transaction` 中。随后把方法逐层接入 `SqliteWorkerStore`、runtime、protocol、worker dispatch 和 client；不新增通用请求包装。
 
-- [ ] **Step 4：抽取共享路径策略并实现 WorkspaceIndexer**
+- [x] **Step 4：抽取共享路径策略并实现 WorkspaceIndexer**
 
 把 `isIndexableWorkspacePath`、`detectWorkspaceLanguageId` 和分隔符规范化迁到 `workspaceFilePolicy.ts`，`vscodeWorkspaceIntelligence.ts` 仅 re-export 兼容现有调用。
 
@@ -148,7 +148,7 @@ finally: parsed.tree?.delete()
 
 使用现有 `createTypeScriptAdapter()`、`createPythonAdapter()`、`buildExtractionSnapshot()` 和 Node `createHash("sha256")`。事件 job 只保存 URI；`statFile` 负责恢复当前 path/language/mtime/size。`drainPromise` 在 `finally` 清空，禁止并行 claim。
 
-- [ ] **Step 5：运行整体 GREEN 并提交**
+- [x] **Step 5：运行整体 GREEN 并提交**
 
 Run:
 

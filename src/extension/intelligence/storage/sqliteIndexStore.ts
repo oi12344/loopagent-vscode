@@ -25,6 +25,17 @@ export type StoredIndexJob = {
   updatedAt: number;
 };
 
+export type StoredFileMetadata = {
+  uri: string;
+  contentHash: string;
+  byteLength: number;
+  mtime: number;
+  extractorVersion: number;
+  chunkerVersion: number;
+};
+
+export type FileMetadataUpdate = Omit<StoredFileMetadata, "contentHash">;
+
 type JobRow = {
   id: number;
   file_uri: string;
@@ -184,6 +195,54 @@ export class SqliteIndexStore {
       for (const reference of snapshot.unresolvedReferences) upsertReference.run(reference.id, reference.fileId, chunkByNodeId.get(reference.fromNodeId) ?? fileChunkId ?? null, reference.referenceName, reference.referenceKind, reference.line, reference.column ?? null, JSON.stringify(reference.metadata ?? {}));
       const upsertDiagnostic = this.database.prepare("INSERT INTO diagnostics(id, file_id, owner_chunk_id, severity, code, message, created_at) VALUES (?, ?, ?, ?, NULL, ?, ?)");
       for (const diagnostic of snapshot.diagnostics) upsertDiagnostic.run(diagnostic.id, diagnostic.fileId, fileChunkId ?? null, diagnostic.severity, diagnostic.message, now);
+    });
+  }
+
+  listIndexedFiles(): StoredFileMetadata[] {
+    const rows = this.database.prepare(`
+      SELECT uri, content_hash, byte_length, mtime, extractor_ver, chunker_ver
+      FROM files WHERE index_state = 'ready' ORDER BY uri
+    `).all() as Array<{
+      uri: string;
+      content_hash: string;
+      byte_length: number;
+      mtime: number;
+      extractor_ver: number;
+      chunker_ver: number;
+    }>;
+    return rows.map((row) => ({
+      uri: row.uri,
+      contentHash: row.content_hash,
+      byteLength: row.byte_length,
+      mtime: row.mtime,
+      extractorVersion: row.extractor_ver,
+      chunkerVersion: row.chunker_ver,
+    }));
+  }
+
+  updateFileMetadata(ownerId: string, update: FileMetadataUpdate): void {
+    this.transaction(() => {
+      this.assertWriterLease(ownerId);
+      const result = this.database.prepare(`
+        UPDATE files SET mtime = ?, byte_length = ?, extractor_ver = ?, chunker_ver = ?
+        WHERE uri = ?
+      `).run(update.mtime, update.byteLength, update.extractorVersion, update.chunkerVersion, update.uri);
+      if (result.changes !== 1) throw new Error(`Indexed file not found: ${update.uri}`);
+    });
+  }
+
+  removeFile(ownerId: string, fileUri: string): void {
+    this.transaction(() => {
+      this.assertWriterLease(ownerId);
+      this.database.prepare(`
+        DELETE FROM chunk_fts
+        WHERE chunk_id IN (
+          SELECT chunks.id FROM chunks
+          JOIN files ON files.id = chunks.file_id
+          WHERE files.uri = ?
+        )
+      `).run(fileUri);
+      this.database.prepare("DELETE FROM files WHERE uri = ?").run(fileUri);
     });
   }
 

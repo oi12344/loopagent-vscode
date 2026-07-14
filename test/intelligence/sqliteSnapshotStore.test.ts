@@ -88,4 +88,20 @@ describe("SqliteIndexStore snapshot persistence", () => {
     expect(() => store.applyFileSnapshot("owner-a", broken)).toThrow(/reject snapshot/i);
     expect(database.prepare("SELECT COUNT(*) AS count FROM chunks WHERE file_id = ?").get(initial.file.id)).toEqual({ count: 2 });
   });
+
+  it("removes a file and its FTS rows only while holding the writer lease", () => {
+    const { store, database } = createFixture();
+    const snapshot = buildExtractionSnapshot(input(5));
+    store.applyFileSnapshot("owner-a", snapshot);
+
+    expect(() => store.removeFile("owner-b", snapshot.file.uri)).toThrow(/writer lease/i);
+    expect(database.prepare("SELECT COUNT(*) AS count FROM files").get()).toEqual({ count: 1 });
+
+    store.removeFile("owner-a", snapshot.file.uri);
+
+    expect(database.prepare("SELECT COUNT(*) AS count FROM files").get()).toEqual({ count: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM nodes").get()).toEqual({ count: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM chunks").get()).toEqual({ count: 0 });
+    expect(database.prepare("SELECT COUNT(*) AS count FROM chunk_fts").get()).toEqual({ count: 0 });
+  });
 });
