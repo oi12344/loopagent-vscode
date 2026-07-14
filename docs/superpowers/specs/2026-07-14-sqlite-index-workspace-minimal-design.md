@@ -125,7 +125,7 @@ Tree-sitter tree 必须在 `finally` 中释放一次。解析和 snapshot 构建
 
 ## 扩展接线
 
-`LoopAgentChatViewProvider` 在拿到 `ExtensionContext` 后创建 workspace intelligence，使数据库固定写入 `context.storageUri/index/code-index.sqlite`。`storageUri` 不存在时不创建 worker 或 watcher，只保留现有内存查询降级路径。provider 的关闭路径负责调用新增的异步 `dispose`；`deactivate` 不再保留“无需清理”的假设。
+`LoopAgentChatViewProvider` 在拿到 `ExtensionContext` 后创建 workspace intelligence，使数据库固定写入 `context.storageUri/index/code-index.sqlite`。`storageUri` 不存在时不创建 worker；现有唯一 watcher 仍负责内存缓存失效，但不执行持久化入队。provider 的关闭路径负责调用新增的异步 `dispose`；`deactivate` 不再保留“无需清理”的假设。
 
 本阶段不增加 package command、设置项或可见 UI。
 
