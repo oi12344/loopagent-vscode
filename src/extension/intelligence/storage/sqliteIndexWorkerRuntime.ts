@@ -1,6 +1,7 @@
 import type { SqliteCapabilities } from "./sqliteCapabilities";
 import type { OpenIndexDatabaseResult } from "./indexDatabase";
 import type { ClaimedIndexJob, IndexChange, SqliteIndexStore, StoredIndexJob } from "./sqliteIndexStore";
+import type { ExtractionSnapshot } from "./indexTypes";
 
 export type IndexWorkerStatus = {
   state: "initializing" | "ready" | "failed" | "closed";
@@ -16,6 +17,7 @@ export type SqliteWorkerStore = Pick<
   | "releaseWriterLease"
   | "recoverInterruptedJobs"
   | "enqueueChanges"
+  | "applyFileSnapshot"
   | "listPendingJobs"
   | "claimNextJob"
   | "completeJob"
@@ -26,6 +28,7 @@ export type SqliteIndexWorkerRuntime = {
   initialize(databasePath: string, ownerId: string): IndexWorkerStatus;
   getStatus(): IndexWorkerStatus;
   enqueueChanges(changes: readonly IndexChange[]): void;
+  applyFileSnapshot(snapshot: ExtractionSnapshot): void;
   getPendingJobs(): StoredIndexJob[];
   claimNextJob(ownerId: string): ClaimedIndexJob | undefined;
   completeJob(claim: ClaimedIndexJob): void;
@@ -184,6 +187,9 @@ export function createSqliteIndexWorkerRuntime(deps: RuntimeDependencies): Sqlit
     },
     enqueueChanges(changes) {
       runWriter((activeStore, activeOwner) => activeStore.enqueueChanges(activeOwner, changes));
+    },
+    applyFileSnapshot(snapshot) {
+      runWriter((activeStore, activeOwner) => activeStore.applyFileSnapshot(activeOwner, snapshot));
     },
     getPendingJobs() {
       return requireStore().listPendingJobs();

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 
 import type { CodeNode } from "../graph/graphTypes";
+import type { CodeChunkKind } from "../chunking/chunkTypes";
 
 function sha256(parts: readonly string[]): string {
   const hash = createHash("sha256");
@@ -48,4 +49,8 @@ export function createStableNodeId(fileId: string, semanticKey: string): string 
 
 export function createStableRelationId(kind: string, ...semanticParts: string[]): string {
   return sha256([kind, ...semanticParts]);
+}
+
+export function createStableChunkId(fileId: string, kind: CodeChunkKind, semanticKey: string): string {
+  return sha256(["chunk", fileId, kind, semanticKey]);
 }

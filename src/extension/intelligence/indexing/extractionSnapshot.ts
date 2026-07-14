@@ -16,6 +16,7 @@ import {
   createStableRelationId,
   createSymbolSemanticKey,
 } from "./stableIdentity";
+import { createCodeChunks } from "../chunking/codeChunker";
 
 export type SnapshotInput = {
   fileUri: string;
@@ -119,7 +120,7 @@ export function buildExtractionSnapshot(input: SnapshotInput): ExtractionSnapsho
     fileId,
   }));
 
-  return {
+  const snapshot = {
     file: {
       id: fileId,
       uri: input.fileUri,
@@ -134,4 +135,5 @@ export function buildExtractionSnapshot(input: SnapshotInput): ExtractionSnapsho
     unresolvedReferences,
     diagnostics,
   };
+  return { ...snapshot, chunks: createCodeChunks(snapshot) };
 }

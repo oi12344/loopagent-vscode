@@ -1,10 +1,12 @@
 import type { ClaimedIndexJob, IndexChange, StoredIndexJob } from "./sqliteIndexStore";
 import type { IndexWorkerStatus } from "./sqliteIndexWorkerRuntime";
+import type { ExtractionSnapshot } from "./indexTypes";
 
 export type SqliteWorkerRequest =
   | { id: number; kind: "probe"; databasePath: string }
   | { id: number; kind: "initialize"; databasePath: string; ownerId: string }
   | { id: number; kind: "enqueueChanges"; changes: readonly IndexChange[] }
+  | { id: number; kind: "applyFileSnapshot"; snapshot: ExtractionSnapshot }
   | { id: number; kind: "getPendingJobs" }
   | { id: number; kind: "claimNextJob"; ownerId: string }
   | { id: number; kind: "completeJob"; claim: ClaimedIndexJob }

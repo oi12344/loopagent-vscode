@@ -52,6 +52,18 @@ function observeSettlement(promise: Promise<unknown>): () => boolean {
 }
 
 describe("SqliteIndexWorkerClient", () => {
+  it("sends a fixed snapshot write DTO without exposing SQL", async () => {
+    const worker = new FakeWorker();
+    const client = createSqliteIndexWorkerClient({ worker });
+    const snapshot = { file: { id: "file-a" } } as never;
+
+    const pending = client.applyFileSnapshot(snapshot);
+
+    expect(worker.requests).toEqual([{ id: 1, kind: "applyFileSnapshot", snapshot }]);
+    worker.respond({ id: 1, ok: true, value: undefined });
+    await expect(pending).resolves.toBeUndefined();
+  });
+
   it("notifies status listeners without consuming pending responses", async () => {
     const worker = new FakeWorker();
     const client = createSqliteIndexWorkerClient({ worker });

@@ -1,6 +1,6 @@
 # 稳定 Chunk 与 Snapshot 最小设计
 
-> 状态：已收敛，等待最小 card snapshot 实施。
+> 状态：最小 card snapshot 已实现，等待工作区增量接入。
 >
 > 父规格：`docs/superpowers/specs/2026-07-10-sqlite-vector-code-index-design.md`
 >

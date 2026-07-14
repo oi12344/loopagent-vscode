@@ -1,4 +1,5 @@
 import type { CodeNode } from "./graphTypes";
+import { createSearchTokens } from "../chunking/searchText";
 
 export type SearchIndex = {
   addNode(node: CodeNode): void;
@@ -53,22 +54,22 @@ export function createSearchIndex(): SearchIndex {
       removeNodeTokens(node.id);
 
       addToken(node.name, node.id);
-      for (const segment of splitIdentifier(node.name)) {
+      for (const segment of createSearchTokens(node.name)) {
         addToken(segment, node.id);
       }
-      for (const segment of splitIdentifier(node.qualifiedName)) {
+      for (const segment of createSearchTokens(node.qualifiedName)) {
         addToken(segment, node.id);
       }
       for (const part of node.filePath.split(/[\\/._-]+/)) {
         addToken(part, node.id);
-        for (const segment of splitIdentifier(part)) {
+        for (const segment of createSearchTokens(part)) {
           addToken(segment, node.id);
         }
       }
     },
     search(query, limit = 12) {
       const scores = new Map<string, number>();
-      const queryTokens = splitQuery(query);
+      const queryTokens = createSearchTokens(query);
 
       for (const token of queryTokens) {
         const matches = nodeIdsByToken.get(token);
@@ -87,21 +88,6 @@ export function createSearchIndex(): SearchIndex {
         .map(([nodeId]) => nodeId);
     },
   };
-}
-
-function splitQuery(query: string): string[] {
-  return query
-    .split(/[^A-Za-z0-9_$]+/)
-    .flatMap(splitIdentifier)
-    .map(normalizeToken)
-    .filter((token) => token.length >= 2);
-}
-
-function splitIdentifier(value: string): string[] {
-  return value
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .split(/[^A-Za-z0-9$]+/)
-    .filter(Boolean);
 }
 
 function normalizeToken(value: string): string {

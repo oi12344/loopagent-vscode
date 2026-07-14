@@ -52,6 +52,8 @@ function dispatch(request: SqliteWorkerRequest): unknown {
       return runtime.initialize(request.databasePath, request.ownerId);
     case "enqueueChanges":
       return runtime.enqueueChanges(request.changes);
+    case "applyFileSnapshot":
+      return runtime.applyFileSnapshot(request.snapshot);
     case "getPendingJobs":
       return runtime.getPendingJobs();
     case "claimNextJob":

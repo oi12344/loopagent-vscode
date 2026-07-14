@@ -52,7 +52,7 @@
 - Modify: `src/extension/intelligence/storage/sqliteIndexWorker.ts`
 - Modify: `src/extension/intelligence/storage/sqliteIndexWorkerClient.ts`
 
-- [ ] **Step 1：写 card 与持久化闭环的失败测试**
+- [x] **Step 1：写 card 与持久化闭环的失败测试**
 
 ```ts
 it("persists stable file and symbol cards and rewrites only changed FTS rows", () => {
@@ -78,7 +78,7 @@ it("removes stale facts and rolls back the file when a constraint fails", () => 
 
 另测 `file_card` 与 `symbol_card` 的稳定 ID、三层 hash、shared tokenization，以及删除符号后不残留 edge/FTS 行。
 
-- [ ] **Step 2：运行确认 RED**
+- [x] **Step 2：运行确认 RED**
 
 ```powershell
 npm test -- test/intelligence/codeChunker.test.ts test/intelligence/sqliteSnapshotStore.test.ts
@@ -86,7 +86,7 @@ npm test -- test/intelligence/codeChunker.test.ts test/intelligence/sqliteSnapsh
 
 Expected: FAIL，chunker 和 snapshot write API 不存在。
 
-- [ ] **Step 3：实现最小 card、共享拆词与直接事务写入**
+- [x] **Step 3：实现最小 card、共享拆词与直接事务写入**
 
 ```ts
 export type CodeChunkKind = "file_card" | "symbol_card";
@@ -115,7 +115,7 @@ export function createSearchTokens(value: string): string[];
 
 `applyFileSnapshot(ownerId, snapshot): void` 在一个已有 lease 的事务内完成：删除已不存在的 file-owned chunk 与事实、删除变化 owner 的陈旧 edge/binding/reference/diagnostic、upsert 新事实与 chunk。三个 hash 未变的 card 只更新 range，不改 `updated_at`；仅对 `searchHash` 改变的 card 重写 FTS，最后更新 file 状态。`embeddingHash` 仅持久化在 chunk，embedding 映射由后续 embedding 任务创建。任何 SQL 失败回滚整个文件。
 
-- [ ] **Step 4：运行整体 GREEN 验证**
+- [x] **Step 4：运行整体 GREEN 验证**
 
 ```powershell
 npm test -- test/intelligence/codeChunker.test.ts test/intelligence/sqliteSnapshotStore.test.ts test/intelligence/searchIndex.test.ts test/intelligence/extractionSnapshot.test.ts test/intelligence/workspaceAstIntegration.test.ts
@@ -126,7 +126,7 @@ git diff --check
 
 Expected: card 可稳定生成并写入 FTS；行号移动不重写搜索行；陈旧事实被删除；约束失败保留旧 snapshot。
 
-- [ ] **Step 5：更新规格状态并提交**
+- [x] **Step 5：更新规格状态并提交**
 
 把规格状态改为“最小 card snapshot 已实现，等待工作区增量接入”，记录实际测试统计和偏差。提交：
 
@@ -135,6 +135,8 @@ git add src/extension/intelligence/chunking src/extension/intelligence/graph/sea
 git diff --cached --check
 git commit -m "feat(intelligence): persist stable code cards"
 ```
+
+**Task 2 完成记录（2026-07-14）：** 已生成稳定 `file_card` 与非 file node 的 `symbol_card`，并复用同一拆词函数给内存 SearchIndex 和 FTS card。SQLite store 在 writer lease 事务中清理陈旧事实、保留 hash 未变 card 的 `updated_at`、仅在 `searchHash` 改变时重写 FTS；worker RPC 仅暴露固定 snapshot DTO。RED 确认缺失 chunks 与写入 API；最终 `npm test` 为 48 个测试文件、256 个用例通过，`npm run typecheck`、`npm run compile` 与 `git diff --check` 退出 0。未创建 embedding mapping，也未实现延期 card 或复杂源码切分。
 
 ## 后续加固（不属于当前实施门禁）
 

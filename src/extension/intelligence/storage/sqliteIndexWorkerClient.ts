@@ -1,4 +1,5 @@
 import type { SqliteCapabilities } from "./sqliteCapabilities";
+import type { ExtractionSnapshot } from "./indexTypes";
 import type {
   ClaimedIndexJob,
   IndexChange,
@@ -29,6 +30,7 @@ export type SqliteIndexWorkerClient = {
   probe(databasePath: string): Promise<SqliteCapabilities>;
   initialize(databasePath: string, ownerId: string): Promise<IndexWorkerStatus>;
   enqueueChanges(changes: readonly IndexChange[]): Promise<void>;
+  applyFileSnapshot(snapshot: ExtractionSnapshot): Promise<void>;
   getPendingJobs(): Promise<StoredIndexJob[]>;
   claimNextJob(ownerId: string): Promise<ClaimedIndexJob | undefined>;
   completeJob(claim: ClaimedIndexJob): Promise<void>;
@@ -70,6 +72,10 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
 
   enqueueChanges(changes: readonly IndexChange[]): Promise<void> {
     return this.request((id) => ({ id, kind: "enqueueChanges", changes }));
+  }
+
+  applyFileSnapshot(snapshot: ExtractionSnapshot): Promise<void> {
+    return this.request((id) => ({ id, kind: "applyFileSnapshot", snapshot }));
   }
 
   getPendingJobs(): Promise<StoredIndexJob[]> {

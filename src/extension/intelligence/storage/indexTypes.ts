@@ -5,6 +5,7 @@ import type {
   IndexDiagnostic,
   UnresolvedReference,
 } from "../graph/graphTypes";
+import type { CodeChunk } from "../chunking/chunkTypes";
 
 export type IndexJobEvent = "create" | "change" | "delete";
 export type IndexJobStatus = "pending" | "running" | "failed";
@@ -41,4 +42,5 @@ export type ExtractionSnapshot = {
   importBindings: SnapshotImportBinding[];
   unresolvedReferences: SnapshotReference[];
   diagnostics: SnapshotDiagnostic[];
+  chunks: CodeChunk[];
 };
