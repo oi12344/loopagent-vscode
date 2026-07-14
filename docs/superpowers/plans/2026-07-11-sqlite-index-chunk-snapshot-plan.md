@@ -1,150 +1,95 @@
-# 稳定 Chunk 与 Snapshot 差异实施计划
+# 稳定 Chunk 与 Snapshot 最小实施计划
 
-> **Agent 执行要求：** 在既有 SQLite feature worktree 中执行，选择 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`。逐任务执行复选框，严格 RED -> GREEN -> REFACTOR。
+> **Agent 执行要求：** 在 SQLite feature worktree 中执行；按 RED -> GREEN -> REFACTOR 完成一个可查询的纵向切片。
 
-**目标：** 把单文件 AST 抽取转换为稳定、可序列化的 `ExtractionSnapshot`，并在事务内精确应用七类 chunk 差异。
+**目标：** 将单文件 AST 抽取持久化为稳定的 `file_card` 与 `symbol_card`，并在 SQLite FTS 中可查询。
 
-**架构：** Extension Host 在一次解析生命周期内完成稳定 ID、card/source chunk 和 hash；worker 读取旧 snapshot、计算纯函数 diff，并用单文件事务维护事实、FTS 和 embedding 映射。
+**架构：** Extension Host 从 `ExtractionSnapshot` 生成两个稳定 card；SQLite worker 在 writer lease 保护的单文件事务内替换陈旧事实、写入 card，并只在 `searchHash` 变化时重建对应 FTS 行。实现直接比较 hash，不建立独立 diff 框架。
 
 **技术栈：** TypeScript、web-tree-sitter、Node crypto、SQLite、Vitest。
 
 **设计规格：** `docs/superpowers/specs/2026-07-11-sqlite-index-chunk-snapshot-design.md`
 
-**前置门禁：** `2026-07-11-sqlite-index-storage-worker-plan.md` 全部完成，schema、worker RPC、job 和 writer lease 测试通过。
+**前置门禁：** SQLite storage worker 的 schema、worker RPC、job 与 writer lease 测试通过。
 
 ---
 
+## 范围
+
+- 本轮只生成 `file_card` 与 `symbol_card`；类、测试、调用点和源码正文不生成独立 card。
+- 保留 `sourceHash`、`searchHash`、`embeddingHash`，但未配置 embedding 模型时不创建 `chunk_embeddings` 映射。
+- 复用一套标识符和路径拆词函数给内存 `SearchIndex` 与 card 搜索文本使用。
+- `applyFileSnapshot` 直接在事务内比较 hash 并维护 FTS；不引入 `SnapshotChangeSet`、七类 diff 类型或生产写入统计 DTO。
+
 ## 文件职责
 
-- `stableIdentity.ts`：文件、节点、边和 chunk 的稳定语义键与 SHA-256 ID。
-- `extractionSnapshot.ts`：把现有 `ExtractionResult` 重写为可持久化 snapshot。
-- `chunkTypes.ts`：chunk DTO 和 kind。
-- `searchText.ts`：确定性标识符、qualified name 和路径拆词。
-- `codeChunker.ts`：card chunk 总协调。
-- `sourceBodyChunker.ts`：AST source body 子块和 overlap。
-- `snapshotDiff.ts`：七类纯函数差异和精确写入集合。
+- `stableIdentity.ts`：文件、节点、关系和 chunk 的稳定语义键与 SHA-256 ID。
+- `extractionSnapshot.ts`：将 `ExtractionResult` 改写为可持久化 snapshot，并附加最小 card。
+- `chunking/chunkTypes.ts`：当前两个 card 的 DTO。
+- `chunking/searchText.ts`：共享的标识符、qualified name 与路径拆词。
+- `chunking/codeChunker.ts`：生成 file/symbol card 及三层 hash。
+- `sqliteIndexStore.ts`：在单文件事务中应用 snapshot 并维护 FTS。
 
-## Task 1：建立稳定身份和 Snapshot Core
+## Task 1：建立稳定身份和 Snapshot Core（已完成）
 
-**Files:**
+已合入 `638c7a4`、`60a8ca4`、`4f8eefa`、`83a841b`、`b88a5ae`。实现 UTF-8 SHA-256 稳定身份、路径规范化、overload/重复节点与关系消歧、稳定引用重写，并保持 tree 的释放责任在调用方。
 
-- Create: `src/extension/intelligence/indexing/stableIdentity.ts`
-- Create: `src/extension/intelligence/indexing/extractionSnapshot.ts`
-- Create: `test/intelligence/extractionSnapshot.test.ts`
-- Modify: `src/extension/intelligence/storage/indexTypes.ts`
-
-- [x] **Step 1：写范围移动和 overload 失败测试**
-
-```ts
-it("keeps node and edge identities stable when ranges move", () => {
-  const first = buildExtractionSnapshot(snapshotInput({ functionStartLine: 5, callLine: 6 }));
-  const moved = buildExtractionSnapshot(snapshotInput({ functionStartLine: 25, callLine: 26 }));
-  expect(moved.nodes[0]?.id).toBe(first.nodes[0]?.id);
-  expect(moved.nodes[0]?.semanticKey).toBe(first.nodes[0]?.semanticKey);
-  expect(moved.edges[0]?.sourceNodeId).toBe(first.edges[0]?.sourceNodeId);
-  expect(moved.nodes[0]?.startLine).toBe(25);
-});
-
-it("distinguishes overloads by normalized signature", () => {
-  expect(createSymbolSemanticKey(functionNode("run", "run(value: string): void"))).not.toBe(
-    createSymbolSemanticKey(functionNode("run", "run(value: number): void")),
-  );
-});
-```
-
-- [x] **Step 2：运行确认 RED**
-
-```powershell
-npm test -- test/intelligence/extractionSnapshot.test.ts
-```
-
-Expected: FAIL，稳定身份和 snapshot builder 不存在。
-
-- [x] **Step 3：实现稳定身份和引用重写**
-
-```ts
-export function createFileId(workspaceRelativePath: string): string;
-export function createSymbolSemanticKey(node: CodeNode, parentKey?: string): string;
-export function createStableNodeId(fileId: string, semanticKey: string): string;
-```
-
-所有 ID 使用 UTF-8 SHA-256 hex，不包含 range、mtime 或时间。`buildExtractionSnapshot` 先建立旧 node ID -> stable ID map，再重写 edge、binding 和 unresolved reference；不释放 `parsed.tree`。本任务的 snapshot core 暂不包含 `chunks`，保证中间提交独立 typecheck。
-
-- [x] **Step 4：运行确认 GREEN**
-
-```powershell
-npm test -- test/intelligence/extractionSnapshot.test.ts test/intelligence/typescriptAdapter.test.ts test/intelligence/pythonAdapter.test.ts
-npm run typecheck
-```
-
-Expected: 全部通过，现有 adapter DTO 行为不变。
-
-- [x] **Step 5：提交**
-
-```powershell
-git add src/extension/intelligence/indexing/stableIdentity.ts src/extension/intelligence/indexing/extractionSnapshot.ts src/extension/intelligence/storage/indexTypes.ts test/intelligence/extractionSnapshot.test.ts
-git diff --cached --check
-git commit -m "feat(intelligence): create stable extraction snapshots"
-```
-
-**Task 1 完成记录（2026-07-13）：** 已实现 UTF-8 SHA-256 文件/符号稳定身份和不含 range、mtime、时间的 snapshot core；文件主身份使用规范化 workspace-relative path，使当前文件与仅提供 `resolvedFilePath` 的 import 目标处于同一身份域，原始 URI 仅作为 snapshot 元数据保存。输入 path 必须来自同一次 canonical workspace 枚举并保留真实 casing，qualified name path 前缀使用同一规范化。先建立旧 node ID 到 stable ID 映射，再重写 edge、binding 和 unresolved reference；重复关系按稳定输入顺序加入 occurrence ordinal，既保持整体行移稳定，也满足四张关系表的主键唯一约束。真实 TypeScript tree-sitter function/method/constructor overload 通过 type parameters、parameters 和 return type 等无 body/range 语法字段生成规范化签名并区分 stable ID；declaration role 纳入 base semantic key，resolver 优先 concrete implementation 并在无实现时回退。同 base key 的重复 node（包括 interface merging）按 AST 稳定顺序加入 occurrence ordinal，父容器先消歧、子节点使用最终父 key，满足 `nodes` 主键唯一约束且整体行移稳定。TypeScript/Python AST extractor 的临时 symbol ID 使用 `startLine:startColumn`，避免同一行同名声明在旧 ID 映射阶段碰撞；该临时位置不进入 stable semantic identity。等价路径、重复 node/关系、同一行声明、范围移动、现有 TypeScript/Python adapter 与 reference resolver 回归均通过。本阶段按计划不包含 chunks，且 snapshot builder 不释放 `parsed.tree`。
-
-## Task 2：生成稳定 Card Chunks 和三层 Hash
+## Task 2：生成并持久化最小 Card Snapshot
 
 **Files:**
 
 - Create: `src/extension/intelligence/chunking/chunkTypes.ts`
-- Create: `src/extension/intelligence/chunking/codeChunker.ts`
 - Create: `src/extension/intelligence/chunking/searchText.ts`
+- Create: `src/extension/intelligence/chunking/codeChunker.ts`
 - Create: `test/intelligence/codeChunker.test.ts`
+- Create: `test/intelligence/sqliteSnapshotStore.test.ts`
+- Modify: `src/extension/intelligence/graph/searchIndex.ts`
 - Modify: `src/extension/intelligence/indexing/stableIdentity.ts`
 - Modify: `src/extension/intelligence/indexing/extractionSnapshot.ts`
+- Modify: `src/extension/intelligence/storage/indexTypes.ts`
+- Modify: `src/extension/intelligence/storage/sqliteIndexStore.ts`
+- Modify: `src/extension/intelligence/storage/sqliteIndexWorkerProtocol.ts`
+- Modify: `src/extension/intelligence/storage/sqliteIndexWorker.ts`
+- Modify: `src/extension/intelligence/storage/sqliteIndexWorkerClient.ts`
 
-- [ ] **Step 1：写 card、ID、拆词和 hash 失败测试**
+- [ ] **Step 1：写 card 与持久化闭环的失败测试**
 
 ```ts
-it("builds stable cards without volatile ranges", () => {
-  const chunks = createCodeChunks(snapshotFixture("src/extension/model/providerRegistry.ts"));
-  const symbol = chunks.find((chunk) => chunk.chunkKind === "symbol_card");
-  expect(symbol).toMatchObject({
-    semanticKey: expect.stringContaining("createConfiguredAgentRunner"),
-    sourceHash: expect.any(String),
-    searchHash: expect.any(String),
-    embeddingHash: expect.any(String),
-  });
-  expect(symbol?.searchText).toContain("create configured agent runner");
-  expect(symbol?.embeddingText).not.toMatch(/42-96|sourceRange/);
+it("persists stable file and symbol cards and rewrites only changed FTS rows", () => {
+  const first = buildExtractionSnapshot(snapshotFixture({ functionStartLine: 5 }));
+  const moved = buildExtractionSnapshot(snapshotFixture({ functionStartLine: 25 }));
+
+  store.applyFileSnapshot(ownerId, first);
+  const before = readChunkRows(database);
+  const ftsBefore = readFtsRows(database);
+  store.applyFileSnapshot(ownerId, moved);
+  const after = readChunkRows(database);
+
+  expect(after.map((row) => row.id)).toEqual(before.map((row) => row.id));
+  expect(readFtsRows(database)).toEqual(ftsBefore);
 });
 
-it("keeps card ids stable when only ranges move", () => {
-  const before = createCodeChunks(snapshotFixture("src/a.ts", { startLine: 5 }));
-  const moved = createCodeChunks(snapshotFixture("src/a.ts", { startLine: 50 }));
-  expect(moved.map((chunk) => chunk.id)).toEqual(before.map((chunk) => chunk.id));
+it("removes stale facts and rolls back the file when a constraint fails", () => {
+  store.applyFileSnapshot(ownerId, initialSnapshot());
+  expect(() => store.applyFileSnapshot(ownerId, invalidSnapshot())).toThrow();
+  expect(readFileHash(database)).toBe(initialSnapshot().file.contentHash);
 });
 ```
 
-测试分别断言 `file_card`、`symbol_card`、`class_card`、`test_case_card` 的关键字段。
+另测 `file_card` 与 `symbol_card` 的稳定 ID、三层 hash、shared tokenization，以及删除符号后不残留 edge/FTS 行。
 
 - [ ] **Step 2：运行确认 RED**
 
 ```powershell
-npm test -- test/intelligence/codeChunker.test.ts
+npm test -- test/intelligence/codeChunker.test.ts test/intelligence/sqliteSnapshotStore.test.ts
 ```
 
-Expected: FAIL，chunk 类型、search text 和 chunker 不存在。
+Expected: FAIL，chunker 和 snapshot write API 不存在。
 
-- [ ] **Step 3：实现 DTO、拆词和 card 生成**
-
-`chunkTypes.ts` 定义：
+- [ ] **Step 3：实现最小 card、共享拆词与直接事务写入**
 
 ```ts
-export type CodeChunkKind =
-  | "file_card"
-  | "symbol_card"
-  | "class_card"
-  | "callsite_card"
-  | "test_case_card"
-  | "source_body";
+export type CodeChunkKind = "file_card" | "symbol_card";
 
 export type CodeChunk = {
   id: string;
@@ -160,265 +105,44 @@ export type CodeChunk = {
   embeddingHash: string;
   startLine?: number;
   endLine?: number;
-  tokenHint: number;
 };
+
+export function createStableChunkId(fileId: string, kind: CodeChunkKind, semanticKey: string): string;
+export function createSearchTokens(value: string): string[];
 ```
 
-`searchText.ts` 迁移当前 `searchIndex.ts` 的 camelCase、snake_case、kebab-case、qualified name、路径拆词为纯函数；字段排序固定。
+`searchIndex.ts` 改用 `createSearchTokens`，不保留第二套 camelCase/snake_case/path 拆词。`createCodeChunks` 只产出每文件一个 `file_card` 与每个非 file 的 snapshot node 一个 `symbol_card`；不读取整文件源码、不猜测测试语义、不创建 class/callsite/source-body card。
 
-在 `CodeChunkKind` 定义后再给 `stableIdentity.ts` 增加：
+`applyFileSnapshot(ownerId, snapshot): void` 在一个已有 lease 的事务内完成：删除已不存在的 file-owned chunk 与事实、删除变化 owner 的陈旧 edge/binding/reference/diagnostic、upsert 新事实与 chunk。三个 hash 未变的 card 只更新 range，不改 `updated_at`；仅对 `searchHash` 改变的 card 重写 FTS，最后更新 file 状态。`embeddingHash` 仅持久化在 chunk，embedding 映射由后续 embedding 任务创建。任何 SQL 失败回滚整个文件。
 
-```ts
-export function createStableChunkId(
-  fileId: string,
-  chunkKind: CodeChunkKind,
-  semanticKey: string,
-): string;
-```
-
-`createCodeChunks(snapshotCore)` 生成 file/symbol/class/test card，并分别从 `sourceText`、`searchText`、`embeddingText` 计算 SHA-256。Task 2 不生成 callsite/source body。
-
-- [ ] **Step 4：加入 snapshot chunks 并确认 GREEN**
-
-给 `ExtractionSnapshot` 增加 `chunks: CodeChunk[]`，在稳定节点映射后调用 card chunker。运行：
+- [ ] **Step 4：运行整体 GREEN 验证**
 
 ```powershell
-npm test -- test/intelligence/codeChunker.test.ts test/intelligence/searchIndex.test.ts test/intelligence/extractionSnapshot.test.ts
-npm run typecheck
-```
-
-Expected: 全部通过，旧 SearchIndex 测试只作为拆词基线。
-
-- [ ] **Step 5：提交**
-
-```powershell
-git add src/extension/intelligence/chunking/chunkTypes.ts src/extension/intelligence/chunking/codeChunker.ts src/extension/intelligence/chunking/searchText.ts src/extension/intelligence/indexing/stableIdentity.ts src/extension/intelligence/indexing/extractionSnapshot.ts test/intelligence/codeChunker.test.ts
-git diff --cached --check
-git commit -m "feat(intelligence): generate stable code cards"
-```
-
-## Task 3：生成 Source Body、Callsite 和超大函数子块
-
-**Files:**
-
-- Create: `src/extension/intelligence/chunking/sourceBodyChunker.ts`
-- Create: `test/intelligence/sourceBodyChunker.test.ts`
-- Modify: `src/extension/intelligence/chunking/codeChunker.ts`
-- Modify: `src/extension/intelligence/indexing/extractionSnapshot.ts`
-- Modify: `test/intelligence/codeChunker.test.ts`
-
-- [ ] **Step 1：写边界、稳定子块和 tree 生命周期失败测试**
-
-```ts
-it("keeps a small function as one source body", () => {
-  const chunks = createSourceBodyChunks(parsedFunction({ lines: 40, characters: 1_200 }));
-  expect(chunks).toHaveLength(1);
-  expect(chunks[0]?.sourceText).toContain("function run");
-});
-
-it("splits an oversized function at named AST statement boundaries", () => {
-  const chunks = createSourceBodyChunks(parsedFunction({ lines: 180, characters: 8_000 }));
-  expect(chunks.length).toBeGreaterThan(1);
-  expect(chunks.every((chunk) => chunk.sourceText.length <= 5_000)).toBe(true);
-});
-
-it("does not include line overlap in embedding text", () => {
-  const [chunk] = createSourceBodyChunks(parsedFunction({ lines: 180, characters: 8_000 }));
-  expect(chunk.sourceText.length).toBeGreaterThan(chunk.embeddingText.length);
-});
-```
-
-另测前置空行移动不改变子块 ID，integration fixture 的 tree 最终只 delete 一次。
-
-- [ ] **Step 2：运行确认 RED**
-
-```powershell
-npm test -- test/intelligence/sourceBodyChunker.test.ts
-```
-
-Expected: FAIL，source body chunker 不存在。
-
-- [ ] **Step 3：实现固定 AST 切块规则**
-
-- 小函数：最多 120 行且最多 4,000 字符。
-- 超大函数：优先按 `if/for/while/try/switch/callback/object literal` named range。
-- 子块目标 1,500-3,000 字符，硬上限 5,000。
-- overlap 前后最多 8 行，只进入 source text。
-- semantic key 使用父符号键、node type、规范化首语句 hash，ordinal 仅解冲突。
-
-callsite 只识别通用 AST 模式，不加入项目业务词表。
-
-- [ ] **Step 4：在 tree 释放前接入并确认 GREEN**
-
-把签名扩展为 `createCodeChunks(snapshotCore, parsed)`，保证 source 切块在 `parsed.tree?.delete()` 前完成，snapshot 不保存 tree。运行：
-
-```powershell
-npm test -- test/intelligence/sourceBodyChunker.test.ts test/intelligence/codeChunker.test.ts test/intelligence/workspaceAstIntegration.test.ts
-npm run typecheck
-```
-
-Expected: 全部通过，tree delete 一次。
-
-- [ ] **Step 5：提交**
-
-```powershell
-git add src/extension/intelligence/chunking/sourceBodyChunker.ts src/extension/intelligence/chunking/codeChunker.ts src/extension/intelligence/indexing/extractionSnapshot.ts test/intelligence/sourceBodyChunker.test.ts test/intelligence/codeChunker.test.ts
-git diff --cached --check
-git commit -m "feat(intelligence): split source bodies by ast boundaries"
-```
-
-## Task 4：实现七类纯函数 Snapshot Diff
-
-**Files:**
-
-- Create: `src/extension/intelligence/indexing/snapshotDiff.ts`
-- Create: `test/intelligence/snapshotDiff.test.ts`
-- Modify: `src/extension/intelligence/storage/indexTypes.ts`
-
-- [ ] **Step 1：写七类差异和精确操作失败测试**
-
-```ts
-it.each([
-  ["unchanged", unchangedPair(), { chunkWrites: 0, ftsWrites: 0, embeddingWrites: 0 }],
-  ["metadata-only", rangeOnlyPair(), { chunkWrites: 1, ftsWrites: 0, embeddingWrites: 0 }],
-  ["source-changed", sourceOnlyPair(), { chunkWrites: 1, ftsWrites: 0, embeddingWrites: 0 }],
-  ["search-changed", searchChangedPair(), { chunkWrites: 1, ftsWrites: 1, embeddingWrites: 0 }],
-  ["embedding-changed", embeddingChangedPair(), { chunkWrites: 1, ftsWrites: 0, embeddingWrites: 1 }],
-])("classifies %s and emits exact operations", (kind, [stored, incoming], counts) => {
-  const diff = diffChunk(stored, incoming);
-  expect(diff.kind).toBe(kind);
-  expect(operationCounts(diff)).toEqual(counts);
-});
-```
-
-另测 added/removed stable IDs、数组排序和“source/search/embedding 同时变化时取最高影响级别”。
-
-- [ ] **Step 2：运行确认 RED**
-
-```powershell
-npm test -- test/intelligence/snapshotDiff.test.ts
-```
-
-Expected: FAIL，diff API 不存在。
-
-- [ ] **Step 3：实现类型和优先级**
-
-```ts
-export type ChunkDiffKind =
-  | "unchanged"
-  | "metadata-only"
-  | "source-changed"
-  | "search-changed"
-  | "embedding-changed";
-
-export function diffChunk(stored: StoredChunk, incoming: CodeChunk): ChunkDiff;
-export function diffExtractionSnapshot(stored: StoredFileSnapshot, incoming: ExtractionSnapshot): SnapshotChangeSet;
-```
-
-分类顺序固定为 embedding hash -> search hash -> source hash -> metadata。change set 分别列出 node、edge、binding、reference、diagnostic、chunk、FTS 和 embedding 操作，并按 stable ID 排序。
-
-- [ ] **Step 4：运行确认 GREEN**
-
-```powershell
-npm test -- test/intelligence/snapshotDiff.test.ts
-npm run typecheck
-```
-
-Expected: 全部通过。
-
-- [ ] **Step 5：提交**
-
-```powershell
-git add src/extension/intelligence/indexing/snapshotDiff.ts src/extension/intelligence/storage/indexTypes.ts test/intelligence/snapshotDiff.test.ts
-git diff --cached --check
-git commit -m "feat(intelligence): diff stable code snapshots"
-```
-
-## Task 5：事务应用 Snapshot 差异并维护 FTS
-
-**Files:**
-
-- Create: `test/intelligence/sqliteSnapshotStore.test.ts`
-- Modify: `src/extension/intelligence/storage/sqliteIndexStore.ts`
-- Modify: `src/extension/intelligence/storage/sqliteIndexWorkerProtocol.ts`
-- Modify: `src/extension/intelligence/storage/sqliteIndexWorker.ts`
-- Modify: `src/extension/intelligence/storage/sqliteIndexWorkerClient.ts`
-- Modify: `docs/superpowers/specs/2026-07-11-sqlite-index-chunk-snapshot-design.md`
-
-- [ ] **Step 1：写局部更新、陈旧出边、孤立 FTS 和回滚失败测试**
-
-```ts
-it("keeps unchanged chunks and removes stale owned edges", () => {
-  const store = createTestStore({ now: sequence(100, 200) });
-  store.applyFileSnapshot(initialTwoFunctionSnapshot());
-  const before = store.readStoredFileSnapshot("file:src/a.ts");
-  store.applyFileSnapshot(snapshotWithSecondFunctionAndCallChanged());
-  const after = store.readStoredFileSnapshot("file:src/a.ts");
-  expect(after.chunks[0]?.updatedAt).toBe(before.chunks[0]?.updatedAt);
-  expect(after.edges.map((edge) => edge.id)).not.toContain("edge:removed-call");
-});
-
-it("rolls back the whole file update on a constraint failure", () => {
-  const store = createStoreWithInitialSnapshot();
-  expect(() => store.applyFileSnapshot(snapshotWithMissingEdgeTarget())).toThrow();
-  expect(store.readStoredFileSnapshot("file:src/a.ts").file.contentHash).toBe("initial");
-});
-```
-
-另测 source-only 不写 FTS/embedding，range-only 不改变 chunk `updated_at`，删除后 `chunk_fts` 无孤立行。
-
-- [ ] **Step 2：运行确认 RED**
-
-```powershell
-npm test -- test/intelligence/sqliteSnapshotStore.test.ts
-```
-
-Expected: FAIL，store 尚不能应用 snapshot。
-
-- [ ] **Step 3：实现单文件事务顺序**
-
-按设计规格的九步顺序：读旧 snapshot、diff、删 removed FTS/facts、删变化 owner 陈旧事实、upsert facts、精确 chunk/FTS、embedding pending、file ready、commit。所有写事务先验证 writer lease。
-
-RPC 增加：
-
-```ts
-| { id: number; kind: "applyFileSnapshot"; snapshot: ExtractionSnapshot }
-| { id: number; kind: "removeFile"; fileUri: string }
-```
-
-只返回写入统计，不返回完整数据库 snapshot：
-
-```ts
-export type SnapshotWriteStats = {
-  inserted: number;
-  updated: number;
-  removed: number;
-  ftsWrites: number;
-  embeddingsInvalidated: number;
-};
-```
-
-- [ ] **Step 4：运行阶段全量验证**
-
-```powershell
-npm test -- test/intelligence/extractionSnapshot.test.ts test/intelligence/codeChunker.test.ts test/intelligence/sourceBodyChunker.test.ts test/intelligence/snapshotDiff.test.ts test/intelligence/sqliteSnapshotStore.test.ts test/intelligence/workspaceAstIntegration.test.ts
+npm test -- test/intelligence/codeChunker.test.ts test/intelligence/sqliteSnapshotStore.test.ts test/intelligence/searchIndex.test.ts test/intelligence/extractionSnapshot.test.ts test/intelligence/workspaceAstIntegration.test.ts
 npm run typecheck
 npm run compile
 git diff --check
 ```
 
-Expected: 全部通过；旧出边/FTS 被删除；失败事务保留旧版本。
+Expected: card 可稳定生成并写入 FTS；行号移动不重写搜索行；陈旧事实被删除；约束失败保留旧 snapshot。
 
 - [ ] **Step 5：更新规格状态并提交**
 
-把 chunk/snapshot 规格状态改为“已实现，等待总体验证”，记录实际偏差。提交：
+把规格状态改为“最小 card snapshot 已实现，等待工作区增量接入”，记录实际测试统计和偏差。提交：
 
 ```powershell
-git add src/extension/intelligence/storage/sqliteIndexStore.ts src/extension/intelligence/storage/sqliteIndexWorkerProtocol.ts src/extension/intelligence/storage/sqliteIndexWorker.ts src/extension/intelligence/storage/sqliteIndexWorkerClient.ts test/intelligence/sqliteSnapshotStore.test.ts docs/superpowers/specs/2026-07-11-sqlite-index-chunk-snapshot-design.md
+git add src/extension/intelligence/chunking src/extension/intelligence/graph/searchIndex.ts src/extension/intelligence/indexing src/extension/intelligence/storage test/intelligence/codeChunker.test.ts test/intelligence/sqliteSnapshotStore.test.ts docs/superpowers/specs/2026-07-11-sqlite-index-chunk-snapshot-design.md docs/superpowers/plans/2026-07-11-sqlite-index-chunk-snapshot-plan.md
 git diff --cached --check
-git commit -m "feat(intelligence): persist chunk snapshot diffs"
+git commit -m "feat(intelligence): persist stable code cards"
 ```
 
-## 计划完成记录
+## 后续加固（不属于当前实施门禁）
 
-记录实际提交、七类 diff 操作计数、事务回滚结果、tree 生命周期结果、偏差和技术债。Task 1-5 全部完成后才能进入 workspace 增量计划。
+- 当真实代码问答证明 card 缺少必要源码时，再增加 `source_body`；首版按固定文本上限切分，不实现 AST 语句分类、首语句 hash 或 overlap 策略。
+- 当 language adapter 显式提供测试、继承或调用点事实，且检索评估显示 symbol card 不足时，再增加 `test_case_card`、`class_card` 或 `callsite_card`。
+- 当需要第二个写入后端、调试 trace，或实测大量无效写入时，再抽取独立 diff API；当前直接在 SQLite 事务内比较 hash。
+- 当 embedding provider/model 配置与批处理器实现后，再创建 `chunk_embeddings` 映射和 pending/retry 逻辑。
+
+## 完成记录
+
+Task 2 完成后记录 card 数量、行号移动时 FTS 写入数、陈旧事实删除、事务回滚结果、实际提交和技术债。最小闭环完成后即可进入工作区增量索引计划；后续加固不阻塞该入口。
