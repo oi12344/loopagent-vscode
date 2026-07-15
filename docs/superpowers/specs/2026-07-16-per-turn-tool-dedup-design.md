@@ -14,7 +14,7 @@ LoopAgent 不照搬并行策略，只复用“模型决定是否继续、请求�
 
 ## 方案取舍
 
-- 采用：保留模型自评，在固定工具预算之后增加一次 `toolChoice = "none"` 的最终回答。
+- 采用：保留模型自评，在固定工具预算之后增加一次 `toolChoice = "none"` 且不提供工具定义的最终回答。
 - 不采用独立 Judge：它会增加一次模型调用和新的误判来源，而参考实现也没有该机制。
 - 不采用无上限循环：代码问答仍需要明确成本上限和异常收敛边界。
 
@@ -42,7 +42,7 @@ Runtime 校验是最终约束，提示词只用于减少无效重复请求。
 
 1. 前 3 个步骤使用 `toolChoice = "auto"`。模型可在任一步直接回答并提前结束。
 2. 如果第 3 个步骤仍调用工具，Runner 将结果加入消息历史。
-3. Runner 追加第 4 个模型步骤，使用 `toolChoice = "none"`，禁止继续调用工具。
+3. Runner 追加第 4 个模型步骤；OpenAI-compatible adapter 向 provider 传入 `toolChoice = "none"` 并省略 `tools`，避免兼容 provider 把工具调用标记作为普通文本返回。
 4. 最终步骤基于已有证据回答；证据仍不完整时，沿用 system prompt 的约束，明确说明限制。
 5. 如果 provider 违反 `toolChoice = "none"` 仍返回工具请求，Runner 不执行这些请求，并按模型协议错误结束。
 
@@ -66,7 +66,7 @@ Runtime 校验是最终约束，提示词只用于减少无效重复请求。
 - 现有查询预览和敏感内容隐藏用例改为跨步骤调用，继续覆盖原行为。
 - 达到工具步骤上限后，不再执行工具，而是用 `toolChoice = "none"` 获取最终回答。
 
-在 `test/openAiReactModelTurn.test.ts` 验证最终回答步骤的 `toolChoice = "none"` 传递到 provider。在 `test/providerRegistryCodeContext.test.ts` 保留生产 system prompt 的单步同名工具限一次契约。
+在 `test/openAiReactModelTurn.test.ts` 验证最终回答步骤向 provider 传递 `toolChoice = "none"`，同时将 `tools` 设为 `undefined`。在 `test/providerRegistryCodeContext.test.ts` 保留生产 system prompt 的单步同名工具限一次契约。
 
 最终运行定向测试、全量测试、类型检查、生产构建、`git diff --check`，并在唯一 VSIX E2E 窗口中确认每个 `Planning step` 最多出现一次 `Running tool exploreCode`。
 

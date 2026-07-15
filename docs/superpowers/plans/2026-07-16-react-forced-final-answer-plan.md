@@ -4,7 +4,7 @@
 
 **目标：** 默认允许模型执行最多 3 个工具步骤，并保证随后有 1 个关闭工具的模型步骤负责综合已有证据和说明限制。
 
-**架构：** 保留现有 ReAct 循环，在最后一次迭代向同一个 `ReactModelTurn` 传入 `toolChoice = "none"`。OpenAI-compatible adapter 原样把该值传给 provider；不增加 Judge、planner、配置项或新调度层。
+**架构：** 保留现有 ReAct 循环，在最后一次迭代向同一个 `ReactModelTurn` 传入 `toolChoice = "none"`。OpenAI-compatible adapter 原样把该值传给 provider，并在该轮将 `tools` 设为 `undefined`；不增加 Judge、planner、配置项或新调度层。
 
 **技术栈：** TypeScript、Vitest、现有 OpenAI-compatible provider、VS Code VSIX E2E。
 
@@ -13,7 +13,7 @@
 - `maxSteps` 表示可调用工具的步骤数，默认值为 3。
 - 默认总模型调用最多 4 次：3 个 `auto` 步骤和 1 个 `none` 步骤。
 - 模型在任一工具步骤直接回答时必须立即结束，不执行多余最终步骤。
-- 最终步骤不得执行任何工具；provider 违反 `toolChoice = "none"` 时按协议错误结束。
+- 最终步骤不得提供或执行任何工具；adapter 向 provider 传入 `toolChoice = "none"` 并省略工具定义，provider 仍返回工具请求时按协议错误结束。
 - 单步同名工具去重、请求/结果配对、`maxToolRequestsPerStep = 3`、取消和工具异常语义保持不变。
 - 不增加依赖、配置项、Judge、planner 或通用调度抽象。
 - 开发、测试和提交只在 `E:\zz\loopagent-vscode\.worktrees\limit-duplicate-tool-calls` 完成。
@@ -97,11 +97,13 @@ it("forces a final answer after reaching the maximum tool steps", async () => {
 ```typescript
 it("passes the requested tool choice to the provider", async () => {
   let seenToolChoice: "auto" | "none" | undefined;
+  let seenTools: unknown;
   const provider: ModelProvider = {
     id: "test",
     displayName: "Test",
     async *stream(request) {
       seenToolChoice = request.toolChoice;
+      seenTools = request.tools;
       yield { type: "contentDelta", content: "Final answer." } as const;
       yield { type: "finishReason", reason: "stop" } as const;
     },
@@ -115,6 +117,7 @@ it("passes the requested tool choice to the provider", async () => {
   });
 
   expect(seenToolChoice).toBe("none");
+  expect(seenTools).toBeUndefined();
 });
 ```
 
@@ -140,7 +143,7 @@ toolChoice?: "auto" | "none";
 toolChoice?: "auto" | "none";
 ```
 
-在 `src/extension/agent/openAiReactModelTurn.ts` 使用默认值并透传：
+在 `src/extension/agent/openAiReactModelTurn.ts` 使用默认值并透传；最终回答轮省略工具定义：
 
 ```diff
 -  return async ({ messages, signal }) => {
@@ -148,6 +151,9 @@ toolChoice?: "auto" | "none";
 @@
 -      toolChoice: "auto",
 +      toolChoice,
+@@
+-      tools: tools.map((tool) => ({
++      tools: toolChoice === "none" ? undefined : tools.map((tool) => ({
 ```
 
 - [x] **步骤 5：实现 3 个工具步骤和 1 个最终步骤**
@@ -231,4 +237,9 @@ git commit -m "fix(agent): reserve a final answer turn"
 - 绿灯：同一定向命令得到 2 个测试文件、15 个测试全部通过。
 - 全量测试：`npm test` 得到 50 个测试文件、276 个测试全部通过；仅有 Node SQLite experimental warning。
 - 静态与构建验证：`npm run typecheck`、`npm run compile`、`git diff --check` 均以退出码 0 完成。
-- E2E：按任务分工未在实现代理中运行，主代理将在提交后使用唯一 Extension Development Host 验证真实流程。
+- 首次真实 E2E：第 4 步已使用 `toolChoice = "none"` 并正常进入 Done，但最终答案原样包含 `<|DSML|tool_calls>...exploreCode...`，仅匹配 2 个函数、0 个路径，`answerLength = 404`。
+- E2E 根因：adapter 在最终轮仍传入工具定义，`openAiCompatibleClient` 因 `request.tools` 存在而发送 `tools + tool_choice:none`；兼容 provider 将工具调用标记作为普通文本返回。
+- 兼容修复红灯：`npm test -- --run test/openAiReactModelTurn.test.ts` 得到 1 个失败、5 个通过；`request.tools` 实际为 `exploreCode` 工具数组，预期为 `undefined`。
+- 兼容修复绿灯：同一目标命令得到 1 个测试文件、6 个测试全部通过。
+- 兼容修复验证：`npm run typecheck`、`npm run compile`、`git diff --check` 均以退出码 0 完成；按任务范围不重复运行全量测试。
+- 最终 E2E：由主代理使用新提交重新打包并在唯一 Extension Development Host 中补充结果。

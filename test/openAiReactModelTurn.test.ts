@@ -79,11 +79,13 @@ describe("createOpenAiReactModelTurn", () => {
 
   it("passes the requested tool choice to the provider", async () => {
     let seenToolChoice: "auto" | "none" | undefined;
+    let seenTools: unknown;
     const provider: ModelProvider = {
       id: "test",
       displayName: "Test",
       async *stream(request) {
         seenToolChoice = request.toolChoice;
+        seenTools = request.tools;
         yield { type: "contentDelta", content: "Final answer." } as const;
         yield { type: "finishReason", reason: "stop" } as const;
       },
@@ -97,6 +99,7 @@ describe("createOpenAiReactModelTurn", () => {
     });
 
     expect(seenToolChoice).toBe("none");
+    expect(seenTools).toBeUndefined();
   });
 
   it.each([

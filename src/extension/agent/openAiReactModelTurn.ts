@@ -26,14 +26,17 @@ export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReac
     for await (const event of provider.stream({
       messages: messages.map(toModelMessage),
       signal,
-      tools: tools.map((tool) => ({
-        type: "function",
-        function: {
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.inputSchema,
-        },
-      })),
+      tools:
+        toolChoice === "none"
+          ? undefined
+          : tools.map((tool) => ({
+              type: "function",
+              function: {
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.inputSchema,
+              },
+            })),
       toolChoice,
     })) {
       if (event.type === "contentDelta") {
