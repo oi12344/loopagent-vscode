@@ -243,7 +243,8 @@ git commit -m "fix(agent): reserve a final answer turn"
 - 兼容修复绿灯：同一目标命令得到 1 个测试文件、6 个测试全部通过。
 - 兼容修复验证：`npm run typecheck`、`npm run compile`、`git diff --check` 均以退出码 0 完成；按任务范围不重复运行全量测试。
 - 反向契约回归：补充省略 `toolChoice` 时仍向 provider 传递 `"auto"` 和完整 `exploreCode` 定义的测试，`test/openAiReactModelTurn.test.ts` 得到 7 个测试全部通过；任务复审无 Critical、Important 或 Minor 问题。
-- 最终集中验证：`npm test` 得到 50 个测试文件、277 个测试全部通过；`npm run typecheck` 和 `npm run compile` 均退出 `0`。
+- 最终集中验证：`npm test` 得到 50 个测试文件、278 个测试全部通过；`npm run typecheck`、`npm run compile` 和整分支 `git diff --check` 均退出 `0`。
 - 最终 E2E：重新打包兼容修复后的 VSIX，在唯一 Extension Development Host 中运行 `npm run test:e2e:code-exploration` 并通过；匹配 3 个函数锚点、3 个源码路径，`missingStates = []`，`answerLength = 1422`。
 - 最终调用明细：步骤 1–3 各实际执行 1 次 `exploreCode`，并各跳过同轮第 2 个重复请求；步骤 4 没有工具调用并直接 `Done`。整次运行共实际搜索 3 次、跳过重复请求 3 次，没有 DSML 工具标记或 `Reached max ReAct steps`。
 - 最终整分支审查回归：去重用例现以 `exploreCode`、重复 `exploreCode`、不同名称工具共 3 个请求锁定“不同工具各执行一次且 3 个 request ID 全部配对”；新增默认配置下 3 个 `auto` 工具轮后第 4 个 `none` 轮违规请求的协议错误用例。`npm test -- --run test/reactAgentRunner.test.ts` 得到 1 个测试文件、10 个测试全部通过。
+- 最终整分支复审：此前两个 Important 和一个 Minor 均已关闭，Critical、Important、Minor 均为 0，结论为 `Ready to merge: Yes`。
