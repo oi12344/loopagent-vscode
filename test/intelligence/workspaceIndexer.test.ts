@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,7 +54,16 @@ describe("WorkspaceIndexer", () => {
     const first = createIndexer();
     await first.start();
     await first.dispose();
+    const legacySource = "name: run\nqualified: src/sample.ts::run\nkind: function";
+    const legacyHash = createHash("sha256").update(legacySource, "utf8").digest("hex");
+    const mutation = opened.database.prepare(
+      "UPDATE chunks SET source_text = ?, source_hash = ? WHERE chunk_kind = 'symbol_card'",
+    ).run(legacySource, legacyHash);
     opened.database.prepare("UPDATE files SET chunker_ver = 1").run();
+
+    expect(mutation.changes).toBe(1);
+    expect(symbolChunk(opened)).toEqual({ sourceText: legacySource, sourceHash: legacyHash });
+    expect(sqliteStore.searchCodeChunks("run", 6)).toContainEqual(expect.objectContaining({ sourceText: legacySource }));
 
     parserRuntime.parse.mockClear();
     const restarted = createIndexer();
@@ -61,6 +71,11 @@ describe("WorkspaceIndexer", () => {
 
     expect(parserRuntime.parse).toHaveBeenCalledTimes(1);
     expect((await store.listIndexedFiles())[0]?.chunkerVersion).toBe(2);
+    expect(symbolChunk(opened)).toEqual({
+      sourceText: file.text,
+      sourceHash: createHash("sha256").update(file.text, "utf8").digest("hex"),
+    });
+    expect(sqliteStore.searchCodeChunks("run", 6)).toContainEqual(expect.objectContaining({ sourceText: file.text }));
     await restarted.dispose();
   });
 
@@ -174,6 +189,13 @@ function cardText(opened: OpenIndexDatabaseResult): string {
   return (opened.database.prepare("SELECT source_text FROM chunks ORDER BY id").all() as Array<{ source_text: string }>)
     .map((row) => row.source_text)
     .join("\n");
+}
+
+function symbolChunk(opened: OpenIndexDatabaseResult): { sourceText: string; sourceHash: string } {
+  const row = opened.database.prepare(
+    "SELECT source_text, source_hash FROM chunks WHERE chunk_kind = 'symbol_card'",
+  ).get() as { source_text: string; source_hash: string };
+  return { sourceText: row.source_text, sourceHash: row.source_hash };
 }
 
 function fileFacts(opened: OpenIndexDatabaseResult): { files: number; chunks: number; fts: number } {

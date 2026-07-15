@@ -20,8 +20,7 @@ function hash(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-function readSymbolSource(fileText: string, startLine: number, endLine: number): string | undefined {
-  const lines = fileText.split(/\r?\n/);
+function readSymbolSource(lines: readonly string[], startLine: number, endLine: number): string | undefined {
   if (startLine < 1 || startLine > lines.length || endLine < startLine) return undefined;
   const startIndex = startLine - 1;
   return lines.slice(startIndex, Math.min(endLine, startIndex + MAX_SYMBOL_SOURCE_LINES, lines.length)).join("\n") || undefined;
@@ -38,6 +37,7 @@ function createChunk(input: Omit<CodeChunk, "id" | "sourceHash" | "searchHash" |
 }
 
 export function createCodeChunks(input: CodeChunkInput): CodeChunk[] {
+  const lines = input.fileText.split(/\r?\n/);
   const imports = input.importBindings.map((binding) => binding.importedName).join(", ");
   const declarations = input.nodes.filter((node) => node.kind !== "file").map((node) => node.name).join(", ");
   const fileSource = [
@@ -72,7 +72,7 @@ export function createCodeChunks(input: CodeChunkInput): CodeChunk[] {
       nodeId: node.id,
       semanticKey: node.semanticKey,
       chunkKind: "symbol_card",
-      sourceText: readSymbolSource(input.fileText, node.startLine, node.endLine) ?? metadataText,
+      sourceText: readSymbolSource(lines, node.startLine, node.endLine) ?? metadataText,
       searchText: createSearchTokens(`${node.name} ${node.qualifiedName} ${node.signature ?? ""} ${calls.join(" ")}`).join(" "),
       embeddingText: metadataText,
       startLine: node.startLine,

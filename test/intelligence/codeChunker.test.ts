@@ -173,4 +173,21 @@ describe("minimal code cards", () => {
     expect(pythonChunk.sourceText).toBe("class Service:\n    pass");
     expect(invalidChunk.sourceText).toContain("qualified:");
   });
+
+  it.each([
+    { name: "startLine below one", startLine: 0, endLine: 1, expectedSource: undefined },
+    { name: "endLine before startLine", startLine: 2, endLine: 1, expectedSource: undefined },
+    { name: "endLine past EOF", startLine: 2, endLine: 99, expectedSource: "line 2\nline 3" },
+  ])("handles $name", ({ startLine, endLine, expectedSource }) => {
+    const chunk = buildExtractionSnapshot(singleSymbolInput({
+      filePath: "src/range.ts",
+      languageId: "typescript",
+      text: "line 1\nline 2\nline 3",
+      startLine,
+      endLine,
+    })).chunks.find((candidate) => candidate.chunkKind === "symbol_card")!;
+
+    if (expectedSource === undefined) expect(chunk.sourceText).toContain("qualified:");
+    else expect(chunk.sourceText).toBe(expectedSource);
+  });
 });

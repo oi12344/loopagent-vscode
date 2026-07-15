@@ -37,7 +37,7 @@
 - 节点范围使用一基闭区间；`startLine < 1`、`startLine` 超过文件末尾或 `endLine < startLine` 均视为无效。有效范围的结束行裁剪到文件末尾。
 - 每个 symbol source 最多 120 行，与现有 expanded-source 上限一致。
 - 范围无效或截取结果为空时回退现有元数据 card，避免生成空 chunk。
-- prompt 继续使用现有最多 6 个命中和 6,000 字符总预算，不新增配置。
+- prompt 继续使用现有最多 6 个命中和 6,000 字符源码片段正文预算；该预算只累计命中 `sourceText` 经代码围栏转义后的正文，不代表最终完整 prompt 的字符数，也不新增配置。
 - 敏感路径过滤、worker 串行读取和 SQLite 事务行为保持不变。
 
 ## 数据流
@@ -64,7 +64,7 @@ parsed.text + node range
 3. 纯行号移动且正文不变时，`sourceHash` 保持不变，只更新范围。
 4. 超过 120 行的符号只保存前 120 行。
 5. 无效范围回退元数据 card。
-6. 真实 SQLite FTS 查询和 VS Code prompt 返回函数正文，并继续遵守 6 条、6,000 字符和敏感路径限制。
+6. 真实 SQLite FTS 查询和 VS Code prompt 返回函数正文，并继续遵守 6 条命中、6,000 字符源码片段正文载荷和敏感路径限制。
 7. `chunker_ver=1` 的已索引文件在 mtime 和字节数不变时仍重新解析，并更新为版本 2。
 
 ## 非目标
@@ -77,9 +77,11 @@ parsed.text + node range
 ## 实施结果
 
 - `src/extension/intelligence/indexing/extractionSnapshot.ts` 将 `parsed.text` 传给 chunker。
-- `src/extension/intelligence/chunking/codeChunker.ts` 按节点范围保存最多 120 行正文；无效或空范围回退元数据 card。
-- `test/intelligence/codeChunker.test.ts` 覆盖 TypeScript、Python、hash 稳定性、120 行裁剪和无效范围回退。
+- `src/extension/intelligence/languages/pythonAdapter.ts` 在无语法树 fallback 中按 dedent/EOF 关闭 class、function 和 method 范围，使持久化范围包含正文。
+- `src/extension/intelligence/chunking/codeChunker.ts` 每个文件只分行一次，再按节点范围保存最多 120 行正文；无效或空范围回退元数据 card。
+- `test/intelligence/pythonAdapter.test.ts` 覆盖 `tree: undefined` 时从 adapter 到 `buildExtractionSnapshot` 的函数、类和方法正文。
+- `test/intelligence/codeChunker.test.ts` 覆盖 TypeScript、Python、hash 稳定性、120 行裁剪，并参数化验证起始行小于 1、结束行早于起始行和结束行超过 EOF。
 - `test/intelligence/sqliteCodeSearch.test.ts` 验证真实 SQLite FTS 查询返回持久化函数正文。
 - `src/extension/intelligence/indexing/workspaceIndexer.ts` 使用 chunker 版本 2 触发旧索引重建。
-- `test/intelligence/workspaceIndexer.test.ts` 使用真实 SQLite store 验证文件元数据不变时的版本升级重建。
+- `test/intelligence/workspaceIndexer.test.ts` 使用真实 SQLite store 写入 hash 匹配的旧 `source_text/source_hash`，验证文件元数据不变时重建并替换存储值与搜索返回值。
 - 全量测试、类型检查、编译和 `git diff --check` 均通过；schema、worker RPC 和 prompt renderer 未改动。

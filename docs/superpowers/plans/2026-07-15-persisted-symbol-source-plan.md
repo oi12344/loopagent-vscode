@@ -15,7 +15,7 @@
 - 不新增依赖、设置、命令、数据库 migration、列、表或 worker RPC。
 - `file_card` 保持现有元数据摘要，不保存整文件正文。
 - `symbol_card.searchText` 和 `embeddingText` 保持现有元数据内容；只有 `sourceText/sourceHash` 使用真实源码。
-- 每个 symbol source 固定最多 120 行；prompt 继续执行最多 6 个命中和 6,000 字符总预算。
+- 每个 symbol source 固定最多 120 行；prompt 继续执行最多 6 个命中和 6,000 字符源码片段正文预算。该预算只累计命中 `sourceText` 经代码围栏转义后的正文，不是最终完整 prompt 的字符数。
 - 无效范围定义为 `startLine < 1`、`startLine` 超过文件末尾或 `endLine < startLine`，此时回退元数据 card。
 
 ---
@@ -263,6 +263,31 @@ git commit -m "feat(intelligence): persist symbol source snippets"
 
 运行 workspaceIndexer、codeChunker 和 SQLite code search 覆盖测试，以及类型检查和 diff 检查。修复使用独立 commit，不改写原功能提交，不推送。
 
+## 最终评审修复：fallback 范围、分行性能与迁移证据
+
+**实际变更文件：**
+
+- Modify: `src/extension/intelligence/languages/pythonAdapter.ts`
+- Modify: `src/extension/intelligence/chunking/codeChunker.ts`
+- Modify: `test/intelligence/pythonAdapter.test.ts`
+- Modify: `test/intelligence/codeChunker.test.ts`
+- Modify: `test/intelligence/workspaceIndexer.test.ts`
+- Modify: `docs/superpowers/specs/2026-07-15-persisted-symbol-source-design.md`
+- Modify: `docs/superpowers/plans/2026-07-15-persisted-symbol-source-plan.md`
+- Modify: `.superpowers/sdd/task-1-report.md`
+
+- [x] **Step 9：增加最终评审聚焦回归并确认 RED**
+
+增加 `tree: undefined` 的 Python adapter 到 snapshot 正文回归、三个参数化范围边界，并把旧索引测试改为写入 hash 匹配的 legacy chunk。聚焦命令按预期仅 Python fallback 正文用例失败，证明旧实现的 `endLine` 仍停在声明行。
+
+- [x] **Step 10：实现最小范围关闭和单次分行并确认 GREEN**
+
+Python fallback 在 dedent 时把索引 scope 关闭到上一行，并在 EOF 关闭剩余 scope；`createCodeChunks` 每个文件只执行一次分行并把行数组传给范围 helper。同一聚焦命令全部通过。
+
+- [x] **Step 11：运行最终门禁、更新报告并提交**
+
+运行指定的 4 个受影响测试文件、类型检查、编译和 `git diff --check`，完成自审后将本轮全部修复作为一个新 commit 提交，不 amend、不推送。
+
 ## 实施记录（2026-07-15）
 
 - RED：`npm test -- test/intelligence/codeChunker.test.ts test/intelligence/sqliteCodeSearch.test.ts --reporter=dot` 按预期失败，2 个测试文件、3 个用例均显示 symbol `sourceText` 仍为元数据 card。
@@ -270,7 +295,11 @@ git commit -m "feat(intelligence): persist symbol source snippets"
 - 受影响测试：计划列出的 5 个测试文件、19 个用例全部通过。
 - 全量测试：50 个测试文件、267 个用例全部通过。
 - `npm run typecheck`、`npm run compile`、`git diff --check` 均通过。
-- 实际限制与设计一致：symbol 正文最多 120 行；无效或空范围回退元数据 card；`file_card`、FTS token、embedding 文本、数据库契约和 prompt 预算保持不变。
+- 实际限制与设计一致：symbol 正文最多 120 行；无效或空范围回退元数据 card；`file_card`、FTS token、embedding 文本、数据库契约和 6,000 字符源码片段正文预算保持不变。
 - 审查修复 RED：`workspaceIndexer.test.ts` 1 个用例失败、1 个通过；新用例中 parser 期望调用 1 次、实际 0 次。
 - 审查修复 GREEN：同文件 2 个用例全部通过；覆盖测试共 3 个测试文件、5 个用例全部通过，`npm run typecheck` 和 `git diff --check` 通过。
 - 兼容结果：已有 `chunker_ver=1` 的文件在文件元数据不变时会重新解析并写回版本 2；复用现有字段，不需要 schema migration。
+- 最终评审 RED：聚焦命令退出码 1；3 个测试文件中 1 个失败、2 个通过，14 个用例中仅 Python fallback 到 snapshot 正文回归失败，实际只返回声明行。
+- 最终评审 GREEN：同一聚焦命令退出码 0；3 个测试文件、14 个用例全部通过。
+- 最终受影响测试：`pythonAdapter.test.ts`、`codeChunker.test.ts`、`workspaceIndexer.test.ts`、`sqliteCodeSearch.test.ts` 共 4 个文件、15 个用例全部通过。
+- 最终门禁：`npm run typecheck`、`npm run compile` 和 `git diff --check` 均退出码 0；仅出现既有 Node SQLite experimental warning。
