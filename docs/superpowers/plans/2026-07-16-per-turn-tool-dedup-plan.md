@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **状态注记：** 本计划中的 `maxSteps = 4` 和触顶 `runFailed` 已被 [ReAct 强制最终回答实施计划](./2026-07-16-react-forced-final-answer-plan.md) 取代；单步同名工具去重、请求/结果配对和提示词约束等其余结论仍有效。
+
 **目标：** 同一模型步骤内，同名工具只实际执行一次，同时为所有请求保留匹配结果，并允许后续步骤再次调用。
 
 **架构：** 在现有 `createReactAgentRunner` 的单步工具循环中使用局部 `Set<string>` 记录已执行工具名。重复请求转换为合成 tool observation；生产 system prompt 同步声明单轮约束，不修改工具类型、registry 或模型协议。

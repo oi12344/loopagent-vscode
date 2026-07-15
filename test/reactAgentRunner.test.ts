@@ -88,10 +88,11 @@ describe("createReactAgentRunner", () => {
     ]);
   });
 
-  it("executes a tool only once per step and pairs duplicate requests", async () => {
+  it("executes distinct tools once and pairs duplicate requests", async () => {
     let turn = 0;
     let followUpMessages: unknown[] = [];
     const invoke = vi.fn(async () => "first context");
+    const otherInvoke = vi.fn(async () => "other context");
     const toolCalls = [
       {
         id: "tool-1",
@@ -103,6 +104,11 @@ describe("createReactAgentRunner", () => {
         type: "function" as const,
         function: { name: "exploreCode", arguments: '{"query":"second"}' },
       },
+      {
+        id: "tool-3",
+        type: "function" as const,
+        function: { name: "echoObservation", arguments: '"third"' },
+      },
     ];
     const runner = createReactAgentRunner({
       tools: [
@@ -111,6 +117,12 @@ describe("createReactAgentRunner", () => {
           description: "Search code.",
           inputSchema: { type: "object" },
           invoke,
+        },
+        {
+          name: "echoObservation",
+          description: "Echo an observation.",
+          inputSchema: { type: "string" },
+          invoke: otherInvoke,
         },
       ],
       modelTurn: async ({ messages }) => {
@@ -136,6 +148,12 @@ describe("createReactAgentRunner", () => {
               rawArguments: '{"query":"second"}',
               input: { query: "second" },
             },
+            {
+              id: "tool-3",
+              name: "echoObservation",
+              rawArguments: '"third"',
+              input: "third",
+            },
           ],
         };
       },
@@ -144,13 +162,14 @@ describe("createReactAgentRunner", () => {
     const messages = await collectRunnerMessages(runner);
 
     expect(invoke).toHaveBeenCalledTimes(1);
+    expect(otherInvoke).toHaveBeenCalledTimes(1);
     expect(invoke).toHaveBeenCalledWith(
       expect.objectContaining({
         input: { query: "first" },
         request: expect.objectContaining({ id: "tool-1" }),
       }),
     );
-    expect(followUpMessages.slice(-3)).toEqual([
+    expect(followUpMessages.slice(-4)).toEqual([
       { role: "assistant", content: "", toolCalls },
       {
         role: "tool",
@@ -164,6 +183,12 @@ describe("createReactAgentRunner", () => {
         name: "exploreCode",
         content:
           "Tool exploreCode was skipped because each tool can run only once per step. Review the earlier observation before requesting it again in a later step.",
+      },
+      {
+        role: "tool",
+        requestId: "tool-3",
+        name: "echoObservation",
+        content: "other context",
       },
     ]);
     expect(messages).toContainEqual({
@@ -389,6 +414,51 @@ describe("createReactAgentRunner", () => {
     });
     expect(messages.at(-1)).toEqual({ type: "runFinished", runId: "run-1" });
     expect(messages.some((message) => message.type === "runFailed")).toBe(false);
+  });
+
+  it("rejects tool requests during the default final answer step", async () => {
+    const choices: Array<"auto" | "none" | undefined> = [];
+    const invoke = vi.fn(async () => "code context");
+    const runner = createReactAgentRunner({
+      tools: [
+        {
+          name: "exploreCode",
+          description: "Search code.",
+          inputSchema: { type: "object" },
+          invoke,
+        },
+      ],
+      modelTurn: async ({ toolChoice }) => {
+        choices.push(toolChoice);
+        const step = choices.length;
+        const id = `tool-${step}`;
+        const rawArguments = JSON.stringify({ query: `step ${step}` });
+        return {
+          kind: "toolRequests",
+          assistantMessage: {
+            role: "assistant",
+            content: "",
+            toolCalls: [{ id, type: "function", function: { name: "exploreCode", arguments: rawArguments } }],
+          },
+          requests: [{ id, name: "exploreCode", rawArguments, input: { query: `step ${step}` } }],
+        };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(choices).toEqual(["auto", "auto", "auto", "none"]);
+    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(messages).not.toContainEqual({
+      type: "agentEvent",
+      runId: "run-1",
+      message: "Running tool exploreCode (step 4, call 1): step 4",
+    });
+    expect(messages.at(-1)).toEqual({
+      type: "runFailed",
+      runId: "run-1",
+      message: "Model requested tools during the final answer step",
+    });
   });
 
   it("does not call the model when the run is already cancelled", async () => {
