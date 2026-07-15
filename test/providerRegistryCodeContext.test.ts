@@ -70,6 +70,13 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(systemPrompt).toContain("exploreCode");
     expect(systemPrompt).toContain("current production entry points");
     expect(systemPrompt).toContain("verify every claimed call edge");
+    expect(systemPrompt).toContain(
+      "If the available source evidence is sufficient, answer immediately without calling another tool.",
+    );
+    expect(systemPrompt).toContain(
+      "Only call exploreCode again for a concrete missing fact required to answer the user",
+    );
+    expect(systemPrompt).toContain("does not overlap previous queries");
     expect(systemPrompt).not.toContain("代码语义索引上下文");
     expect(workspaceIntelligence.buildCodeIntelligencePrompt).toHaveBeenCalledTimes(1);
     expect(workspaceIntelligence.buildCodeIntelligencePrompt).toHaveBeenCalledWith("provider registry model context");

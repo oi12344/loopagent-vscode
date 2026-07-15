@@ -21,6 +21,11 @@ const REACT_SYSTEM_PROMPT = [
   "Prefer concise code-oriented search queries with likely English identifiers, then answer from the returned observation.",
   "Trace behavior from current production entry points; ignore historical documents, tests, and unreferenced legacy modules unless the user asks for them.",
   "Before answering, verify every claimed call edge against the current source returned by exploreCode.",
+  "After each exploreCode observation, decide whether the available source evidence is sufficient to answer the user's question.",
+  "If the available source evidence is sufficient, answer immediately without calling another tool.",
+  "Only call exploreCode again for a concrete missing fact required to answer the user; use a focused query that does not overlap previous queries.",
+  "Do not keep searching for completeness or to reconfirm facts already supported by source evidence.",
+  "Answer only from supported evidence and state any material limitation.",
   "Do not invent repository facts when the tool does not provide enough evidence.",
 ].join("\n");
 

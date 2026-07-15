@@ -31,7 +31,7 @@
 - 输出：包含证据充分性判断、具体缺口条件和查询去重要求的生产 system message。
 - 保持：`AgentRunner`、`ReactModelTurn` 和 `exploreCode` 接口不变。
 
-- [ ] **步骤 1：写入失败的契约测试**
+- [x] **步骤 1：写入失败的契约测试**
 
 在现有首个生产 runner 用例的 system prompt 断言后增加：
 
@@ -45,7 +45,7 @@ expect(systemPrompt).toContain(
 expect(systemPrompt).toContain("does not overlap previous queries");
 ```
 
-- [ ] **步骤 2：运行定向测试并确认红灯**
+- [x] **步骤 2：运行定向测试并确认红灯**
 
 运行：
 
@@ -55,7 +55,7 @@ npm test -- --run test/providerRegistryCodeContext.test.ts
 
 预期：首个用例因 system prompt 缺少新增收敛文本而失败；其余测试不应发生编译或环境错误。
 
-- [ ] **步骤 3：补充最小生产提示词**
+- [x] **步骤 3：补充最小生产提示词**
 
 在 `REACT_SYSTEM_PROMPT` 现有源码验证规则后加入：
 
@@ -67,7 +67,7 @@ npm test -- --run test/providerRegistryCodeContext.test.ts
 "Answer only from supported evidence and state any material limitation.",
 ```
 
-- [ ] **步骤 4：运行定向测试并确认绿灯**
+- [x] **步骤 4：运行定向测试并确认绿灯**
 
 运行：
 
@@ -77,7 +77,7 @@ npm test -- --run test/providerRegistryCodeContext.test.ts test/reactAgentRunner
 
 预期：两个测试文件全部通过；现有一次 `exploreCode` 后返回最终回答、`maxSteps` 触顶失败和工具事件行为保持不变。
 
-- [ ] **步骤 5：执行集中验证**
+- [x] **步骤 5：执行集中验证**
 
 独立运行：
 
@@ -90,7 +90,7 @@ git diff --check
 
 预期：所有命令退出码为 `0`。若本机已有可复用的唯一 LoopAgent 调试窗口和可用 DeepSeek 凭据，再运行现有真实代码探索路径；否则记录未执行原因，不创建第二个窗口。
 
-- [ ] **步骤 6：更新计划结果并提交实现**
+- [x] **步骤 6：更新计划结果并提交实现**
 
 在本文末尾追加简短中文结果，记录红灯原因、定向测试、全量测试、类型检查、构建和 `git diff --check` 结果，然后提交：
 
@@ -98,3 +98,10 @@ git diff --check
 git add -- src/extension/model/providerRegistry.ts test/providerRegistryCodeContext.test.ts docs/superpowers/plans/2026-07-15-react-search-convergence-plan.md
 git commit -m "fix(agent): converge code search decisions"
 ```
+
+## 实施结果
+
+- 红灯：`test/providerRegistryCodeContext.test.ts` 的 2 个用例中 1 个按预期失败，原因为生产 system prompt 缺少“证据足够立即回答”契约。
+- 绿灯：相关两个测试文件共 10 个用例全部通过。
+- 集中验证：类型检查、生产编译和 `git diff --check` 均退出 `0`；全量测试共 50 个文件、274 个用例全部通过。
+- 真实模型 E2E：本机没有 `DEEPSEEK_API_KEY` 环境变量，固定调试端口 `9333` 没有现有窗口，因此未启动新的 VS Code 实例，未执行该可选验证。

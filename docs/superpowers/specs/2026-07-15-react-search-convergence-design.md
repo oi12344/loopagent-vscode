@@ -38,7 +38,7 @@
 npm test -- --run test/providerRegistryCodeContext.test.ts test/reactAgentRunner.test.ts
 npm run typecheck
 npm test
-npm run build
+npm run compile
 git diff --check
 ```
 
