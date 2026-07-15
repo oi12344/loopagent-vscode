@@ -100,4 +100,14 @@ describe("renderCodeIntelligencePrompt", () => {
 
     expect(prompt.length).toBeLessThan(7_000);
   });
+
+  it("counts escaped fence characters against the persisted context budget", () => {
+    const prompt = renderPersistedCodeIntelligencePrompt("fences", [
+      { filePath: "src/fences.ts", startLine: 1, endLine: 1, sourceText: "```".repeat(2_001) },
+    ]);
+    const bodyStart = prompt.indexOf("```typescript\n") + "```typescript\n".length;
+    const bodyEnd = prompt.indexOf("\n```\n", bodyStart);
+
+    expect(prompt.slice(bodyStart, bodyEnd)).toHaveLength(6_000);
+  });
 });

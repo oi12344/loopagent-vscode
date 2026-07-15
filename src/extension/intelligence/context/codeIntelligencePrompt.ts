@@ -58,7 +58,7 @@ export function renderPersistedCodeIntelligencePrompt(query: string, chunks: rea
     const range = chunk.startLine ? `:${chunk.startLine}-${chunk.endLine ?? chunk.startLine}` : "";
     lines.push(`#### ${chunk.filePath}${range}`);
     lines.push(`\`\`\`${languageFromPath(chunk.filePath)}`);
-    const text = chunk.sourceText.slice(0, remainingChars).replace(/```/g, "``\\`");
+    const text = chunk.sourceText.replace(/```/g, "``\\`").slice(0, remainingChars);
     remainingChars -= text.length;
     lines.push(text);
     lines.push("```");

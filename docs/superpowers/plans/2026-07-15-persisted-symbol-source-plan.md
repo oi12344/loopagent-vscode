@@ -4,7 +4,7 @@
 
 **目标：** 让 SQLite symbol chunk 保存并返回最多 120 行的真实函数、方法或类源码，同时保持现有 FTS token、embedding 文本和数据库契约不变。
 
-**架构：** `buildExtractionSnapshot` 把 `parsed.text` 作为 `fileText` 传给 `createCodeChunks`。chunker 按节点的一基闭区间截取正文并生成 `sourceHash`；无效范围回退现有元数据 card。`workspaceIndexer` 使用 chunker 版本 2 触发旧版本文件重建；现有 SQLite store、worker RPC 和 prompt renderer 原样消费更新后的 `sourceText`。
+**架构：** `buildExtractionSnapshot` 把 `parsed.text` 作为 `fileText` 传给 `createCodeChunks`。chunker 按节点的一基闭区间截取正文并生成 `sourceHash`；无效范围回退现有元数据 card。`workspaceIndexer` 使用 chunker 版本 2 触发旧版本文件重建；现有 SQLite store 和 worker RPC 原样消费结果，prompt renderer 在围栏转义后执行正文预算。
 
 **技术栈：** TypeScript、Node.js 标准字符串 API、node:crypto、node:sqlite、Vitest。
 
@@ -236,18 +236,9 @@ git diff --check
 预期：全部通过。确认 diff 没有 schema、worker、prompt 或依赖变更；确认只有正文变化时 `sourceHash` 变化，纯行号移动不改 hash。
 
 - [x] **Step 5：更新中文完成记录并提交**
-
 把设计状态更新为“已实现”，在本计划末尾记录测试文件/用例数、类型检查、编译、diff 检查和实际限制，并勾选已完成步骤。
 
-运行：
-
-```powershell
-git add src/extension/intelligence/indexing/extractionSnapshot.ts src/extension/intelligence/chunking/codeChunker.ts test/intelligence/codeChunker.test.ts test/intelligence/sqliteCodeSearch.test.ts docs/superpowers/specs/2026-07-15-persisted-symbol-source-design.md docs/superpowers/plans/2026-07-15-persisted-symbol-source-plan.md
-git diff --cached --check
-git commit -m "feat(intelligence): persist symbol source snippets"
-```
-
-预期：原功能提交只包含该步骤 `git add` 列出的 6 个文件；审查修复另行提交，不自动推送。
+原功能提交只包含该步骤列出的 6 个文件；审查修复另行提交，不自动推送。
 
 ## 审查修复：chunker 版本触发重建
 
@@ -285,8 +276,10 @@ git commit -m "feat(intelligence): persist symbol source snippets"
 Python fallback 在 dedent 时把索引 scope 关闭到上一行，并在 EOF 关闭剩余 scope；`createCodeChunks` 每个文件只执行一次分行并把行数组传给范围 helper。同一聚焦命令全部通过。
 
 - [x] **Step 11：运行最终门禁、更新报告并提交**
-
 运行指定的 4 个受影响测试文件、类型检查、编译和 `git diff --check`，完成自审后将本轮全部修复作为一个新 commit 提交，不 amend、不推送。
+
+- [x] **Step 12：修正代码围栏转义后的正文预算**
+增加重复代码围栏的 persisted prompt RED 测试，确认旧实现先截断再转义会把 6,000 字符正文扩为 8,000 字符。renderer 改为先转义、再按剩余正文预算截断；聚焦测试 5 个用例、类型检查和 diff 检查通过。
 
 ## 实施记录（2026-07-15）
 
@@ -303,3 +296,5 @@ Python fallback 在 dedent 时把索引 scope 关闭到上一行，并在 EOF �
 - 最终评审 GREEN：同一聚焦命令退出码 0；3 个测试文件、14 个用例全部通过。
 - 最终受影响测试：`pythonAdapter.test.ts`、`codeChunker.test.ts`、`workspaceIndexer.test.ts`、`sqliteCodeSearch.test.ts` 共 4 个文件、15 个用例全部通过。
 - 最终门禁：`npm run typecheck`、`npm run compile` 和 `git diff --check` 均退出码 0；仅出现既有 Node SQLite experimental warning。
+- 围栏预算修复 RED：`codeIntelligencePrompt.test.ts` 1 个用例失败、4 个通过，转义后正文实际为 8,000 字符。
+- 围栏预算修复 GREEN：同文件 5 个用例全部通过；`npm run typecheck` 和 `git diff --check` 通过。

@@ -84,4 +84,5 @@ parsed.text + node range
 - `test/intelligence/sqliteCodeSearch.test.ts` 验证真实 SQLite FTS 查询返回持久化函数正文。
 - `src/extension/intelligence/indexing/workspaceIndexer.ts` 使用 chunker 版本 2 触发旧索引重建。
 - `test/intelligence/workspaceIndexer.test.ts` 使用真实 SQLite store 写入 hash 匹配的旧 `source_text/source_hash`，验证文件元数据不变时重建并替换存储值与搜索返回值。
-- 全量测试、类型检查、编译和 `git diff --check` 均通过；schema、worker RPC 和 prompt renderer 未改动。
+- `src/extension/intelligence/context/codeIntelligencePrompt.ts` 在代码围栏转义后执行 6,000 字符正文截断，避免转义扩长突破载荷预算。
+- 全量测试、类型检查、编译和 `git diff --check` 均通过；schema 和 worker RPC 未改动。
