@@ -22,6 +22,48 @@ afterEach(() => {
 });
 
 describe("WorkspaceIndexer", () => {
+  it("reindexes unchanged files when the chunker version changes", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "loopagent-workspace-indexer-version-"));
+    directories.push(directory);
+    const opened = openIndexDatabase(join(directory, "index.sqlite"));
+    databases.push(opened);
+    const sqliteStore = new SqliteIndexStore(opened.database, { now: () => 1_000 });
+    sqliteStore.acquireWriterLease(OWNER_ID, 1_000_000);
+    const store = createAsyncStore(sqliteStore);
+    const file = source('export function run() { return "ready"; }', 1_000);
+    const parserRuntime = {
+      parse: vi.fn(async (filePath: string, languageId: string, text: string) => ({
+        filePath,
+        languageId,
+        text,
+        tree: undefined,
+        diagnostics: [],
+      })),
+    };
+    const createIndexer = () => createWorkspaceIndexer({
+      ownerId: OWNER_ID,
+      store,
+      parserRuntime,
+      listFiles: async () => [file.ref],
+      statFile: async () => file.ref,
+      readFile: async () => file.text,
+      maxFileBytes: 100_000,
+    });
+
+    const first = createIndexer();
+    await first.start();
+    await first.dispose();
+    opened.database.prepare("UPDATE files SET chunker_ver = 1").run();
+
+    parserRuntime.parse.mockClear();
+    const restarted = createIndexer();
+    await restarted.start();
+
+    expect(parserRuntime.parse).toHaveBeenCalledTimes(1);
+    expect((await store.listIndexedFiles())[0]?.chunkerVersion).toBe(2);
+    await restarted.dispose();
+  });
+
   it("keeps SQLite synchronized across startup, restart, change, and delete", async () => {
     const directory = mkdtempSync(join(tmpdir(), "loopagent-workspace-indexer-"));
     directories.push(directory);

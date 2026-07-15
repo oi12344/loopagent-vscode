@@ -9,7 +9,7 @@ import { buildExtractionSnapshot } from "./extractionSnapshot";
 import { isIndexableWorkspacePath } from "./workspaceFilePolicy";
 
 const EXTRACTOR_VERSION = 1;
-const CHUNKER_VERSION = 1;
+const CHUNKER_VERSION = 2;
 
 export type WorkspaceFileRef = {
   uri: string;

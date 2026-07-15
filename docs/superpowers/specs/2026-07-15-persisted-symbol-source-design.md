@@ -26,6 +26,12 @@
 
 `file_card` 继续保存路径、语言、imports、symbols 和 diagnostics 摘要，不存整文件源码。这样避免重复存储整个文件，也不扩大文件级命中的 prompt 体积。
 
+### 索引版本兼容
+
+真实 symbol 正文改变了 chunk 持久化内容，因此 `workspaceIndexer` 的 `CHUNKER_VERSION` 提升为 2。已有 `chunker_ver=1` 的文件即使 mtime、字节数和正文 hash 均未变化，扩展重启时也会进入重新解析并覆盖旧元数据 card；完成后写回版本 2。
+
+该机制复用现有 `files.chunker_ver` 字段和启动扫描流程，不新增 schema migration。
+
 ### 边界与回退
 
 - 节点范围使用一基闭区间；`startLine < 1`、`startLine` 超过文件末尾或 `endLine < startLine` 均视为无效。有效范围的结束行裁剪到文件末尾。
@@ -59,6 +65,7 @@ parsed.text + node range
 4. 超过 120 行的符号只保存前 120 行。
 5. 无效范围回退元数据 card。
 6. 真实 SQLite FTS 查询和 VS Code prompt 返回函数正文，并继续遵守 6 条、6,000 字符和敏感路径限制。
+7. `chunker_ver=1` 的已索引文件在 mtime 和字节数不变时仍重新解析，并更新为版本 2。
 
 ## 非目标
 
@@ -73,4 +80,6 @@ parsed.text + node range
 - `src/extension/intelligence/chunking/codeChunker.ts` 按节点范围保存最多 120 行正文；无效或空范围回退元数据 card。
 - `test/intelligence/codeChunker.test.ts` 覆盖 TypeScript、Python、hash 稳定性、120 行裁剪和无效范围回退。
 - `test/intelligence/sqliteCodeSearch.test.ts` 验证真实 SQLite FTS 查询返回持久化函数正文。
+- `src/extension/intelligence/indexing/workspaceIndexer.ts` 使用 chunker 版本 2 触发旧索引重建。
+- `test/intelligence/workspaceIndexer.test.ts` 使用真实 SQLite store 验证文件元数据不变时的版本升级重建。
 - 全量测试、类型检查、编译和 `git diff --check` 均通过；schema、worker RPC 和 prompt renderer 未改动。

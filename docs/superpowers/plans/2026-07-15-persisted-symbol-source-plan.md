@@ -4,7 +4,7 @@
 
 **目标：** 让 SQLite symbol chunk 保存并返回最多 120 行的真实函数、方法或类源码，同时保持现有 FTS token、embedding 文本和数据库契约不变。
 
-**架构：** `buildExtractionSnapshot` 把 `parsed.text` 作为 `fileText` 传给 `createCodeChunks`。chunker 按节点的一基闭区间截取正文并生成 `sourceHash`；无效范围回退现有元数据 card。现有 SQLite store、worker RPC 和 prompt renderer 原样消费更新后的 `sourceText`。
+**架构：** `buildExtractionSnapshot` 把 `parsed.text` 作为 `fileText` 传给 `createCodeChunks`。chunker 按节点的一基闭区间截取正文并生成 `sourceHash`；无效范围回退现有元数据 card。`workspaceIndexer` 使用 chunker 版本 2 触发旧版本文件重建；现有 SQLite store、worker RPC 和 prompt renderer 原样消费更新后的 `sourceText`。
 
 **技术栈：** TypeScript、Node.js 标准字符串 API、node:crypto、node:sqlite、Vitest。
 
@@ -25,9 +25,11 @@
 **文件：**
 
 - Modify: `src/extension/intelligence/indexing/extractionSnapshot.ts`
+- Modify: `src/extension/intelligence/indexing/workspaceIndexer.ts`
 - Modify: `src/extension/intelligence/chunking/codeChunker.ts`
 - Modify: `test/intelligence/codeChunker.test.ts`
 - Modify: `test/intelligence/sqliteCodeSearch.test.ts`
+- Modify: `test/intelligence/workspaceIndexer.test.ts`
 - Modify: `docs/superpowers/specs/2026-07-15-persisted-symbol-source-design.md`
 - Modify: `docs/superpowers/plans/2026-07-15-persisted-symbol-source-plan.md`
 
@@ -35,6 +37,7 @@
 
 - 输入：`SnapshotInput.parsed.text` 与 `SnapshotNode.startLine/endLine`。
 - 输出：`createCodeChunks` 的内部输入增加 `fileText: string`；公开的 `ExtractionSnapshot`、`CodeChunk`、SQLite schema 和 worker DTO 不变。
+- 兼容：`CHUNKER_VERSION` 提升为 2，复用现有 `files.chunker_ver` 触发旧索引重建，不新增 schema migration。
 
 - [x] **Step 1：写真实源码、hash、范围和语言 RED 测试**
 
@@ -244,7 +247,21 @@ git diff --cached --check
 git commit -m "feat(intelligence): persist symbol source snippets"
 ```
 
-预期：提交只包含上述 6 个文件；不自动推送。
+预期：原功能提交只包含该步骤 `git add` 列出的 6 个文件；审查修复另行提交，不自动推送。
+
+## 审查修复：chunker 版本触发重建
+
+- [x] **Step 6：增加旧版本索引 RED 测试**
+
+在 `test/intelligence/workspaceIndexer.test.ts` 使用真实 SQLite store 建立索引，将 `files.chunker_ver` 设回 1，并在 mtime 和字节数不变时重启 indexer。当前版本 1 不会调用 parser，测试按预期失败。
+
+- [x] **Step 7：提升 chunker 版本并确认 GREEN**
+
+把 `src/extension/intelligence/indexing/workspaceIndexer.ts` 的 `CHUNKER_VERSION` 提升为 2。启动扫描将旧版本文件入队，处理阶段重新解析并把版本写回 2；不修改数据库 schema。
+
+- [x] **Step 8：运行审查修复门禁并独立提交**
+
+运行 workspaceIndexer、codeChunker 和 SQLite code search 覆盖测试，以及类型检查和 diff 检查。修复使用独立 commit，不改写原功能提交，不推送。
 
 ## 实施记录（2026-07-15）
 
@@ -254,3 +271,6 @@ git commit -m "feat(intelligence): persist symbol source snippets"
 - 全量测试：50 个测试文件、267 个用例全部通过。
 - `npm run typecheck`、`npm run compile`、`git diff --check` 均通过。
 - 实际限制与设计一致：symbol 正文最多 120 行；无效或空范围回退元数据 card；`file_card`、FTS token、embedding 文本、数据库契约和 prompt 预算保持不变。
+- 审查修复 RED：`workspaceIndexer.test.ts` 1 个用例失败、1 个通过；新用例中 parser 期望调用 1 次、实际 0 次。
+- 审查修复 GREEN：同文件 2 个用例全部通过；覆盖测试共 3 个测试文件、5 个用例全部通过，`npm run typecheck` 和 `git diff --check` 通过。
+- 兼容结果：已有 `chunker_ver=1` 的文件在文件元数据不变时会重新解析并写回版本 2；复用现有字段，不需要 schema migration。
