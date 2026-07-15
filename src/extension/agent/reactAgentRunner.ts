@@ -17,7 +17,7 @@ export function createReactAgentRunner({
   modelTurn,
   providerName = "ReAct Agent",
   tools = createDefaultReactTools(),
-  maxSteps = 4,
+  maxSteps = 3,
   maxToolRequestsPerStep = 3,
   systemPromptProvider,
 }: CreateReactAgentRunnerOptions): AgentRunner {
@@ -43,14 +43,19 @@ export function createReactAgentRunner({
 
         messages.push({ role: "user", content: task });
 
-        for (let step = 1; step <= maxSteps; step++) {
+        for (let step = 1; step <= maxSteps + 1; step++) {
+          const isFinalAnswerStep = step > maxSteps;
           if (signal.aborted) {
             return;
           }
 
           yield { type: "assistantThinking", runId, message: `Planning step ${step}` } satisfies HostToWebviewMessage;
 
-          const result = await modelTurn({ messages, signal });
+          const result = await modelTurn({
+            messages,
+            signal,
+            toolChoice: isFinalAnswerStep ? "none" : "auto",
+          });
 
           if (signal.aborted) {
             return;
@@ -60,6 +65,10 @@ export function createReactAgentRunner({
             yield { type: "assistantDelta", runId, content: result.content } satisfies HostToWebviewMessage;
             yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
             return;
+          }
+
+          if (isFinalAnswerStep) {
+            throw new Error("Model requested tools during the final answer step");
           }
 
           if (result.requests.length > maxToolRequestsPerStep) {
@@ -116,7 +125,6 @@ export function createReactAgentRunner({
           }
         }
 
-        yield { type: "runFailed", runId, message: `Reached max ReAct steps: ${maxSteps}` } satisfies HostToWebviewMessage;
       } catch (error) {
         if (signal.aborted) {
           return;

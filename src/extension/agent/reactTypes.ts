@@ -51,4 +51,5 @@ export type ReactModelTurnResult =
 export type ReactModelTurn = (input: {
   messages: ReactAgentMessage[];
   signal: AbortSignal;
+  toolChoice?: "auto" | "none";
 }) => Promise<ReactModelTurnResult>;

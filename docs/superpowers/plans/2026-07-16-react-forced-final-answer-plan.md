@@ -20,7 +20,7 @@
 
 ---
 
-### 任务 1：保证工具预算后仍有最终回答
+### Task 1：保证工具预算后仍有最终回答
 
 **文件：**
 
@@ -38,7 +38,7 @@
 - `ModelRequest.toolChoice` 从仅支持 `"auto"` 扩展为 `"auto" | "none"`。
 - `createReactAgentRunner` 保留 `maxSteps` 选项名称，但将它解释为可调用工具的步骤数。
 
-- [ ] **步骤 1：写入失败的 Runner 行为测试**
+- [x] **步骤 1：写入失败的 Runner 行为测试**
 
 把 `test/reactAgentRunner.test.ts` 中“达到最大 ReAct 步骤后失败”的用例替换为：
 
@@ -90,7 +90,7 @@ it("forces a final answer after reaching the maximum tool steps", async () => {
 });
 ```
 
-- [ ] **步骤 2：写入失败的 adapter 契约测试**
+- [x] **步骤 2：写入失败的 adapter 契约测试**
 
 在 `test/openAiReactModelTurn.test.ts` 新增用例，使用内联 `ModelProvider` 捕获请求：
 
@@ -118,7 +118,7 @@ it("passes the requested tool choice to the provider", async () => {
 });
 ```
 
-- [ ] **步骤 3：运行定向测试并确认红灯**
+- [x] **步骤 3：运行定向测试并确认红灯**
 
 ```powershell
 npm test -- --run test/reactAgentRunner.test.ts test/openAiReactModelTurn.test.ts
@@ -126,7 +126,7 @@ npm test -- --run test/reactAgentRunner.test.ts test/openAiReactModelTurn.test.t
 
 预期：Runner 用例因收到 `[undefined, undefined]` 且仍产生 `runFailed` 而失败；adapter 用例因 provider 收到 `"auto"` 而失败。不得出现测试语法或环境错误。
 
-- [ ] **步骤 4：实现最小工具选择契约**
+- [x] **步骤 4：实现最小工具选择契约**
 
 在 `src/extension/model/types.ts` 扩展：
 
@@ -150,7 +150,7 @@ toolChoice?: "auto" | "none";
 +      toolChoice,
 ```
 
-- [ ] **步骤 5：实现 3 个工具步骤和 1 个最终步骤**
+- [x] **步骤 5：实现 3 个工具步骤和 1 个最终步骤**
 
 在 `src/extension/agent/reactAgentRunner.ts` 把默认值改为：
 
@@ -189,7 +189,7 @@ maxSteps = 3,
 
 删除循环后的 `Reached max ReAct steps` 失败事件；正常上限由强制最终回答收敛。
 
-- [ ] **步骤 6：运行定向测试并确认绿灯**
+- [x] **步骤 6：运行定向测试并确认绿灯**
 
 ```powershell
 npm test -- --run test/reactAgentRunner.test.ts test/openAiReactModelTurn.test.ts
@@ -197,7 +197,7 @@ npm test -- --run test/reactAgentRunner.test.ts test/openAiReactModelTurn.test.t
 
 预期：两个测试文件全部通过。
 
-- [ ] **步骤 7：执行集中验证和真实 E2E**
+- [x] **步骤 7：执行集中验证（真实 E2E 由主代理提交后执行）**
 
 独立运行：
 
@@ -216,7 +216,7 @@ npm run test:e2e:code-exploration
 
 读取 Process 状态，确认最多 3 个 `Running tool exploreCode`，随后出现第 4 个 `Planning step` 和 `Done`，且没有 `Reached max ReAct steps`。
 
-- [ ] **步骤 8：记录结果并提交**
+- [x] **步骤 8：记录结果并提交**
 
 在本文末尾追加中文实施结果，记录红灯、绿灯、全量验证、E2E 调用明细和已知边界，然后提交：
 
@@ -224,3 +224,11 @@ npm run test:e2e:code-exploration
 git add -- docs/superpowers/plans/2026-07-16-react-forced-final-answer-plan.md src/extension/agent/reactAgentRunner.ts src/extension/agent/reactTypes.ts src/extension/agent/openAiReactModelTurn.ts src/extension/model/types.ts test/reactAgentRunner.test.ts test/openAiReactModelTurn.test.ts
 git commit -m "fix(agent): reserve a final answer turn"
 ```
+
+## 实施结果
+
+- 红灯：`npm test -- --run test/reactAgentRunner.test.ts test/openAiReactModelTurn.test.ts` 得到 2 个失败、13 个通过。Runner 仅收到 `[undefined, undefined]` 且没有最终轮；adapter 收到固定的 `"auto"`，与预期 `"none"` 不符。
+- 绿灯：同一定向命令得到 2 个测试文件、15 个测试全部通过。
+- 全量测试：`npm test` 得到 50 个测试文件、276 个测试全部通过；仅有 Node SQLite experimental warning。
+- 静态与构建验证：`npm run typecheck`、`npm run compile`、`git diff --check` 均以退出码 0 完成。
+- E2E：按任务分工未在实现代理中运行，主代理将在提交后使用唯一 Extension Development Host 验证真实流程。

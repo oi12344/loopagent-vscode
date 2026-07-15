@@ -345,7 +345,10 @@ describe("createReactAgentRunner", () => {
     ]);
   });
 
-  it("fails after reaching the maximum number of ReAct steps", async () => {
+  it("forces a final answer after reaching the maximum tool steps", async () => {
+    let toolTurn = 0;
+    const choices: Array<"auto" | "none" | undefined> = [];
+    const invoke = vi.fn(async () => "observed workspace");
     const runner = createReactAgentRunner({
       maxSteps: 2,
       tools: [
@@ -353,37 +356,39 @@ describe("createReactAgentRunner", () => {
           name: "echoObservation",
           description: "Echo a test observation.",
           inputSchema: { type: "string" },
-          invoke: async ({ input }: { input: unknown }) => `observed ${String(input)}`,
+          invoke,
         },
       ],
-      modelTurn: async () => ({
-        kind: "toolRequests",
-        assistantMessage: {
-          role: "assistant",
-          content: "",
-          toolCalls: [
-            {
-              id: "tool-1",
-              type: "function",
-              function: { name: "echoObservation", arguments: '"workspace"' },
-            },
-          ],
-        },
-        requests: [
-          { id: "tool-1", name: "echoObservation", rawArguments: '"workspace"', input: "workspace" },
-        ],
-      }),
+      modelTurn: async ({ toolChoice }) => {
+        choices.push(toolChoice);
+        if (toolChoice === "none") {
+          return { kind: "final", content: "Best supported answer with limitations." };
+        }
+        toolTurn += 1;
+        const id = `tool-${toolTurn}`;
+        return {
+          kind: "toolRequests",
+          assistantMessage: {
+            role: "assistant",
+            content: "",
+            toolCalls: [{ id, type: "function", function: { name: "echoObservation", arguments: '"workspace"' } }],
+          },
+          requests: [{ id, name: "echoObservation", rawArguments: '"workspace"', input: "workspace" }],
+        };
+      },
     });
 
-    await expect(collectRunnerMessages(runner)).resolves.toEqual([
-      { type: "runStarted", runId: "run-1", task: "Inspect workspace" },
-      { type: "assistantStarted", runId: "run-1", provider: "ReAct Agent" },
-      { type: "assistantThinking", runId: "run-1", message: "Planning step 1" },
-      { type: "agentEvent", runId: "run-1", message: "Running tool echoObservation" },
-      { type: "assistantThinking", runId: "run-1", message: "Planning step 2" },
-      { type: "agentEvent", runId: "run-1", message: "Running tool echoObservation" },
-      { type: "runFailed", runId: "run-1", message: "Reached max ReAct steps: 2" },
-    ]);
+    const messages = await collectRunnerMessages(runner);
+
+    expect(choices).toEqual(["auto", "auto", "none"]);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(messages).toContainEqual({
+      type: "assistantDelta",
+      runId: "run-1",
+      content: "Best supported answer with limitations.",
+    });
+    expect(messages.at(-1)).toEqual({ type: "runFinished", runId: "run-1" });
+    expect(messages.some((message) => message.type === "runFailed")).toBe(false);
   });
 
   it("does not call the model when the run is already cancelled", async () => {

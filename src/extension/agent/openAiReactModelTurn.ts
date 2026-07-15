@@ -18,7 +18,7 @@ type PendingToolCall = {
 };
 
 export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReactModelTurnOptions): ReactModelTurn {
-  return async ({ messages, signal }) => {
+  return async ({ messages, signal, toolChoice = "auto" }) => {
     let content = "";
     let finishReason: string | undefined;
     const pendingCalls = new Map<number, PendingToolCall>();
@@ -34,7 +34,7 @@ export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReac
           parameters: tool.inputSchema,
         },
       })),
-      toolChoice: "auto",
+      toolChoice,
     })) {
       if (event.type === "contentDelta") {
         content += event.content;

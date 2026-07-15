@@ -77,6 +77,28 @@ describe("createOpenAiReactModelTurn", () => {
     ).resolves.toEqual({ kind: "final", content: "Workspace ready." });
   });
 
+  it("passes the requested tool choice to the provider", async () => {
+    let seenToolChoice: "auto" | "none" | undefined;
+    const provider: ModelProvider = {
+      id: "test",
+      displayName: "Test",
+      async *stream(request) {
+        seenToolChoice = request.toolChoice;
+        yield { type: "contentDelta", content: "Final answer." } as const;
+        yield { type: "finishReason", reason: "stop" } as const;
+      },
+    };
+    const modelTurn = createOpenAiReactModelTurn({ provider, tools: [exploreCodeTool] });
+
+    await modelTurn({
+      messages: [{ role: "user", content: "Status?" }],
+      signal: new AbortController().signal,
+      toolChoice: "none",
+    });
+
+    expect(seenToolChoice).toBe("none");
+  });
+
   it.each([
     {
       name: "invalid JSON arguments",
