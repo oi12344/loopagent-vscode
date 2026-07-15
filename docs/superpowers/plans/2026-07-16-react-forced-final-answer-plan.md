@@ -203,7 +203,7 @@ npm test -- --run test/reactAgentRunner.test.ts test/openAiReactModelTurn.test.t
 
 预期：两个测试文件全部通过。
 
-- [x] **步骤 7：执行集中验证（真实 E2E 由主代理提交后执行）**
+- [x] **步骤 7：执行集中验证和真实 E2E**
 
 独立运行：
 
@@ -235,11 +235,14 @@ git commit -m "fix(agent): reserve a final answer turn"
 
 - 红灯：`npm test -- --run test/reactAgentRunner.test.ts test/openAiReactModelTurn.test.ts` 得到 2 个失败、13 个通过。Runner 仅收到 `[undefined, undefined]` 且没有最终轮；adapter 收到固定的 `"auto"`，与预期 `"none"` 不符。
 - 绿灯：同一定向命令得到 2 个测试文件、15 个测试全部通过。
-- 全量测试：`npm test` 得到 50 个测试文件、276 个测试全部通过；仅有 Node SQLite experimental warning。
+- 实现阶段全量测试：`npm test` 得到 50 个测试文件、276 个测试全部通过；仅有 Node SQLite experimental warning。
 - 静态与构建验证：`npm run typecheck`、`npm run compile`、`git diff --check` 均以退出码 0 完成。
 - 首次真实 E2E：第 4 步已使用 `toolChoice = "none"` 并正常进入 Done，但最终答案原样包含 `<|DSML|tool_calls>...exploreCode...`，仅匹配 2 个函数、0 个路径，`answerLength = 404`。
 - E2E 根因：adapter 在最终轮仍传入工具定义，`openAiCompatibleClient` 因 `request.tools` 存在而发送 `tools + tool_choice:none`；兼容 provider 将工具调用标记作为普通文本返回。
 - 兼容修复红灯：`npm test -- --run test/openAiReactModelTurn.test.ts` 得到 1 个失败、5 个通过；`request.tools` 实际为 `exploreCode` 工具数组，预期为 `undefined`。
 - 兼容修复绿灯：同一目标命令得到 1 个测试文件、6 个测试全部通过。
 - 兼容修复验证：`npm run typecheck`、`npm run compile`、`git diff --check` 均以退出码 0 完成；按任务范围不重复运行全量测试。
-- 最终 E2E：由主代理使用新提交重新打包并在唯一 Extension Development Host 中补充结果。
+- 反向契约回归：补充省略 `toolChoice` 时仍向 provider 传递 `"auto"` 和完整 `exploreCode` 定义的测试，`test/openAiReactModelTurn.test.ts` 得到 7 个测试全部通过；任务复审无 Critical、Important 或 Minor 问题。
+- 最终集中验证：`npm test` 得到 50 个测试文件、277 个测试全部通过；`npm run typecheck` 和 `npm run compile` 均退出 `0`。
+- 最终 E2E：重新打包兼容修复后的 VSIX，在唯一 Extension Development Host 中运行 `npm run test:e2e:code-exploration` 并通过；匹配 3 个函数锚点、3 个源码路径，`missingStates = []`，`answerLength = 1422`。
+- 最终调用明细：步骤 1–3 各实际执行 1 次 `exploreCode`，并各跳过同轮第 2 个重复请求；步骤 4 没有工具调用并直接 `Done`。整次运行共实际搜索 3 次、跳过重复请求 3 次，没有 DSML 工具标记或 `Reached max ReAct steps`。
