@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createReactAgentRunner } from "../src/extension/agent/reactAgentRunner";
 import type { AgentRunner } from "../src/extension/agentRunner";
 import type { HostToWebviewMessage } from "../src/shared/messages";
@@ -88,6 +88,91 @@ describe("createReactAgentRunner", () => {
     ]);
   });
 
+  it("executes a tool only once per step and pairs duplicate requests", async () => {
+    let turn = 0;
+    let followUpMessages: unknown[] = [];
+    const invoke = vi.fn(async () => "first context");
+    const toolCalls = [
+      {
+        id: "tool-1",
+        type: "function" as const,
+        function: { name: "exploreCode", arguments: '{"query":"first"}' },
+      },
+      {
+        id: "tool-2",
+        type: "function" as const,
+        function: { name: "exploreCode", arguments: '{"query":"second"}' },
+      },
+    ];
+    const runner = createReactAgentRunner({
+      tools: [
+        {
+          name: "exploreCode",
+          description: "Search code.",
+          inputSchema: { type: "object" },
+          invoke,
+        },
+      ],
+      modelTurn: async ({ messages }) => {
+        turn += 1;
+        if (turn > 1) {
+          followUpMessages = messages;
+          return { kind: "final", content: "Used one search per step." };
+        }
+
+        return {
+          kind: "toolRequests",
+          assistantMessage: { role: "assistant", content: "", toolCalls },
+          requests: [
+            {
+              id: "tool-1",
+              name: "exploreCode",
+              rawArguments: '{"query":"first"}',
+              input: { query: "first" },
+            },
+            {
+              id: "tool-2",
+              name: "exploreCode",
+              rawArguments: '{"query":"second"}',
+              input: { query: "second" },
+            },
+          ],
+        };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: { query: "first" },
+        request: expect.objectContaining({ id: "tool-1" }),
+      }),
+    );
+    expect(followUpMessages.slice(-3)).toEqual([
+      { role: "assistant", content: "", toolCalls },
+      {
+        role: "tool",
+        requestId: "tool-1",
+        name: "exploreCode",
+        content: "first context",
+      },
+      {
+        role: "tool",
+        requestId: "tool-2",
+        name: "exploreCode",
+        content:
+          "Tool exploreCode was skipped because each tool can run only once per step. Review the earlier observation before requesting it again in a later step.",
+      },
+    ]);
+    expect(messages).toContainEqual({
+      type: "agentEvent",
+      runId: "run-1",
+      message: "Skipped duplicate tool exploreCode (step 1, call 2)",
+    });
+  });
+
   it("reports distinct and safe exploreCode progress for every call", async () => {
     let turn = 0;
     const query = `${"x".repeat(100)}  \n ${"y".repeat(100)}`;
@@ -110,7 +195,7 @@ describe("createReactAgentRunner", () => {
       ...Array.from({ length: queries.length - 2 }, () => "<sensitive query hidden>"),
     ];
     const runner = createReactAgentRunner({
-      maxToolRequestsPerStep: queries.length,
+      maxSteps: queries.length + 1,
       tools: [
         {
           name: "exploreCode",
@@ -121,25 +206,30 @@ describe("createReactAgentRunner", () => {
       ],
       modelTurn: async () => {
         turn += 1;
-        if (turn > 1) return { kind: "final", content: "Used code context." };
+        const currentQuery = queries[turn - 1];
+        if (!currentQuery) return { kind: "final", content: "Used code context." };
 
         return {
           kind: "toolRequests",
           assistantMessage: {
             role: "assistant",
             content: "",
-            toolCalls: queries.map((query, index) => ({
-              id: `tool-${index + 1}`,
-              type: "function" as const,
-              function: { name: "exploreCode", arguments: JSON.stringify({ query }) },
-            })),
+            toolCalls: [
+              {
+                id: `tool-${turn}`,
+                type: "function" as const,
+                function: { name: "exploreCode", arguments: JSON.stringify({ query: currentQuery }) },
+              },
+            ],
           },
-          requests: queries.map((query, index) => ({
-            id: `tool-${index + 1}`,
-            name: "exploreCode",
-            rawArguments: JSON.stringify({ query }),
-            input: { query },
-          })),
+          requests: [
+            {
+              id: `tool-${turn}`,
+              name: "exploreCode",
+              rawArguments: JSON.stringify({ query: currentQuery }),
+              input: { query: currentQuery },
+            },
+          ],
         };
       },
     });
@@ -148,17 +238,17 @@ describe("createReactAgentRunner", () => {
 
     expect(messages.filter((message) => message.type === "agentEvent")).toEqual(
       expectedPreviews.flatMap((preview, index) => {
-        const call = index + 1;
+        const step = index + 1;
         return [
           {
             type: "agentEvent",
             runId: "run-1",
-            message: `Running tool exploreCode (step 1, call ${call}): ${preview}`,
+            message: `Running tool exploreCode (step ${step}, call 1): ${preview}`,
           },
           {
             type: "agentEvent",
             runId: "run-1",
-            message: `Tool exploreCode returned (step 1, call ${call}): 12 chars`,
+            message: `Tool exploreCode returned (step ${step}, call 1): 12 chars`,
           },
         ];
       }),

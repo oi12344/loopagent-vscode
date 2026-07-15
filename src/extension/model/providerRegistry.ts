@@ -24,6 +24,7 @@ const REACT_SYSTEM_PROMPT = [
   "After each exploreCode observation, decide whether the available source evidence is sufficient to answer the user's question.",
   "If the available source evidence is sufficient, answer immediately without calling another tool.",
   "Only call exploreCode again for a concrete missing fact required to answer the user; use a focused query that does not overlap previous queries.",
+  "Request each tool at most once per assistant turn. If more evidence is needed, wait for its observation and request it again in a later turn.",
   "Do not keep searching for completeness or to reconfirm facts already supported by source evidence.",
   "Answer only from supported evidence and state any material limitation.",
   "Do not invent repository facts when the tool does not provide enough evidence.",

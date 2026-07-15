@@ -67,6 +67,7 @@ export function createReactAgentRunner({
           }
 
           messages.push(result.assistantMessage);
+          const usedToolNames = new Set<string>();
 
           for (const [requestIndex, request] of result.requests.entries()) {
             if (signal.aborted) {
@@ -74,6 +75,18 @@ export function createReactAgentRunner({
             }
 
             const call = requestIndex + 1;
+            if (usedToolNames.has(request.name)) {
+              const content = `Tool ${request.name} was skipped because each tool can run only once per step. Review the earlier observation before requesting it again in a later step.`;
+              yield {
+                type: "agentEvent",
+                runId,
+                message: `Skipped duplicate tool ${request.name} (step ${step}, call ${call})`,
+              } satisfies HostToWebviewMessage;
+              messages.push({ role: "tool", requestId: request.id, name: request.name, content });
+              continue;
+            }
+            usedToolNames.add(request.name);
+
             const requestMessage =
               request.name === "exploreCode"
                 ? `Running tool exploreCode (step ${step}, call ${call}): ${getExploreCodeQueryPreview(request.input)}`

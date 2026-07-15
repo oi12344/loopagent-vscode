@@ -8,7 +8,7 @@
 
 `D:\zz\claude-code-nb` 的 `query.ts` 会收集一条 assistant 消息内的全部 `tool_use`，`services/tools/toolOrchestration.ts` 再根据 `isConcurrencySafe` 将只读工具并发执行、写工具串行执行。它不限制同名工具数量，但严格保留每个 `tool_use_id` 与 `tool_result` 的配对，并在全部结果进入消息历史后发起下一模型回合。
 
-LoopAgent 不照搬并行策略，只复用“请求与结果完整配对、工具错误作为 observation 反馈模型”的原则。
+LoopAgent 不照搬并行策略，只复用“请求与结果完整配对”的原则；重复请求通过合成 observation 反馈模型，真实工具异常继续保持现有 `runFailed` 语义。
 
 ## 行为
 
