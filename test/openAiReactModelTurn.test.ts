@@ -77,6 +77,41 @@ describe("createOpenAiReactModelTurn", () => {
     ).resolves.toEqual({ kind: "final", content: "Workspace ready." });
   });
 
+  it("includes tool definitions with the default auto choice", async () => {
+    let seenToolChoice: "auto" | "none" | undefined;
+    let seenTools: unknown;
+    const provider: ModelProvider = {
+      id: "test",
+      displayName: "Test",
+      async *stream(request) {
+        seenToolChoice = request.toolChoice;
+        seenTools = request.tools;
+        yield { type: "contentDelta", content: "Final answer." } as const;
+        yield { type: "finishReason", reason: "stop" } as const;
+      },
+    };
+    const modelTurn = createOpenAiReactModelTurn({ provider, tools: [exploreCodeTool] });
+
+    await modelTurn({ messages: [{ role: "user", content: "Status?" }], signal: new AbortController().signal });
+
+    expect(seenToolChoice).toBe("auto");
+    expect(seenTools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "exploreCode",
+          description: "Search the current workspace code.",
+          parameters: {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"],
+            additionalProperties: false,
+          },
+        },
+      },
+    ]);
+  });
+
   it("passes the requested tool choice to the provider", async () => {
     let seenToolChoice: "auto" | "none" | undefined;
     let seenTools: unknown;
