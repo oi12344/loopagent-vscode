@@ -31,7 +31,7 @@ describe("SqliteIndexStore searchCodeChunks", () => {
       expect.objectContaining({
         filePath: "src/agent.ts",
         startLine: 1,
-        sourceText: expect.stringContaining("createAgent"),
+        sourceText: 'export function createAgent() { return "ready"; }',
       }),
     ]);
     expect(store.searchCodeChunks('create OR "unterminated *', 1)).toHaveLength(1);
@@ -71,7 +71,7 @@ function snapshotInput(): SnapshotInput {
     parsed: {
       filePath: file.filePath,
       languageId: file.languageId,
-      text: "export function createAgent() {}",
+      text: 'export function createAgent() { return "ready"; }',
       diagnostics: [],
     },
     extraction: {

@@ -135,5 +135,5 @@ export function buildExtractionSnapshot(input: SnapshotInput): ExtractionSnapsho
     unresolvedReferences,
     diagnostics,
   };
-  return { ...snapshot, chunks: createCodeChunks(snapshot) };
+  return { ...snapshot, chunks: createCodeChunks({ ...snapshot, fileText: input.parsed.text }) };
 }

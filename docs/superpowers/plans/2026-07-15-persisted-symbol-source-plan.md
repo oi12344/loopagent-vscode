@@ -36,7 +36,7 @@
 - 输入：`SnapshotInput.parsed.text` 与 `SnapshotNode.startLine/endLine`。
 - 输出：`createCodeChunks` 的内部输入增加 `fileText: string`；公开的 `ExtractionSnapshot`、`CodeChunk`、SQLite schema 和 worker DTO 不变。
 
-- [ ] **Step 1：写真实源码、hash、范围和语言 RED 测试**
+- [x] **Step 1：写真实源码、hash、范围和语言 RED 测试**
 
 调整 `test/intelligence/codeChunker.test.ts` 的 fixture，使源码实际位于节点声明的行范围。函数正文使用三行：
 
@@ -159,7 +159,7 @@ expect(store.searchCodeChunks("create Agent", 1)).toEqual([
 ]);
 ```
 
-- [ ] **Step 2：运行确认 RED**
+- [x] **Step 2：运行确认 RED**
 
 运行：
 
@@ -169,7 +169,7 @@ npm test -- test/intelligence/codeChunker.test.ts test/intelligence/sqliteCodeSe
 
 预期：FAIL。symbol `sourceText` 仍为 `name/qualified/kind/signature/exported/calls` card，不等于真实正文；SQLite 断言同样失败。
 
-- [ ] **Step 3：实现最小源码范围截取**
+- [x] **Step 3：实现最小源码范围截取**
 
 在 `codeChunker.ts` 的私有输入和 helper 中加入：
 
@@ -218,7 +218,7 @@ return {
 };
 ```
 
-- [ ] **Step 4：运行 GREEN、集中验证并审查 diff**
+- [x] **Step 4：运行 GREEN、集中验证并审查 diff**
 
 运行：
 
@@ -232,7 +232,7 @@ git diff --check
 
 预期：全部通过。确认 diff 没有 schema、worker、prompt 或依赖变更；确认只有正文变化时 `sourceHash` 变化，纯行号移动不改 hash。
 
-- [ ] **Step 5：更新中文完成记录并提交**
+- [x] **Step 5：更新中文完成记录并提交**
 
 把设计状态更新为“已实现”，在本计划末尾记录测试文件/用例数、类型检查、编译、diff 检查和实际限制，并勾选已完成步骤。
 
@@ -245,3 +245,12 @@ git commit -m "feat(intelligence): persist symbol source snippets"
 ```
 
 预期：提交只包含上述 6 个文件；不自动推送。
+
+## 实施记录（2026-07-15）
+
+- RED：`npm test -- test/intelligence/codeChunker.test.ts test/intelligence/sqliteCodeSearch.test.ts --reporter=dot` 按预期失败，2 个测试文件、3 个用例均显示 symbol `sourceText` 仍为元数据 card。
+- GREEN：同一命令通过，2 个测试文件、3 个用例全部通过。
+- 受影响测试：计划列出的 5 个测试文件、19 个用例全部通过。
+- 全量测试：50 个测试文件、267 个用例全部通过。
+- `npm run typecheck`、`npm run compile`、`git diff --check` 均通过。
+- 实际限制与设计一致：symbol 正文最多 120 行；无效或空范围回退元数据 card；`file_card`、FTS token、embedding 文本、数据库契约和 prompt 预算保持不变。

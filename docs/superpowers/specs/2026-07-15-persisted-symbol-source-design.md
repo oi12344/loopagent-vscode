@@ -1,6 +1,6 @@
 # 持久化符号源码片段设计
 
-> 状态：设计已批准，等待实施计划。
+> 状态：已实现。
 >
 > 前置功能：`docs/superpowers/specs/2026-07-14-sqlite-fts-context-minimal-design.md`
 
@@ -66,3 +66,11 @@ parsed.text + node range
 - 不实现 exact/RRF、图扩展或 embedding。
 - 不保存完整文件源码。
 - 不增加设置项、命令或新的抽象层。
+
+## 实施结果
+
+- `src/extension/intelligence/indexing/extractionSnapshot.ts` 将 `parsed.text` 传给 chunker。
+- `src/extension/intelligence/chunking/codeChunker.ts` 按节点范围保存最多 120 行正文；无效或空范围回退元数据 card。
+- `test/intelligence/codeChunker.test.ts` 覆盖 TypeScript、Python、hash 稳定性、120 行裁剪和无效范围回退。
+- `test/intelligence/sqliteCodeSearch.test.ts` 验证真实 SQLite FTS 查询返回持久化函数正文。
+- 全量测试、类型检查、编译和 `git diff --check` 均通过；schema、worker RPC 和 prompt renderer 未改动。
