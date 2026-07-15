@@ -88,6 +88,83 @@ describe("createReactAgentRunner", () => {
     ]);
   });
 
+  it("reports distinct and safe exploreCode progress for every call", async () => {
+    let turn = 0;
+    const query = `${"x".repeat(100)}  \n ${"y".repeat(100)}`;
+    const queryPreview = `${"x".repeat(100)} ${"y".repeat(99)}`;
+    const queries = [
+      query,
+      query,
+      "inspect E:\\secret\\source.ts",
+      "inspect \\\\server\\share\\source.ts",
+      "path=/home/user/source.ts",
+      "inspect(/etc/passwd)",
+      "inspect /@scope/package.json",
+      "inspect /用户/项目/文件.ts",
+      "api_key=sk-1234567890",
+      "access_token=value",
+    ];
+    const expectedPreviews = [
+      queryPreview,
+      queryPreview,
+      ...Array.from({ length: queries.length - 2 }, () => "<sensitive query hidden>"),
+    ];
+    const runner = createReactAgentRunner({
+      maxToolRequestsPerStep: queries.length,
+      tools: [
+        {
+          name: "exploreCode",
+          description: "Search code.",
+          inputSchema: { type: "object" },
+          invoke: async () => "code context",
+        },
+      ],
+      modelTurn: async () => {
+        turn += 1;
+        if (turn > 1) return { kind: "final", content: "Used code context." };
+
+        return {
+          kind: "toolRequests",
+          assistantMessage: {
+            role: "assistant",
+            content: "",
+            toolCalls: queries.map((query, index) => ({
+              id: `tool-${index + 1}`,
+              type: "function" as const,
+              function: { name: "exploreCode", arguments: JSON.stringify({ query }) },
+            })),
+          },
+          requests: queries.map((query, index) => ({
+            id: `tool-${index + 1}`,
+            name: "exploreCode",
+            rawArguments: JSON.stringify({ query }),
+            input: { query },
+          })),
+        };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(messages.filter((message) => message.type === "agentEvent")).toEqual(
+      expectedPreviews.flatMap((preview, index) => {
+        const call = index + 1;
+        return [
+          {
+            type: "agentEvent",
+            runId: "run-1",
+            message: `Running tool exploreCode (step 1, call ${call}): ${preview}`,
+          },
+          {
+            type: "agentEvent",
+            runId: "run-1",
+            message: `Tool exploreCode returned (step 1, call ${call}): 12 chars`,
+          },
+        ];
+      }),
+    );
+  });
+
   it("prepends a runtime system prompt and continues when the provider fails", async () => {
     const seenMessages: unknown[] = [];
     const runner = createReactAgentRunner({

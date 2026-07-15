@@ -68,17 +68,30 @@ export function createReactAgentRunner({
 
           messages.push(result.assistantMessage);
 
-          for (const request of result.requests) {
+          for (const [requestIndex, request] of result.requests.entries()) {
             if (signal.aborted) {
               return;
             }
 
-            yield { type: "agentEvent", runId, message: `Running tool ${request.name}` } satisfies HostToWebviewMessage;
+            const call = requestIndex + 1;
+            const requestMessage =
+              request.name === "exploreCode"
+                ? `Running tool exploreCode (step ${step}, call ${call}): ${getExploreCodeQueryPreview(request.input)}`
+                : `Running tool ${request.name}`;
+            yield { type: "agentEvent", runId, message: requestMessage } satisfies HostToWebviewMessage;
 
             const content = await toolRegistry.invoke(request, signal);
 
             if (signal.aborted) {
               return;
+            }
+
+            if (request.name === "exploreCode") {
+              yield {
+                type: "agentEvent",
+                runId,
+                message: `Tool exploreCode returned (step ${step}, call ${call}): ${content.length} chars`,
+              } satisfies HostToWebviewMessage;
             }
 
             messages.push({
@@ -100,6 +113,32 @@ export function createReactAgentRunner({
       }
     },
   };
+}
+
+function getExploreCodeQueryPreview(input: unknown): string {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return "<invalid query>";
+  }
+
+  const query = (input as Record<string, unknown>).query;
+  if (typeof query !== "string") {
+    return "<invalid query>";
+  }
+
+  const normalized = query.replace(/\s+/g, " ").trim();
+  const containsSensitivePath =
+    /[a-z]:[\\/]/i.test(normalized) ||
+    /\\\\[^\\\s]+\\[^\\\s]+/.test(normalized) ||
+    /(?:^|[^a-z0-9._-])\/\S/i.test(normalized);
+  const containsCredential =
+    /\b(?:api[_ -]?key|(?:access|refresh|auth)[_ -]?token|secret|token|password|credential)\b\s*[:=]\s*\S+/i.test(
+      normalized,
+    ) ||
+    /\bbearer\s+\S+|\bsk-[a-z0-9_-]{8,}/i.test(normalized);
+  if (containsSensitivePath || containsCredential) {
+    return "<sensitive query hidden>";
+  }
+  return normalized.slice(0, 200) || "<empty query>";
 }
 
 async function resolveSystemPrompt(

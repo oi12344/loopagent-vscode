@@ -98,7 +98,12 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(hostMessages).toContainEqual({
       type: "agentEvent",
       runId: "run-1",
-      message: "Running tool exploreCode",
+      message: "Running tool exploreCode (step 1, call 1): provider registry model context",
+    });
+    expect(hostMessages).toContainEqual({
+      type: "agentEvent",
+      runId: "run-1",
+      message: "Tool exploreCode returned (step 1, call 1): 28 chars",
     });
     expect(hostMessages).toContainEqual({
       type: "assistantDelta",
