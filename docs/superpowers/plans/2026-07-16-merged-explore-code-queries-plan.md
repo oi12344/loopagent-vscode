@@ -34,7 +34,7 @@
 - `exploreCodeTool.ts` 导出查询长度常量，供 Runner 复用。
 - Runner 内部合并对象包含 `firstRequestId`、去重后的 `queries` 和 `query`；不改变 `ReactAgentTool`、`ReactModelTurn` 或模型协议类型。
 
-- [ ] **步骤 1：写入失败的查询合并测试**
+- [x] **步骤 1：写入失败的查询合并测试**
 
 在 `test/reactAgentRunner.test.ts` 新增用例，模型第一步返回 5 个 `exploreCode` 请求，查询依次为 `alpha`、`beta`、`gamma`、`delta`、`epsilon`；下一步返回 final。断言：
 
@@ -60,7 +60,7 @@ expect(followUpMessages.slice(-6)).toEqual([
 
 新增“4 个不同名称工具”用例：默认上限下 4 个不同工具请求必须得到 `runFailed`，错误为 `Too many distinct tool requests in one step: 4`，且所有 `invoke` 均未调用。
 
-- [ ] **步骤 2：运行定向测试并确认红灯**
+- [x] **步骤 2：运行定向测试并确认红灯**
 
 ```powershell
 npm test -- --run test/reactAgentRunner.test.ts
@@ -68,7 +68,7 @@ npm test -- --run test/reactAgentRunner.test.ts
 
 预期：5 请求用例因现有原始请求上限报错而失败；两查询用例仍收到 `first` 而不是合并查询；4 个不同工具用例错误文案不匹配。不得出现类型、语法或环境错误。
 
-- [ ] **步骤 3：实现最小合并和有效工具数限制**
+- [x] **步骤 3：实现最小合并和有效工具数限制**
 
 在 `src/extension/agent/exploreCodeTool.ts` 导出：
 
@@ -95,7 +95,7 @@ if (new Set(result.requests.map((request) => request.name)).size > maxToolReques
 
 合并不可用时保留当前跳过文案和执行路径。
 
-- [ ] **步骤 4：运行定向测试并确认绿灯**
+- [x] **步骤 4：运行定向测试并确认绿灯**
 
 ```powershell
 npm test -- --run test/reactAgentRunner.test.ts
@@ -103,7 +103,7 @@ npm test -- --run test/reactAgentRunner.test.ts
 
 预期：该文件全部通过；5 个同名请求只调用一次工具，4 个不同工具在执行前失败。
 
-- [ ] **步骤 5：执行集中验证和真实 E2E**
+- [x] **步骤 5：执行集中验证和真实 E2E**
 
 独立运行：
 
@@ -122,7 +122,7 @@ npm run test:e2e:code-exploration
 
 记录实际 `Running tool exploreCode`、`Combined duplicate tool exploreCode`、步骤数量、答案锚点和路径；与当前“每轮跳过重复搜索”结果比较。
 
-- [ ] **步骤 6：记录结果并提交**
+- [x] **步骤 6：记录结果并提交**
 
 在本文末尾追加中文实施结果，记录红灯、绿灯、全量验证、E2E 调用明细、合并是否发生和已知回退边界，然后提交：
 
@@ -130,3 +130,12 @@ npm run test:e2e:code-exploration
 git add -- docs/superpowers/specs/2026-07-16-per-turn-tool-dedup-design.md docs/superpowers/plans/2026-07-16-merged-explore-code-queries-plan.md src/extension/agent/exploreCodeTool.ts src/extension/agent/reactAgentRunner.ts test/reactAgentRunner.test.ts
 git commit -m "fix(agent): merge same-step code searches"
 ```
+
+## 实施结果
+
+- 红灯：`npm test -- --run test/reactAgentRunner.test.ts` 共 12 个用例，新增或更新的 3 个断言失败，原因分别是未合并查询、5 个同名请求仍按原始数量触发上限、不同工具数量错误文案未更新；其余 9 个用例通过。
+- 绿灯：实现后同一命令 12/12 通过。首个 `exploreCode` 调用收到换行拼接的查询，其余同名 request ID 获得合成 observation；4 个不同工具名称仍在调用前失败。
+- 集中验证：`npm run typecheck`、`npm test`（50 个测试文件、280 个用例）、`npm run compile` 和 `git diff --check` 全部通过。
+- E2E：打包并安装 worktree 的 VSIX，在唯一的本地 VS Code 调试窗口运行 `npm run test:e2e:code-exploration` 成功。命中 `systemPromptProvider`、`renderCodeRuntimeContextPrompt`、`renderCodeIntelligencePrompt` 及对应 3 条源码路径，最终答案长度为 1226。
+- E2E 调用轨迹：步骤 1 至 3 每步各有一次 `Running tool exploreCode` 和一次 `Combined duplicate tool exploreCode`，步骤 4 为 `Done`。因此仍为 3 次真实搜索加 1 次最终回答，但同轮第二个搜索请求不再被丢弃，而是合并到该轮首个检索中。
+- 回退边界：`exploreCode` 输入无效、查询重复或合并后超过 1000 字符时，继续使用原有首条执行、其余跳过路径。

@@ -88,7 +88,7 @@ describe("createReactAgentRunner", () => {
     ]);
   });
 
-  it("executes distinct tools once and pairs duplicate requests", async () => {
+  it("combines exploreCode queries while executing distinct tools", async () => {
     let turn = 0;
     let followUpMessages: unknown[] = [];
     const invoke = vi.fn(async () => "first context");
@@ -165,7 +165,7 @@ describe("createReactAgentRunner", () => {
     expect(otherInvoke).toHaveBeenCalledTimes(1);
     expect(invoke).toHaveBeenCalledWith(
       expect.objectContaining({
-        input: { query: "first" },
+        input: { query: "first\nsecond" },
         request: expect.objectContaining({ id: "tool-1" }),
       }),
     );
@@ -175,14 +175,14 @@ describe("createReactAgentRunner", () => {
         role: "tool",
         requestId: "tool-1",
         name: "exploreCode",
-        content: "first context",
+        content: "Combined 2 exploreCode queries for this step.\n\nfirst context",
       },
       {
         role: "tool",
         requestId: "tool-2",
         name: "exploreCode",
         content:
-          "Tool exploreCode was skipped because each tool can run only once per step. Review the earlier observation before requesting it again in a later step.",
+          "Tool exploreCode query was combined into request tool-1 for this step. Review the combined observation before requesting it again in a later step.",
       },
       {
         role: "tool",
@@ -194,8 +194,114 @@ describe("createReactAgentRunner", () => {
     expect(messages).toContainEqual({
       type: "agentEvent",
       runId: "run-1",
-      message: "Skipped duplicate tool exploreCode (step 1, call 2)",
+      message: "Combined duplicate tool exploreCode (step 1, call 2)",
     });
+  });
+
+  it("merges five exploreCode queries before enforcing the tool limit", async () => {
+    let turn = 0;
+    let followUpMessages: unknown[] = [];
+    const queries = ["alpha", "beta", "gamma", "delta", "epsilon"];
+    const invoke = vi.fn(async () => "merged context");
+    const toolCalls = queries.map((query, index) => ({
+      id: `tool-${index + 1}`,
+      type: "function" as const,
+      function: { name: "exploreCode", arguments: JSON.stringify({ query }) },
+    }));
+    const runner = createReactAgentRunner({
+      tools: [
+        {
+          name: "exploreCode",
+          description: "Search code.",
+          inputSchema: { type: "object" },
+          invoke,
+        },
+      ],
+      modelTurn: async ({ messages }) => {
+        turn += 1;
+        if (turn > 1) {
+          followUpMessages = messages;
+          return { kind: "final", content: "Used merged context." };
+        }
+
+        return {
+          kind: "toolRequests",
+          assistantMessage: { role: "assistant", content: "", toolCalls },
+          requests: queries.map((query, index) => ({
+            id: `tool-${index + 1}`,
+            name: "exploreCode",
+            rawArguments: JSON.stringify({ query }),
+            input: { query },
+          })),
+        };
+      },
+    });
+
+    await collectRunnerMessages(runner);
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: { query: "alpha\nbeta\ngamma\ndelta\nepsilon" },
+        request: expect.objectContaining({ id: "tool-1" }),
+      }),
+    );
+    expect(followUpMessages.slice(-6)).toEqual([
+      { role: "assistant", content: "", toolCalls },
+      {
+        role: "tool",
+        requestId: "tool-1",
+        name: "exploreCode",
+        content: "Combined 5 exploreCode queries for this step.\n\nmerged context",
+      },
+      ...queries.slice(1).map((_, index) => ({
+        role: "tool",
+        requestId: `tool-${index + 2}`,
+        name: "exploreCode",
+        content:
+          "Tool exploreCode query was combined into request tool-1 for this step. Review the combined observation before requesting it again in a later step.",
+      })),
+    ]);
+  });
+
+  it("fails before invoking more than three distinct tools", async () => {
+    const names = ["toolA", "toolB", "toolC", "toolD"];
+    const invokes = names.map(() => vi.fn(async () => "unused"));
+    const runner = createReactAgentRunner({
+      tools: names.map((name, index) => ({
+        name,
+        description: `${name} test tool.`,
+        inputSchema: { type: "string" },
+        invoke: invokes[index]!,
+      })),
+      modelTurn: async () => ({
+        kind: "toolRequests",
+        assistantMessage: {
+          role: "assistant",
+          content: "",
+          toolCalls: names.map((name, index) => ({
+            id: `tool-${index + 1}`,
+            type: "function" as const,
+            function: { name, arguments: '"input"' },
+          })),
+        },
+        requests: names.map((name, index) => ({
+          id: `tool-${index + 1}`,
+          name,
+          rawArguments: '"input"',
+          input: "input",
+        })),
+      }),
+    });
+
+    await expect(collectRunnerMessages(runner)).resolves.toContainEqual({
+      type: "runFailed",
+      runId: "run-1",
+      message: "Too many distinct tool requests in one step: 4",
+    });
+    for (const invoke of invokes) {
+      expect(invoke).not.toHaveBeenCalled();
+    }
   });
 
   it("reports distinct and safe exploreCode progress for every call", async () => {
