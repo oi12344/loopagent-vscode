@@ -1,5 +1,8 @@
 import * as vscode from "vscode";
 
+import { createApplyEditTool } from "./extension/agent/applyEditTool";
+import { createEditPreviewService } from "./extension/agent/editPreviewService";
+import { createReadFileTool } from "./extension/agent/readFileTool";
 import { startAgentRun, type AgentRunHandle } from "./extension/agentRunner";
 import { createTreeSitterParserRuntime } from "./extension/intelligence/parser/treeSitterRuntime";
 import { createVsCodeWorkspaceIntelligence } from "./extension/intelligence/vscodeWorkspaceIntelligence";
@@ -57,16 +60,23 @@ export async function deactivate(): Promise<void> {
 class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private activeRun: AgentRunHandle | undefined;
   private readonly workspaceIntelligence;
+  private readonly editPreviewService;
+  private readonly readFileTool;
+  private readonly applyEditTool;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.workspaceIntelligence = createVsCodeWorkspaceIntelligence(vscode, {
       parserRuntime: createTreeSitterParserRuntime(),
       storageUri: context.storageUri,
     });
+    this.editPreviewService = createEditPreviewService(vscode);
+    this.readFileTool = createReadFileTool(vscode);
+    this.applyEditTool = createApplyEditTool(this.editPreviewService);
   }
 
   async dispose(): Promise<void> {
     this.activeRun?.cancel();
+    this.editPreviewService.dispose();
     await this.workspaceIntelligence.dispose();
   }
 
@@ -108,6 +118,8 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
 
     void createConfiguredAgentRunner(this.context, message.model, {
       workspaceIntelligence: this.workspaceIntelligence,
+      readFileTool: this.readFileTool,
+      applyEditTool: this.applyEditTool,
     }).then((runner) => {
       const run = startAgentRun({
         task: message.task,

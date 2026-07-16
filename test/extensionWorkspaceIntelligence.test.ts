@@ -42,6 +42,9 @@ describe("LoopAgent extension workspace intelligence lifecycle", () => {
           toString: () => segments.join("/"),
         })),
       },
+      workspace: {
+        registerTextDocumentContentProvider: vi.fn(() => createDisposable()),
+      },
     }));
     vi.doMock("../src/extension/model/providerRegistry", () => ({
       createConfiguredAgentRunner,
@@ -69,6 +72,12 @@ describe("LoopAgent extension workspace intelligence lifecycle", () => {
     expect(createConfiguredAgentRunner).toHaveBeenCalledTimes(2);
     expect(createConfiguredAgentRunner.mock.calls[0]?.[2]?.workspaceIntelligence).toBe(workspaceIntelligence);
     expect(createConfiguredAgentRunner.mock.calls[1]?.[2]?.workspaceIntelligence).toBe(workspaceIntelligence);
+    expect(createConfiguredAgentRunner.mock.calls[0]?.[2]?.readFileTool).toBe(
+      createConfiguredAgentRunner.mock.calls[1]?.[2]?.readFileTool,
+    );
+    expect(createConfiguredAgentRunner.mock.calls[0]?.[2]?.applyEditTool).toBe(
+      createConfiguredAgentRunner.mock.calls[1]?.[2]?.applyEditTool,
+    );
 
     await deactivate();
     expect(workspaceIntelligence.dispose).toHaveBeenCalledTimes(1);

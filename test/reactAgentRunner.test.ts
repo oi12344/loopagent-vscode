@@ -363,6 +363,57 @@ describe("createReactAgentRunner", () => {
     expect(starts).toEqual(["tool-1", "tool-2"]);
   });
 
+  it("waits for readFile before applying an edit from the same model step", async () => {
+    const order: string[] = [];
+    let turn = 0;
+    const runner = createReactAgentRunner({
+      tools: [
+        {
+          name: "readFile",
+          description: "Read a file.",
+          inputSchema: { type: "object" },
+          isConcurrencySafe: () => true,
+          invoke: async () => {
+            order.push("read");
+            return "before";
+          },
+        },
+        {
+          name: "applyEdit",
+          description: "Apply an edit.",
+          inputSchema: { type: "object" },
+          invoke: async () => {
+            expect(order).toEqual(["read"]);
+            order.push("edit");
+            return "Changes were applied.";
+          },
+        },
+      ],
+      modelTurn: async () => {
+        turn += 1;
+        if (turn > 1) return { kind: "final", content: "Done." };
+        return {
+          kind: "toolRequests",
+          assistantMessage: {
+            role: "assistant",
+            content: "",
+            toolCalls: [
+              { id: "read-1", type: "function", function: { name: "readFile", arguments: '{"path":"src/example.ts"}' } },
+              { id: "edit-1", type: "function", function: { name: "applyEdit", arguments: '{"changes":[]}' } },
+            ],
+          },
+          requests: [
+            { id: "read-1", name: "readFile", rawArguments: '{"path":"src/example.ts"}', input: { path: "src/example.ts" } },
+            { id: "edit-1", name: "applyEdit", rawArguments: '{"changes":[]}', input: { changes: [] } },
+          ],
+        };
+      },
+    });
+
+    await expect(collectRunnerMessages(runner)).resolves.toContainEqual({ type: "runFinished", runId: "run-1" });
+    expect(order).toEqual(["read", "edit"]);
+  });
+
   it("fails before invoking more than ten tool requests", async () => {
     const queries = Array.from({ length: 11 }, (_, index) => `query-${index + 1}`);
     const invoke = vi.fn(async () => "unused");

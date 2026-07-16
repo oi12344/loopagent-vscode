@@ -1,6 +1,7 @@
 import type * as vscode from "vscode";
 
 import { createExploreCodeTool } from "../agent/exploreCodeTool";
+import type { ReactAgentTool } from "../agent/reactTypes";
 import { createOpenAiReactModelTurn } from "../agent/openAiReactModelTurn";
 import { createReactAgentRunner } from "../agent/reactAgentRunner";
 import type { AgentRunner } from "../agentRunner";
@@ -27,6 +28,9 @@ const REACT_SYSTEM_PROMPT = [
   "When separate read-only searches are needed, you may request them in one assistant turn.",
   "Do not request an exact duplicate search or search again for facts already supported by source evidence.",
   "Do not keep searching for completeness or to reconfirm facts already supported by source evidence.",
+  "Before editing, read the relevant file content with readFile.",
+  "Propose all workspace changes only through applyEdit.",
+  "Do not claim an edit succeeded until applyEdit reports that it was applied.",
   "Answer only from supported evidence and state any material limitation.",
   "Do not invent repository facts when the tool does not provide enough evidence.",
 ].join("\n");
@@ -35,6 +39,8 @@ export type CreateConfiguredAgentRunnerDeps = {
   vscodeApi?: VsCodeWorkspaceApi;
   workspaceIntelligence?: WorkspaceIntelligence;
   parserRuntime?: ParserRuntime;
+  readFileTool?: ReactAgentTool;
+  applyEditTool?: ReactAgentTool;
 };
 
 export async function createConfiguredAgentRunner(
@@ -59,7 +65,11 @@ export async function createConfiguredAgentRunner(
     thinking: config.thinking,
   });
 
-  const tools = [createExploreCodeTool(workspaceIntelligence)];
+  const tools = [
+    createExploreCodeTool(workspaceIntelligence),
+    ...(deps.readFileTool ? [deps.readFileTool] : []),
+    ...(deps.applyEditTool ? [deps.applyEditTool] : []),
+  ];
   return createReactAgentRunner({
     providerName: provider.displayName,
     tools,
