@@ -88,10 +88,10 @@ describe("createReactAgentRunner", () => {
     ]);
   });
 
-  it("combines exploreCode queries while executing distinct tools", async () => {
+  it("runs each exploreCode request and pairs its real observation", async () => {
     let turn = 0;
     let followUpMessages: unknown[] = [];
-    const invoke = vi.fn(async () => "first context");
+    const invoke = vi.fn(async ({ input }) => `${(input as { query: string }).query} context`);
     const otherInvoke = vi.fn(async () => "other context");
     const toolCalls = [
       {
@@ -116,6 +116,7 @@ describe("createReactAgentRunner", () => {
           name: "exploreCode",
           description: "Search code.",
           inputSchema: { type: "object" },
+          isConcurrencySafe: () => true,
           invoke,
         },
         {
@@ -161,12 +162,20 @@ describe("createReactAgentRunner", () => {
 
     const messages = await collectRunnerMessages(runner);
 
-    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledTimes(2);
     expect(otherInvoke).toHaveBeenCalledTimes(1);
-    expect(invoke).toHaveBeenCalledWith(
+    expect(invoke).toHaveBeenNthCalledWith(
+      1,
       expect.objectContaining({
-        input: { query: "first\nsecond" },
+        input: { query: "first" },
         request: expect.objectContaining({ id: "tool-1" }),
+      }),
+    );
+    expect(invoke).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        input: { query: "second" },
+        request: expect.objectContaining({ id: "tool-2" }),
       }),
     );
     expect(followUpMessages.slice(-4)).toEqual([
@@ -175,14 +184,13 @@ describe("createReactAgentRunner", () => {
         role: "tool",
         requestId: "tool-1",
         name: "exploreCode",
-        content: "Combined 2 exploreCode queries for this step.\n\nfirst context",
+        content: "first context",
       },
       {
         role: "tool",
         requestId: "tool-2",
         name: "exploreCode",
-        content:
-          "Tool exploreCode query was combined into request tool-1 for this step. Review the combined observation before requesting it again in a later step.",
+        content: "second context",
       },
       {
         role: "tool",
@@ -191,18 +199,14 @@ describe("createReactAgentRunner", () => {
         content: "other context",
       },
     ]);
-    expect(messages).toContainEqual({
-      type: "agentEvent",
-      runId: "run-1",
-      message: "Combined duplicate tool exploreCode (step 1, call 2)",
-    });
+    expect(messages.some((message) => message.type === "agentEvent" && message.message.includes("Combined"))).toBe(false);
   });
 
-  it("merges five exploreCode queries before enforcing the tool limit", async () => {
+  it("executes ten same-name safe tool requests", async () => {
     let turn = 0;
     let followUpMessages: unknown[] = [];
-    const queries = ["alpha", "beta", "gamma", "delta", "epsilon"];
-    const invoke = vi.fn(async () => "merged context");
+    const queries = Array.from({ length: 10 }, (_, index) => `query-${index + 1}`);
+    const invoke = vi.fn(async ({ input }) => `${(input as { query: string }).query} context`);
     const toolCalls = queries.map((query, index) => ({
       id: `tool-${index + 1}`,
       type: "function" as const,
@@ -214,6 +218,7 @@ describe("createReactAgentRunner", () => {
           name: "exploreCode",
           description: "Search code.",
           inputSchema: { type: "object" },
+          isConcurrencySafe: () => true,
           invoke,
         },
       ],
@@ -221,7 +226,7 @@ describe("createReactAgentRunner", () => {
         turn += 1;
         if (turn > 1) {
           followUpMessages = messages;
-          return { kind: "final", content: "Used merged context." };
+          return { kind: "final", content: "Used all contexts." };
         }
 
         return {
@@ -239,57 +244,154 @@ describe("createReactAgentRunner", () => {
 
     await collectRunnerMessages(runner);
 
-    expect(invoke).toHaveBeenCalledTimes(1);
-    expect(invoke).toHaveBeenCalledWith(
+    expect(invoke).toHaveBeenCalledTimes(10);
+    expect(invoke).toHaveBeenNthCalledWith(
+      10,
       expect.objectContaining({
-        input: { query: "alpha\nbeta\ngamma\ndelta\nepsilon" },
-        request: expect.objectContaining({ id: "tool-1" }),
+        input: { query: "query-10" },
+        request: expect.objectContaining({ id: "tool-10" }),
       }),
     );
-    expect(followUpMessages.slice(-6)).toEqual([
+    expect(followUpMessages.slice(-11)).toEqual([
       { role: "assistant", content: "", toolCalls },
-      {
+      ...queries.map((query, index) => ({
         role: "tool",
-        requestId: "tool-1",
+        requestId: `tool-${index + 1}`,
         name: "exploreCode",
-        content: "Combined 5 exploreCode queries for this step.\n\nmerged context",
-      },
-      ...queries.slice(1).map((_, index) => ({
-        role: "tool",
-        requestId: `tool-${index + 2}`,
-        name: "exploreCode",
-        content:
-          "Tool exploreCode query was combined into request tool-1 for this step. Review the combined observation before requesting it again in a later step.",
+        content: `${query} context`,
       })),
     ]);
   });
 
-  it("fails before invoking more than three distinct tools", async () => {
-    const names = ["toolA", "toolB", "toolC", "toolD"];
-    const invokes = names.map(() => vi.fn(async () => "unused"));
+  it("runs consecutive safe requests concurrently", async () => {
+    const starts: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const invoke = vi.fn(async ({ request }) => {
+      starts.push(request.id);
+      await gate;
+      return `${request.id} context`;
+    });
+    let turn = 0;
     const runner = createReactAgentRunner({
-      tools: names.map((name, index) => ({
-        name,
-        description: `${name} test tool.`,
-        inputSchema: { type: "string" },
-        invoke: invokes[index]!,
-      })),
+      tools: [
+        {
+          name: "exploreCode",
+          description: "Search code.",
+          inputSchema: { type: "object" },
+          isConcurrencySafe: () => true,
+          invoke,
+        },
+      ],
+      modelTurn: async () => {
+        turn += 1;
+        if (turn > 1) return { kind: "final", content: "Used both contexts." };
+        return {
+          kind: "toolRequests",
+          assistantMessage: {
+            role: "assistant",
+            content: "",
+            toolCalls: [
+              { id: "tool-1", type: "function", function: { name: "exploreCode", arguments: '{"query":"first"}' } },
+              { id: "tool-2", type: "function", function: { name: "exploreCode", arguments: '{"query":"second"}' } },
+            ],
+          },
+          requests: [
+            { id: "tool-1", name: "exploreCode", rawArguments: '{"query":"first"}', input: { query: "first" } },
+            { id: "tool-2", name: "exploreCode", rawArguments: '{"query":"second"}', input: { query: "second" } },
+          ],
+        };
+      },
+    });
+
+    const run = collectRunnerMessages(runner);
+    await vi.waitFor(() => expect(starts).toEqual(["tool-1", "tool-2"]));
+    release();
+
+    await expect(run).resolves.toContainEqual({ type: "runFinished", runId: "run-1" });
+  });
+
+  it("runs requests without a concurrency declaration serially", async () => {
+    const starts: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const invoke = vi.fn(async ({ request }) => {
+      starts.push(request.id);
+      if (request.id === "tool-1") await gate;
+      return `${request.id} context`;
+    });
+    let turn = 0;
+    const runner = createReactAgentRunner({
+      tools: [
+        {
+          name: "writeObservation",
+          description: "Write a test observation.",
+          inputSchema: { type: "string" },
+          invoke,
+        },
+      ],
+      modelTurn: async () => {
+        turn += 1;
+        if (turn > 1) return { kind: "final", content: "Used both contexts." };
+        return {
+          kind: "toolRequests",
+          assistantMessage: {
+            role: "assistant",
+            content: "",
+            toolCalls: [
+              { id: "tool-1", type: "function", function: { name: "writeObservation", arguments: '"first"' } },
+              { id: "tool-2", type: "function", function: { name: "writeObservation", arguments: '"second"' } },
+            ],
+          },
+          requests: [
+            { id: "tool-1", name: "writeObservation", rawArguments: '"first"', input: "first" },
+            { id: "tool-2", name: "writeObservation", rawArguments: '"second"', input: "second" },
+          ],
+        };
+      },
+    });
+
+    const run = collectRunnerMessages(runner);
+    await vi.waitFor(() => expect(starts).toEqual(["tool-1"]));
+    release();
+    await run;
+
+    expect(starts).toEqual(["tool-1", "tool-2"]);
+  });
+
+  it("fails before invoking more than ten tool requests", async () => {
+    const queries = Array.from({ length: 11 }, (_, index) => `query-${index + 1}`);
+    const invoke = vi.fn(async () => "unused");
+    const runner = createReactAgentRunner({
+      tools: [
+        {
+          name: "exploreCode",
+          description: "Search code.",
+          inputSchema: { type: "object" },
+          isConcurrencySafe: () => true,
+          invoke,
+        },
+      ],
       modelTurn: async () => ({
         kind: "toolRequests",
         assistantMessage: {
           role: "assistant",
           content: "",
-          toolCalls: names.map((name, index) => ({
+          toolCalls: queries.map((query, index) => ({
             id: `tool-${index + 1}`,
             type: "function" as const,
-            function: { name, arguments: '"input"' },
+            function: { name: "exploreCode", arguments: JSON.stringify({ query }) },
           })),
         },
-        requests: names.map((name, index) => ({
+        requests: queries.map((query, index) => ({
           id: `tool-${index + 1}`,
-          name,
-          rawArguments: '"input"',
-          input: "input",
+          name: "exploreCode",
+          rawArguments: JSON.stringify({ query }),
+          input: { query },
         })),
       }),
     });
@@ -297,11 +399,9 @@ describe("createReactAgentRunner", () => {
     await expect(collectRunnerMessages(runner)).resolves.toContainEqual({
       type: "runFailed",
       runId: "run-1",
-      message: "Too many distinct tool requests in one step: 4",
+      message: "Too many tool requests in one step: 11",
     });
-    for (const invoke of invokes) {
-      expect(invoke).not.toHaveBeenCalled();
-    }
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("reports distinct and safe exploreCode progress for every call", async () => {
@@ -565,6 +665,52 @@ describe("createReactAgentRunner", () => {
       runId: "run-1",
       message: "Model requested tools during the final answer step",
     });
+  });
+
+  it("does not start a safe batch after cancellation", async () => {
+    const controller = new AbortController();
+    const invoke = vi.fn(async () => "unused");
+    const runner = createReactAgentRunner({
+      tools: [
+        {
+          name: "exploreCode",
+          description: "Search code.",
+          inputSchema: { type: "object" },
+          isConcurrencySafe: () => true,
+          invoke,
+        },
+      ],
+      modelTurn: async () => ({
+        kind: "toolRequests",
+        assistantMessage: {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            { id: "tool-1", type: "function", function: { name: "exploreCode", arguments: '{"query":"first"}' } },
+            { id: "tool-2", type: "function", function: { name: "exploreCode", arguments: '{"query":"second"}' } },
+          ],
+        },
+        requests: [
+          { id: "tool-1", name: "exploreCode", rawArguments: '{"query":"first"}', input: { query: "first" } },
+          { id: "tool-2", name: "exploreCode", rawArguments: '{"query":"second"}', input: { query: "second" } },
+        ],
+      }),
+    });
+    const iterator = runner.run({ runId: "run-1", task: "Inspect workspace", signal: controller.signal })[
+      Symbol.asyncIterator
+    ]();
+
+    await iterator.next();
+    await iterator.next();
+    await iterator.next();
+    await expect(iterator.next()).resolves.toEqual({
+      value: { type: "agentEvent", runId: "run-1", message: "Running tool exploreCode (step 1, call 1): first" },
+      done: false,
+    });
+    controller.abort();
+
+    await expect(iterator.next()).resolves.toEqual({ value: undefined, done: true });
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("does not call the model when the run is already cancelled", async () => {

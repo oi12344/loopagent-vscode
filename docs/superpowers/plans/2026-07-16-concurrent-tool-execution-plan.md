@@ -46,7 +46,7 @@ export type ReactAgentTool = {
 
 `exploreCode` 设置 `isConcurrencySafe: () => true`；其他未标记工具默认串行。
 
-- [ ] **步骤 1：写入失败的并发与配对测试**
+- [x] **步骤 1：写入失败的并发与配对测试**
 
 替换 `test/reactAgentRunner.test.ts` 中两个查询合并用例：同一步返回 `tool-1`、`tool-2` 两个 `exploreCode` 请求时，两个 `invoke` 均收到各自原始 query，下一轮消息包含两条真实 observation，不包含 `Combined` 或 `combined into`。
 
@@ -80,7 +80,7 @@ message: "Too many tool requests in one step: 11"
 
 在 `test/providerRegistryCodeContext.test.ts` 将旧的“每个工具每轮一次”断言替换为新的提示词契约：允许同轮独立只读搜索，但禁止精确重复搜索。
 
-- [ ] **步骤 2：运行定向测试并确认红灯**
+- [x] **步骤 2：运行定向测试并确认红灯**
 
 ```powershell
 npm test -- --run test/reactAgentRunner.test.ts test/providerRegistryCodeContext.test.ts
@@ -88,7 +88,7 @@ npm test -- --run test/reactAgentRunner.test.ts test/providerRegistryCodeContext
 
 预期：同名工具仍只执行一次、并发测试只能等到第一个请求、11 个请求未被旧的 3 条上限接受，且生产提示词仍包含旧限制；其他既有用例通过。
 
-- [ ] **步骤 3：实现最小并发批次调度**
+- [x] **步骤 3：实现最小并发批次调度**
 
 在 `reactTypes.ts` 增加可选 `isConcurrencySafe` 类型；在 `exploreCodeTool.ts` 的工具对象中设置：
 
@@ -119,7 +119,7 @@ if (result.requests.length > maxToolRequestsPerStep) {
 "Do not request an exact duplicate search or search again for facts already supported by source evidence.",
 ```
 
-- [ ] **步骤 4：运行定向测试并确认绿灯**
+- [x] **步骤 4：运行定向测试并确认绿灯**
 
 ```powershell
 npm test -- --run test/reactAgentRunner.test.ts test/providerRegistryCodeContext.test.ts
@@ -127,7 +127,7 @@ npm test -- --run test/reactAgentRunner.test.ts test/providerRegistryCodeContext
 
 预期：并发安全同名请求均执行并按 request ID 回灌；未标记工具串行；11 条请求零执行失败；最终回答轮与现有取消/异常行为无回归。
 
-- [ ] **步骤 5：集中验证和真实 E2E**
+- [x] **步骤 5：集中验证和真实 E2E**
 
 独立执行：
 
@@ -147,7 +147,7 @@ npm run test:e2e:code-exploration
 
 记录同轮多个 `exploreCode` 是否均显示 `Running tool exploreCode`、最终回答是否在第 4 步完成，以及答案锚点和源码路径。
 
-- [ ] **步骤 6：更新记录并提交**
+- [x] **步骤 6：更新记录并提交**
 
 在本文追加中文实施结果，记录 RED/GREEN、定向与全量验证、E2E 轨迹及未执行原因（如真实密钥或唯一窗口不可用）。在旧的同名去重设计和查询合并计划顶部追加一行中文注记，指向 `2026-07-16-concurrent-tool-execution-design.md`，说明其运行时策略已被并发执行替代。提交本任务涉及文件：
 
@@ -155,3 +155,12 @@ npm run test:e2e:code-exploration
 git add -- src/extension/agent/reactTypes.ts src/extension/agent/exploreCodeTool.ts src/extension/agent/reactAgentRunner.ts src/extension/model/providerRegistry.ts test/reactAgentRunner.test.ts test/providerRegistryCodeContext.test.ts docs/superpowers/specs/2026-07-16-per-turn-tool-dedup-design.md docs/superpowers/plans/2026-07-16-merged-explore-code-queries-plan.md docs/superpowers/plans/2026-07-16-concurrent-tool-execution-plan.md
 git commit -m "fix(agent): run safe tool requests concurrently"
 ```
+
+## 实施结果
+
+- 首轮 RED：`test/reactAgentRunner.test.ts` 和 `test/providerRegistryCodeContext.test.ts` 共 16 个用例，6 个按预期失败，分别覆盖同名执行、10 条上限、并发、串行和提示词契约；其余 10 个通过。
+- 取消 RED：新增“首个进度事件后取消”回归时，Runner 仍会发出第 2 个安全工具事件；补回请求前与批次调用前的取消检查后通过。
+- GREEN：两份定向测试共 17/17 通过。连续安全请求同时启动，未声明安全性的请求串行，所有工具结果按原 request ID 与原始顺序回灌。
+- 集中验证：`npm run typecheck`、`npm test`（50 个测试文件、283 个用例）、`npm run compile` 和 `git diff --check` 均通过。
+- VSIX：`npm run package:vsix` 成功，产物包含 25 个条目。
+- 真实 E2E：唯一 VSIX E2E 窗口及 CDP 端口已启动，脚本到达插件模型调用后因固定用户数据和环境变量均无 DeepSeek API key 而报 `DeepSeek API key is not configured`。未读取密钥、未重试，故本次没有真实模型答案或同轮并发界面轨迹可记录。

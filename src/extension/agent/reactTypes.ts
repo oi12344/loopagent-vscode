@@ -34,6 +34,7 @@ export type ReactAgentTool = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  isConcurrencySafe?: (input: unknown) => boolean;
   invoke(invocation: ReactAgentToolInvocation): string | Promise<string>;
 };
 

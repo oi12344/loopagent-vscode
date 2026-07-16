@@ -77,8 +77,8 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
       "Only call exploreCode again for a concrete missing fact required to answer the user",
     );
     expect(systemPrompt).toContain("does not overlap previous queries");
-    expect(systemPrompt).toContain("Request each tool at most once per assistant turn");
-    expect(systemPrompt).toContain("request it again in a later turn");
+    expect(systemPrompt).toContain("When separate read-only searches are needed");
+    expect(systemPrompt).toContain("Do not request an exact duplicate search");
     expect(systemPrompt).not.toContain("代码语义索引上下文");
     expect(workspaceIntelligence.buildCodeIntelligencePrompt).toHaveBeenCalledTimes(1);
     expect(workspaceIntelligence.buildCodeIntelligencePrompt).toHaveBeenCalledWith("provider registry model context");

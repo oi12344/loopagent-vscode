@@ -1,5 +1,7 @@
 # ReAct 同轮查询合并实施计划
 
+> 本计划的运行时策略已被 [单轮并发工具执行设计](../specs/2026-07-16-concurrent-tool-execution-design.md) 替代；保留本文作为历史记录。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **目标：** 将同一模型步骤内多个 `exploreCode` 查询合并为一次真实检索，使 5 个同名搜索请求不再因原始请求数量超过上限而失败。

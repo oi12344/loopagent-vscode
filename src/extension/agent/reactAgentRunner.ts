@@ -1,7 +1,6 @@
 import type { HostToWebviewMessage } from "../../shared/messages";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import type { ReactAgentMessage, ReactAgentTool, ReactAgentToolRequest, ReactModelTurn } from "./reactTypes";
-import { MAX_EXPLORE_CODE_QUERY_LENGTH } from "./exploreCodeTool";
 import { createToolRegistry } from "./toolRegistry";
 import { createDefaultReactTools } from "./tools";
 
@@ -19,10 +18,11 @@ export function createReactAgentRunner({
   providerName = "ReAct Agent",
   tools = createDefaultReactTools(),
   maxSteps = 3,
-  maxToolRequestsPerStep = 3,
+  maxToolRequestsPerStep = 10,
   systemPromptProvider,
 }: CreateReactAgentRunnerOptions): AgentRunner {
   const toolRegistry = createToolRegistry(tools);
+  const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
 
   return {
     async *run(request) {
@@ -72,75 +72,53 @@ export function createReactAgentRunner({
             throw new Error("Model requested tools during the final answer step");
           }
 
-          const distinctToolRequestCount = new Set(result.requests.map((request) => request.name)).size;
-          if (distinctToolRequestCount > maxToolRequestsPerStep) {
-            throw new Error(`Too many distinct tool requests in one step: ${distinctToolRequestCount}`);
+          if (result.requests.length > maxToolRequestsPerStep) {
+            throw new Error(`Too many tool requests in one step: ${result.requests.length}`);
           }
 
           messages.push(result.assistantMessage);
-          const usedToolNames = new Set<string>();
-          const combinedExploreCode = combineExploreCodeRequests(result.requests);
+          for (const batch of createToolRequestBatches(result.requests, toolsByName)) {
+            for (const { request, call } of batch.requests) {
+              if (signal.aborted) {
+                return;
+              }
 
-          for (const [requestIndex, request] of result.requests.entries()) {
-            if (signal.aborted) {
-              return;
+              const requestMessage =
+                request.name === "exploreCode"
+                  ? `Running tool exploreCode (step ${step}, call ${call}): ${getExploreCodeQueryPreview(request.input)}`
+                  : `Running tool ${request.name}`;
+              yield { type: "agentEvent", runId, message: requestMessage } satisfies HostToWebviewMessage;
             }
-
-            const call = requestIndex + 1;
-            if (usedToolNames.has(request.name)) {
-              const content = getDuplicateToolObservation(request, combinedExploreCode);
-              yield {
-                type: "agentEvent",
-                runId,
-                message:
-                  combinedExploreCode && request.name === "exploreCode"
-                    ? `Combined duplicate tool exploreCode (step ${step}, call ${call})`
-                    : `Skipped duplicate tool ${request.name} (step ${step}, call ${call})`,
-              } satisfies HostToWebviewMessage;
-              messages.push({ role: "tool", requestId: request.id, name: request.name, content });
-              continue;
-            }
-            usedToolNames.add(request.name);
-
-            const invocationRequest =
-              combinedExploreCode?.firstRequestId === request.id
-                ? {
-                    ...request,
-                    rawArguments: JSON.stringify({ query: combinedExploreCode.query }),
-                    input: { query: combinedExploreCode.query },
-                  }
-                : request;
-
-            const requestMessage =
-              request.name === "exploreCode"
-                ? `Running tool exploreCode (step ${step}, call ${call}): ${getExploreCodeQueryPreview(invocationRequest.input)}`
-                : `Running tool ${request.name}`;
-            yield { type: "agentEvent", runId, message: requestMessage } satisfies HostToWebviewMessage;
-
-            const content = await toolRegistry.invoke(invocationRequest, signal);
-            const observation =
-              combinedExploreCode?.firstRequestId === request.id
-                ? `Combined ${combinedExploreCode.queries.length} exploreCode queries for this step.\n\n${content}`
-                : content;
 
             if (signal.aborted) {
               return;
             }
 
-            if (request.name === "exploreCode") {
-              yield {
-                type: "agentEvent",
-                runId,
-                message: `Tool exploreCode returned (step ${step}, call ${call}): ${observation.length} chars`,
-              } satisfies HostToWebviewMessage;
+            const contents = batch.concurrent
+              ? await Promise.all(batch.requests.map(({ request }) => toolRegistry.invoke(request, signal)))
+              : [await toolRegistry.invoke(batch.requests[0]!.request, signal)];
+
+            if (signal.aborted) {
+              return;
             }
 
-            messages.push({
-              role: "tool",
-              requestId: request.id,
-              name: request.name,
-              content: observation,
-            });
+            for (const [index, { request, call }] of batch.requests.entries()) {
+              const content = contents[index]!;
+              if (request.name === "exploreCode") {
+                yield {
+                  type: "agentEvent",
+                  runId,
+                  message: `Tool exploreCode returned (step ${step}, call ${call}): ${content.length} chars`,
+                } satisfies HostToWebviewMessage;
+              }
+
+              messages.push({
+                role: "tool",
+                requestId: request.id,
+                name: request.name,
+                content,
+              });
+            }
           }
         }
 
@@ -155,69 +133,44 @@ export function createReactAgentRunner({
   };
 }
 
-type CombinedExploreCodeRequests = {
-  firstRequestId: string;
-  queries: string[];
-  query: string;
+type ToolRequestBatch = {
+  concurrent: boolean;
+  requests: Array<{ request: ReactAgentToolRequest; call: number }>;
 };
 
-function combineExploreCodeRequests(
+function createToolRequestBatches(
   requests: ReactAgentToolRequest[],
-): CombinedExploreCodeRequests | undefined {
-  const exploreCodeRequests = requests.filter((request) => request.name === "exploreCode");
-  if (exploreCodeRequests.length < 2) {
-    return undefined;
-  }
+  toolsByName: ReadonlyMap<string, ReactAgentTool>,
+): ToolRequestBatch[] {
+  const batches: ToolRequestBatch[] = [];
 
-  const queries: string[] = [];
-  for (const request of exploreCodeRequests) {
-    const query = getExploreCodeQuery(request.input);
-    if (query === undefined) {
-      return undefined;
+  for (const [index, request] of requests.entries()) {
+    const concurrent = isConcurrencySafe(request, toolsByName);
+    const previous = batches.at(-1);
+    if (concurrent && previous?.concurrent) {
+      previous.requests.push({ request, call: index + 1 });
+      continue;
     }
-    queries.push(query);
+    batches.push({ concurrent, requests: [{ request, call: index + 1 }] });
   }
 
-  const uniqueQueries = [...new Set(queries)];
-  if (uniqueQueries.length < 2) {
-    return undefined;
-  }
-
-  const query = uniqueQueries.join("\n");
-  if (query.length > MAX_EXPLORE_CODE_QUERY_LENGTH) {
-    return undefined;
-  }
-
-  return {
-    firstRequestId: exploreCodeRequests[0]!.id,
-    queries: uniqueQueries,
-    query,
-  };
+  return batches;
 }
 
-function getExploreCodeQuery(input: unknown): string | undefined {
-  if (typeof input !== "object" || input === null || Array.isArray(input)) {
-    return undefined;
-  }
-
-  const query = (input as Record<string, unknown>).query;
-  if (typeof query !== "string") {
-    return undefined;
-  }
-
-  const normalized = query.trim();
-  return normalized.length > 0 ? normalized : undefined;
-}
-
-function getDuplicateToolObservation(
+function isConcurrencySafe(
   request: ReactAgentToolRequest,
-  combinedExploreCode: CombinedExploreCodeRequests | undefined,
-): string {
-  if (combinedExploreCode && request.name === "exploreCode") {
-    return `Tool exploreCode query was combined into request ${combinedExploreCode.firstRequestId} for this step. Review the combined observation before requesting it again in a later step.`;
+  toolsByName: ReadonlyMap<string, ReactAgentTool>,
+): boolean {
+  const tool = toolsByName.get(request.name);
+  if (!tool?.isConcurrencySafe) {
+    return false;
   }
 
-  return `Tool ${request.name} was skipped because each tool can run only once per step. Review the earlier observation before requesting it again in a later step.`;
+  try {
+    return tool.isConcurrencySafe(request.input);
+  } catch {
+    return false;
+  }
 }
 
 function getExploreCodeQueryPreview(input: unknown): string {

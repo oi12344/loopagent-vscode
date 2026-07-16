@@ -9,6 +9,7 @@ export function createExploreCodeTool(workspaceIntelligence: WorkspaceIntelligen
   return {
     name: "exploreCode",
     description: "Search the current workspace for code relevant to a repository implementation question.",
+    isConcurrencySafe: () => true,
     inputSchema: {
       type: "object",
       properties: {
