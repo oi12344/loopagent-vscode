@@ -22,6 +22,7 @@ import {
   createSqliteIndexWorkerClient,
   type SqliteIndexWorkerClient,
 } from "./storage/sqliteIndexWorkerClient";
+import { createLruCache } from "./util/lruCache";
 
 export { detectWorkspaceLanguageId, isIndexableWorkspacePath } from "./indexing/workspaceFilePolicy";
 
@@ -78,11 +79,11 @@ export function createVsCodeWorkspaceIntelligence(
   vscodeApi: VsCodeWorkspaceApi,
   options: CreateVsCodeWorkspaceIntelligenceOptions = {},
 ): WorkspaceIntelligence & { dispose(): Promise<void> } {
-  const sourceCache = new Map<string, string>();
   const dirtyPaths = new Set<string>();
   const deletedPaths = new Set<string>();
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const maxWorkspaceFiles = options.maxWorkspaceFiles ?? DEFAULT_MAX_WORKSPACE_FILES;
+  const sourceCache = createLruCache<string, string>(maxWorkspaceFiles);
   const {
     parserRuntime,
     maxWorkspaceFiles: _maxWorkspaceFiles,

@@ -9,6 +9,7 @@ import type { ExtractionResult, LanguageAdapter } from "./languages/languageAdap
 import type { ParsedSource, ParserRuntime } from "./parser/parserRuntime";
 import { resolveImportBindings } from "./resolution/modulePathResolver";
 import { resolveReferences } from "./resolution/referenceResolver";
+import { createLruCache } from "./util/lruCache";
 
 export type CodeIndexStatus = "idle" | "indexing" | "ready" | "partial" | "failed";
 
@@ -63,7 +64,7 @@ type CachedExtraction = {
 export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): WorkspaceIntelligence {
   const adapters = [createTypeScriptAdapter(), createPythonAdapter()];
   const budgets = { ...DEFAULT_BUDGETS, ...deps.budgets };
-  const extractionCacheByFile = new Map<string, CachedExtraction>();
+  const extractionCacheByFile = createLruCache<string, CachedExtraction>(budgets.maxFiles);
   let status: CodeIndexStatus = "idle";
   let diagnostics: IndexDiagnostic[] = [];
 
