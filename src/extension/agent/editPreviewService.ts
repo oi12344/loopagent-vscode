@@ -210,11 +210,15 @@ async function stageProposal(vscodeApi: VsCodeEditApi, changes: readonly EditOpe
 
       const snapshot = await getSnapshot(vscodeApi, snapshots, path, uri);
       const current = replacementTargets.get(path) ?? snapshot.content;
-      const firstMatch = current.indexOf(change.oldText);
-      if (firstMatch < 0 || current.indexOf(change.oldText, firstMatch + change.oldText.length) >= 0) {
-        throw new Error("Invalid replace operation: oldText must match exactly once");
+      const { match, matchCount } = findTextMatch(current, change.oldText);
+      if (match === null) {
+        throw new Error(matchCount === 0
+          ? "Invalid replace operation: oldText not found in file"
+          : `Invalid replace operation: oldText matches ${matchCount} times (expected exactly 1)`);
       }
-      replacementTargets.set(path, `${current.slice(0, firstMatch)}${change.newText}${current.slice(firstMatch + change.oldText.length)}`);
+      const detectedLineEnding = detectLineEnding(current);
+      const normalizedNewText = normalizeLineEndings(change.newText, detectedLineEnding);
+      replacementTargets.set(path, `${current.slice(0, match.index)}${normalizedNewText}${current.slice(match.index + match.text.length)}`);
       if (!plan.some((item) => item.kind === "replace" && item.path === path)) {
         plan.push({ kind: "replace", path, source: snapshot, target: "" });
       }
@@ -466,4 +470,37 @@ function fullDocumentRange(vscodeApi: VsCodeEditApi, content: string): vscode.Ra
 
 function normalizeWorkspacePath(rawPath: string): string {
   return normalizePathSeparators(rawPath).trim();
+}
+
+function detectLineEnding(text: string): "\r\n" | "\n" {
+  return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
+function normalizeLineEndings(text: string, targetEnding: "\r\n" | "\n"): string {
+  return text.replace(/\r\n|\r|\n/g, targetEnding);
+}
+
+function findTextMatch(haystack: string, needle: string): { match: { index: number; text: string } | null; matchCount: number } {
+  const variants = [
+    needle,
+    normalizeLineEndings(needle, "\r\n"),
+    normalizeLineEndings(needle, "\n"),
+  ];
+  const uniqueVariants = [...new Set(variants)];
+
+  let totalMatches = 0;
+  let firstMatch = null;
+
+  for (const variant of uniqueVariants) {
+    let index = 0;
+    while ((index = haystack.indexOf(variant, index)) !== -1) {
+      if (firstMatch === null) {
+        firstMatch = { index, text: variant };
+      }
+      totalMatches += 1;
+      index += variant.length;
+    }
+  }
+
+  return { match: totalMatches === 1 ? firstMatch : null, matchCount: totalMatches };
 }

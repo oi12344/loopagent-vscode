@@ -395,4 +395,37 @@ describe("code generation edit tools", () => {
     ).resolves.toContain("cancelled");
     expect(cancelled.applyEdit).not.toHaveBeenCalled();
   });
+
+  it("handles line ending differences between model output and file content", async () => {
+    const crlfFile = "line1\r\nline2\r\nline3";
+    const fake = createFakeVsCodeApi({ "src/crlf.ts": crlfFile }, { reviewChoice: "accept" });
+    const service = createEditPreviewService(fake.api);
+
+    await expect(
+      service.apply(
+        [{ kind: "replace", path: "src/crlf.ts", oldText: "line1\nline2", newText: "changed\nline2" }],
+        new AbortController().signal,
+      ),
+    ).resolves.toContain("applied");
+
+    expect(fake.applyEdit).toHaveBeenCalledOnce();
+    const edit = fake.applyEdit.mock.calls[0]?.[0] as FakeWorkspaceEdit;
+    const replaceEntry = edit.entries.find((e) => e.kind === "replace");
+    expect(replaceEntry).toBeDefined();
+    expect((replaceEntry as { kind: "replace"; text: string }).text).toBe("changed\r\nline2\r\nline3");
+  });
+
+  it("reports distinct error messages for missing vs duplicate oldText", async () => {
+    const fake1 = createFakeVsCodeApi({ "src/example.ts": "content here" }, { reviewChoice: "accept" });
+    const service1 = createEditPreviewService(fake1.api);
+    await expect(
+      service1.apply([{ kind: "replace", path: "src/example.ts", oldText: "missing", newText: "new" }], new AbortController().signal),
+    ).rejects.toThrow("oldText not found in file");
+
+    const fake2 = createFakeVsCodeApi({ "src/dup.ts": "dup dup dup" }, { reviewChoice: "accept" });
+    const service2 = createEditPreviewService(fake2.api);
+    await expect(
+      service2.apply([{ kind: "replace", path: "src/dup.ts", oldText: "dup", newText: "changed" }], new AbortController().signal),
+    ).rejects.toThrow("matches 3 times");
+  });
 });
