@@ -15,6 +15,20 @@ const exploreCodeTool: ReactAgentTool = {
   invoke: async () => "unused",
 };
 
+const readFileTool: ReactAgentTool = {
+  name: "readFile",
+  description: "Read a file.",
+  inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false },
+  invoke: async () => "unused",
+};
+
+const applyEditTool: ReactAgentTool = {
+  name: "applyEdit",
+  description: "Apply edits.",
+  inputSchema: { type: "object", properties: { changes: { type: "array" } }, required: ["changes"], additionalProperties: false },
+  invoke: async () => "unused",
+};
+
 function createProvider(events: ModelStreamEvent[]): ModelProvider {
   return {
     id: "test",
@@ -151,6 +165,32 @@ describe("createOpenAiReactModelTurn", () => {
         },
       },
     ]);
+  });
+
+  it("only exposes the forced tool when tool choice targets a specific function", async () => {
+    let seenTools: Array<{ function: { name: string } }> | undefined;
+    let seenToolChoice: unknown;
+    const provider: ModelProvider = {
+      id: "test",
+      displayName: "Test",
+      async *stream(request) {
+        seenTools = request.tools as Array<{ function: { name: string } }>;
+        seenToolChoice = request.toolChoice;
+        yield { type: "toolCallDelta", index: 0, id: "call_1", name: "applyEdit", argumentsDelta: '{"changes":[]}' } as const;
+        yield { type: "finishReason", reason: "tool_calls" } as const;
+      },
+    };
+    const modelTurn = createOpenAiReactModelTurn({ provider, tools: [readFileTool, exploreCodeTool, applyEditTool] });
+
+    await modelTurn({
+      messages: [{ role: "user", content: "Edit the file." }],
+      signal: new AbortController().signal,
+      toolChoice: { type: "function", function: { name: "applyEdit" } },
+    });
+
+    // 只暴露被强制的工具，防止模型改调其它工具（DeepSeek 不严格遵守 tool_choice 的具体函数约束）。
+    expect(seenTools?.map((tool) => tool.function.name)).toEqual(["applyEdit"]);
+    expect(seenToolChoice).toEqual({ type: "function", function: { name: "applyEdit" } });
   });
 
   it("passes the requested tool choice to the provider", async () => {

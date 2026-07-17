@@ -24,13 +24,18 @@ export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReac
     let finishReason: string | undefined;
     const pendingCalls = new Map<number, PendingToolCall>();
 
+    // 当 toolChoice 强制某个具体函数时，只暴露该函数：部分模型（如 DeepSeek）不严格遵守
+    // tool_choice 的具体函数约束，会改调其它可用工具。仅保留目标工具可确保它一定被调用。
+    const forcedToolName = typeof toolChoice === "object" ? toolChoice.function.name : undefined;
+    const activeTools = forcedToolName ? tools.filter((tool) => tool.name === forcedToolName) : tools;
+
     for await (const event of provider.stream({
       messages: messages.map(toModelMessage),
       signal,
       tools:
         toolChoice === "none"
           ? undefined
-          : tools.map((tool) => ({
+          : activeTools.map((tool) => ({
               type: "function",
               function: {
                 name: tool.name,
