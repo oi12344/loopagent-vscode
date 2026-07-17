@@ -1,6 +1,9 @@
 import type { CodeNode } from "./graphTypes";
 import { createSearchTokens } from "../chunking/searchText";
 
+// Simple in-memory inverted index for fallback search. This is part of the in-memory WorkspaceIntelligence
+// fallback path and is independent from the SQLite FTS5 index (search_index_fts table in sqliteIndexStore.ts).
+// Changes to this do not affect the persistent index and vice versa.
 export type SearchIndex = {
   addNode(node: CodeNode): void;
   search(query: string, limit?: number): string[];

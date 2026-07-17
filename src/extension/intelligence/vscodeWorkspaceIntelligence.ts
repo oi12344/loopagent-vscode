@@ -8,7 +8,7 @@ import { renderPersistedCodeIntelligencePrompt } from "./context/codeIntelligenc
 import { createWorkspaceIndexer, type WorkspaceFileRef, type WorkspaceIndexer } from "./indexing/workspaceIndexer";
 import type { ParserRuntime } from "./parser/parserRuntime";
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
@@ -110,6 +110,10 @@ export function createVsCodeWorkspaceIntelligence(
     queuePersistentChange(uri, "delete");
   });
 
+  // Fallback in-memory search intelligence. This is the primary source for status/diagnostics,
+  // and is used as a fallback path when the persistent SQLite index is unavailable or fails.
+  // Triggered when: (1) persistentClient uninitialized, (2) not the writer role in multi-window,
+  // (3) SQLite searchNodes/searchCodeChunks fails, or (4) query result is empty.
   const memoryIntelligence = createWorkspaceIntelligence({
     budgets,
     parserRuntime,
@@ -174,14 +178,22 @@ export function createVsCodeWorkspaceIntelligence(
   return {
     async buildCodeIntelligencePrompt(query) {
       await persistenceReady;
+      // Try SQLite FTS path first (persistent index)
       if (persistentClient) {
         try {
-          const prompt = renderPersistedCodeIntelligencePrompt(query, await persistentClient.searchCodeChunks(query, 6));
+          const [nodes, chunks] = await Promise.all([
+            persistentClient.searchNodes(query, 12),
+            persistentClient.searchCodeChunks(query, 6),
+          ]);
+          const prompt = renderPersistedCodeIntelligencePrompt(query, nodes, chunks);
           if (prompt) return prompt;
         } catch (error) {
           recordPersistentError(error);
         }
       }
+      // Fallback to in-memory search when persistent index is unavailable or fails.
+      // This handles: (1) no workspace folders, (2) multiple windows (non-writer), (3) startup races,
+      // (4) SQLite initialization failures, (5) query errors in the persistent path.
       return memoryIntelligence.buildCodeIntelligencePrompt(query);
     },
     getStatus: () => memoryIntelligence.getStatus(),
@@ -254,11 +266,9 @@ daemon.log
 daemon.pid
 `;
     try {
-      // Write .gitignore using filesystem API
-      // Note: In a real implementation, this should use vscode fs API or node fs
-      // For now, we'll skip this to avoid complications with the async API
+      await writeFile(gitignorePath, gitignoreContent, "utf8");
     } catch (error) {
-      // Silently fail if .gitignore creation fails
+      recordPersistentError(error);
     }
   }
 

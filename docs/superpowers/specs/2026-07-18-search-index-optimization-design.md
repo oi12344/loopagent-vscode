@@ -514,6 +514,56 @@ describe("SQLite FTS Search Index", () => {
 ❌ 全局符号索引（vs VS Code 内置）
 ❌ 超过 50K 符号的工作区支持（可后续扩展）
 
+## 实施与原设计的差异
+
+### 字段扩展（非破坏性）
+
+`searchNodes()` 返回类型 `SearchNodeResult` 实际新增字段：
+- `qualifiedName` — 带模块前缀的符号名称
+- `kind` — 符号类型（function/class/interface/variable）
+- `startLine`, `endLine` — 符号在源文件中的行号范围
+
+原设计在 "索引存储层" 表描述中已列出这些字段，但返回类型定义中未记录。实现时为支持"精确符号匹配"渲染段（见下）而补充。
+
+### 渲染层实际改动位置
+
+原设计假定 `WorkspaceIntelligence.buildCodeIntelligencePrompt` 即可修改；实际改动位置是：
+- `src/extension/intelligence/vscodeWorkspaceIntelligence.ts` — 双路径协调，SQLite + 降级
+- `src/extension/intelligence/context/codeIntelligencePrompt.ts` — 新增"### 精确符号匹配"渲染段
+- `src/extension/intelligence/workspaceIntelligence.ts` — **保持未改动**，纯内存降级路径
+
+这是因为 `workspaceIntelligence.ts` 是内存降级专用、不涉及持久化的模块。修改点在包装层（vscodeWorkspaceIntelligence），保持隔离。
+
+### P3.2 集成测试发现的 bug
+
+集成测试过程中发现并修复：测试夹具 `createAsyncStore()` 缺失 `indexNodeSearchTokens()` 方法实现，导致文件元数据永不更新、文件被误判为"内容变化"而重复解析。修复见：
+- `test/intelligence/testSupport/asyncSqliteStore.ts` — 完整的测试夹具实现
+- `test/intelligence/workspaceIndexer.test.ts` — 改用共享夹具
+- 连带修复 2 个既有测试失败（"reindexes unchanged files"、"keeps SQLite synchronized"）
+
+### P4.1 性能基准实测 vs 预期
+
+原设计"性能基准（预期）"表格预期 10K 符号 <10ms；实测 **~7ms**（标准差内）。
+
+| 工作区规模 | 原设计预期 | P4.1 实测 | 改进幅度 |
+|---------|--------|--------|--------|
+| 1K 符号 | <5ms | ~2ms | 2.5x |
+| 10K 符号 | <10ms | ~7ms | 1.4x |
+
+SQLite FTS5 BM25 排序的有效性好于预期，精确匹配和前缀匹配定位迅速。
+
+### P4.2 决策：保留内存降级
+
+原设计 P4.2 列出两个选项（保留 vs 删除），最终决策：**保留内存降级，仅补充注释说明**。
+
+理由：
+1. 内存路径在实际工作中被活跃使用（非 writer、SQLite 失败、初始化延迟）
+2. `getStatus()`/`getDiagnostics()` 始终由内存路径提供，与 SQLite 成功否无关
+3. 风险表中两条缓解策略明确依赖"降级到内存路径"
+4. 删除需要重写 4 个测试文件（>1000 行），收益不足
+
+详见 `docs/superpowers/plans/2026-07-18-search-index-optimization-plan.md` 的 P4.2 节。
+
 ## 后续优化机会
 
 1. **分布式索引**：大型单体仓库可按目录分片索引

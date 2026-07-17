@@ -212,12 +212,31 @@ BENCH_SCALE=full npm test -- benchmark-search-index
 - [x] 测试框架可集成到 CI/CD
 
 #### P4.2 可选：内存搜索代码清理
-- 任务：
-  - [ ] 如果 SQLite 路径稳定 → 保留内存搜索作为降级
-  - [ ] 或直接删除内存 SearchIndex 类（需完整测试）
-  - [ ] 更新注释说明为何需要降级
-- 预期耗时：1-2h
-- 优先级：低（兼容性优先）
+
+**完成记录（2026-07-18）：**
+
+**决策：保留内存降级路径，不删除。改为注释说明。**
+
+理由：
+1. 内存降级不是"死代码"，在以下场景被活跃使用：
+   - `persistentClient` 未初始化成功（无工作区、`mkdir` 失败、权限错误）
+   - 多窗口场景下非 writer 角色的窗口
+   - SQLite 查询抛错或返回空结果
+   - 工作区启动的竞速条件（持久化索引未就绪）
+2. `getStatus()` 和 `getDiagnostics()` 始终委托给 `memoryIntelligence`，与 SQLite 成功否无关
+3. 删除内存实现需要重写 4 个测试文件（>1000 行代码），且原计划文档本身标记此项为"优先级：低（兼容性优先）"
+4. 风险表中两条缓解策略（行 235, 238）明确依赖"降级到内存路径"
+
+**实施内容（纯注释，无逻辑改动）：**
+- `src/extension/intelligence/vscodeWorkspaceIntelligence.ts`
+  - 在 `memoryIntelligence` 声明处（~113 行）加注释说明为降级路径源
+  - 在 `buildCodeIntelligencePrompt`（~178-195 行）加注释列出降级触发场景
+- `src/extension/intelligence/workspaceIntelligence.ts`
+  - 在 `createWorkspaceIntelligence` 函数（~58 行）加注释说明为纯内存降级实现，禁止新增持久化逻辑
+- `src/extension/intelligence/graph/searchIndex.ts`
+  - 在 `createSearchIndex` 函数（~9 行）加注释说明为降级路径专用的倒排索引，独立于 SQLite FTS
+
+**验证：** `npm run typecheck` + `npm test` 全量通过（预期零回归，因为只改注释不改逻辑）
 
 #### P4.3 文档更新
 - [x] CLAUDE.md：更新索引配置说明

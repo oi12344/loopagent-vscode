@@ -55,6 +55,11 @@ type CachedExtraction = {
   result: ExtractionResult;
 };
 
+// In-memory, full-workspace code intelligence provider. This implementation re-parses and re-indexes
+// the entire workspace on every buildCodeIntelligencePrompt query, making it suitable for fallback
+// when SQLite persistent index is unavailable/fails. It is NOT the primary search path — see
+// vscodeWorkspaceIntelligence.ts which tries persistent SQLite first, then falls back to this.
+// Do not add persistence logic here; keep it pure in-memory for isolation from the SQLite layer.
 export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): WorkspaceIntelligence {
   const adapters = [createTypeScriptAdapter(), createPythonAdapter()];
   const budgets = { ...DEFAULT_BUDGETS, ...deps.budgets };
