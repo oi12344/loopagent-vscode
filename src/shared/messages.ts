@@ -36,6 +36,11 @@ export type HostToWebviewMessage =
       message: string;
     }
   | {
+      type: "assistantReasoningDelta";
+      runId: string;
+      content: string;
+    }
+  | {
       type: "assistantDelta";
       runId: string;
       content: string;

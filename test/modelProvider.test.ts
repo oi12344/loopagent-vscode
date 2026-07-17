@@ -37,16 +37,16 @@ describe("createModelRunner", () => {
       { type: "runStarted", runId: "run-1", task: "Inspect workspace" },
       { type: "assistantStarted", runId: "run-1", provider: "Test Model" },
       { type: "assistantThinking", runId: "run-1", message: "Calling Test Model" },
-      { type: "assistantThinking", runId: "run-1", message: "Received model reasoning signal" },
+      { type: "assistantReasoningDelta", runId: "run-1", content: "private raw reasoning" },
       { type: "assistantDelta", runId: "run-1", content: "The " },
       { type: "assistantDelta", runId: "run-1", content: "workspace is ready." },
       { type: "assistantFinished", runId: "run-1" },
       { type: "runFinished", runId: "run-1" },
     ]);
-    expect(hostMessages).not.toContainEqual({
-      type: "assistantThinking",
+    expect(hostMessages).toContainEqual({
+      type: "assistantReasoningDelta",
       runId: "run-1",
-      message: "private raw reasoning",
+      content: "private raw reasoning",
     });
   });
 });

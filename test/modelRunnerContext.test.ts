@@ -22,6 +22,34 @@ async function collectHostMessages(
 }
 
 describe("createModelRunner runtime context", () => {
+  it("forwards provider reasoning deltas without replacing their content", async () => {
+    const provider: ModelProvider = {
+      id: "test",
+      displayName: "Test Model",
+      stream: async function* () {
+        yield { type: "reasoningDelta", content: "Inspecting the active file. " };
+        yield { type: "reasoningDelta", content: "Checking related callers." };
+        yield { type: "contentDelta", content: "Done." };
+      },
+    };
+
+    const hostMessages = await collectHostMessages(createModelRunner({ provider }), "Inspect code");
+
+    expect(hostMessages).toContainEqual({
+      type: "assistantReasoningDelta",
+      runId: "run-1",
+      content: "Inspecting the active file. ",
+    });
+    expect(hostMessages).toContainEqual({
+      type: "assistantReasoningDelta",
+      runId: "run-1",
+      content: "Checking related callers.",
+    });
+    expect(hostMessages.some((message) => (
+      message.type === "assistantThinking" && message.message === "Received model reasoning signal"
+    ))).toBe(false);
+  });
+
   it("adds a dynamic runtime context system message for each run", async () => {
     const capturedMessages: ModelMessage[][] = [];
     const provider: ModelProvider = {
