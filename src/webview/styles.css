@@ -18,32 +18,76 @@ body {
 button,
 textarea {
   font: inherit;
+  min-width: 0;
 }
 
 .app-shell {
   box-sizing: border-box;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 8px;
   height: 100vh;
   min-width: 0;
-  padding: 10px;
+  padding: 8px;
 }
 
 .app-header {
   align-items: center;
-  border-bottom: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border-bottom: 0;
   display: flex;
   gap: 8px;
   justify-content: space-between;
-  padding-bottom: 8px;
+  min-width: 0;
+  padding-bottom: 0;
 }
 
 h1 {
+  flex: 0 0 auto;
   font-size: 14px;
   font-weight: 600;
   line-height: 1.25;
   margin: 0;
+}
+
+.header-meta,
+.task-suggestions {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.header-meta {
+  align-items: center;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+}
+
+.status-pill {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.status-dot {
+  background: var(--vscode-testing-iconPassed);
+  border-radius: 50%;
+  display: inline-block;
+  height: 6px;
+  margin-right: 5px;
+  width: 6px;
+}
+
+.status-running .status-dot {
+  background: var(--vscode-charts-yellow);
+}
+
+.active-model {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-pill,
@@ -63,8 +107,9 @@ h1 {
 .chat-log {
   align-content: start;
   display: grid;
-  gap: 10px;
+  gap: 8px;
   min-height: 0;
+  min-width: 0;
   overflow: auto;
   padding-right: 2px;
 }
@@ -76,35 +121,59 @@ h1 {
   text-align: center;
 }
 
+.task-suggestions {
+  align-self: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  justify-self: stretch;
+}
+
+.suggestion-button {
+  background: var(--vscode-textBlockQuote-background, transparent);
+  border: 1px solid var(--vscode-panel-border, transparent);
+  color: var(--vscode-foreground);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
 .message {
-  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border: 1px solid var(--vscode-panel-border, transparent);
   border-radius: 6px;
   box-sizing: border-box;
   display: grid;
   gap: 8px;
   max-width: 100%;
+  min-width: 0;
   padding: 9px 10px;
 }
 
 .message-user {
+  background: var(--vscode-input-background);
+  border-color: transparent;
   justify-self: end;
-  max-width: 92%;
+  max-width: 94%;
 }
 
 .message-assistant {
-  background: var(--vscode-sideBar-background, transparent);
+  background: transparent;
+  border-color: transparent;
   justify-self: stretch;
+  padding-inline: 2px;
 }
 
 .message-error {
-  border-color: var(--vscode-errorForeground, #f14c4c);
+  border-inline-start-color: var(--vscode-errorForeground);
 }
 
 .message-meta {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   justify-content: space-between;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .message-body {
@@ -118,8 +187,10 @@ h1 {
 }
 
 .process-details {
-  border-left: 2px solid var(--vscode-textLink-foreground, #3794ff);
-  padding-left: 8px;
+  background: var(--vscode-textBlockQuote-background, transparent);
+  border-left: 2px solid var(--vscode-textLink-foreground);
+  min-width: 0;
+  padding: 6px 8px;
 }
 
 .process-details summary {
@@ -127,6 +198,7 @@ h1 {
   cursor: pointer;
   font-size: 12px;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .process-details ol {
@@ -156,9 +228,10 @@ h1 {
 
 .chat-composer {
   background: var(--vscode-editor-background);
-  border-top: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border-top: 1px solid var(--vscode-panel-border, transparent);
   display: grid;
   gap: 6px;
+  min-width: 0;
   padding-top: 8px;
   position: sticky;
   bottom: 0;
@@ -183,7 +256,7 @@ textarea {
 }
 
 textarea:focus {
-  border-color: var(--vscode-focusBorder, var(--vscode-input-border, #007fd4));
+  border-color: var(--vscode-focusBorder, var(--vscode-input-border, transparent));
   outline: none;
 }
 
@@ -198,12 +271,14 @@ textarea:focus {
 .composer-tools {
   align-items: center;
   display: flex;
+  flex: 1 1 auto;
   flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
 }
 
 .tool-menu-anchor {
+  min-width: 0;
   position: relative;
 }
 
@@ -219,7 +294,7 @@ button {
 
 .chip-button {
   background: var(--vscode-toolbar-hoverBackground, transparent);
-  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border: 1px solid var(--vscode-panel-border, transparent);
   color: var(--vscode-foreground);
   max-width: 180px;
   min-width: 0;
@@ -244,10 +319,9 @@ button:disabled {
 
 .composer-menu {
   background: var(--vscode-dropdown-background);
-  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #3c3c3c));
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
   border-radius: 6px;
   bottom: calc(100% + 6px);
-  box-shadow: 0 4px 18px rgb(0 0 0 / 28%);
   display: grid;
   gap: 2px;
   left: 0;
@@ -283,21 +357,30 @@ button:disabled {
 }
 
 @media (max-width: 340px) {
+  .app-header {
+    align-items: flex-start;
+  }
+
   .composer-toolbar {
     align-items: stretch;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .composer-tools {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
   }
 
+  .tool-menu-anchor,
   .chip-button,
   .composer-toolbar > button {
     width: 100%;
   }
 
   .composer-menu {
-    min-width: min(240px, calc(100vw - 24px));
+    max-width: calc(100vw - 16px);
+    min-width: 0;
+    width: min(240px, calc(100vw - 16px));
   }
 }
