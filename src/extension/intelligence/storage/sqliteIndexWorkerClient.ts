@@ -1,9 +1,13 @@
 import type { SqliteCapabilities } from "./sqliteCapabilities";
+import type { ExtractionSnapshot } from "./indexTypes";
 import type {
   ClaimedIndexJob,
+  FileMetadataUpdate,
   IndexChange,
   IndexWorkerStatus,
+  StoredFileMetadata,
   StoredIndexJob,
+  StoredCodeChunk,
   SqliteWorkerMessage,
   SqliteWorkerRequest,
   SqliteWorkerResponse,
@@ -29,6 +33,11 @@ export type SqliteIndexWorkerClient = {
   probe(databasePath: string): Promise<SqliteCapabilities>;
   initialize(databasePath: string, ownerId: string): Promise<IndexWorkerStatus>;
   enqueueChanges(changes: readonly IndexChange[]): Promise<void>;
+  applyFileSnapshot(snapshot: ExtractionSnapshot): Promise<void>;
+  listIndexedFiles(): Promise<StoredFileMetadata[]>;
+  updateFileMetadata(update: FileMetadataUpdate): Promise<void>;
+  removeFile(fileUri: string): Promise<void>;
+  searchCodeChunks(query: string, limit: number): Promise<StoredCodeChunk[]>;
   getPendingJobs(): Promise<StoredIndexJob[]>;
   claimNextJob(ownerId: string): Promise<ClaimedIndexJob | undefined>;
   completeJob(claim: ClaimedIndexJob): Promise<void>;
@@ -70,6 +79,26 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
 
   enqueueChanges(changes: readonly IndexChange[]): Promise<void> {
     return this.request((id) => ({ id, kind: "enqueueChanges", changes }));
+  }
+
+  applyFileSnapshot(snapshot: ExtractionSnapshot): Promise<void> {
+    return this.request((id) => ({ id, kind: "applyFileSnapshot", snapshot }));
+  }
+
+  listIndexedFiles(): Promise<StoredFileMetadata[]> {
+    return this.request((id) => ({ id, kind: "listIndexedFiles" }));
+  }
+
+  updateFileMetadata(update: FileMetadataUpdate): Promise<void> {
+    return this.request((id) => ({ id, kind: "updateFileMetadata", update }));
+  }
+
+  removeFile(fileUri: string): Promise<void> {
+    return this.request((id) => ({ id, kind: "removeFile", fileUri }));
+  }
+
+  searchCodeChunks(query: string, limit: number): Promise<StoredCodeChunk[]> {
+    return this.request((id) => ({ id, kind: "searchCodeChunks", query, limit }));
   }
 
   getPendingJobs(): Promise<StoredIndexJob[]> {

@@ -4,11 +4,33 @@ import {
   type WorkspaceIntelligenceBudgets,
   type WorkspaceSourceFile,
 } from "./workspaceIntelligence";
+import { renderPersistedCodeIntelligencePrompt } from "./context/codeIntelligencePrompt";
+import { createWorkspaceIndexer, type WorkspaceFileRef, type WorkspaceIndexer } from "./indexing/workspaceIndexer";
 import type { ParserRuntime } from "./parser/parserRuntime";
+import { randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
+
+import {
+  detectWorkspaceLanguageId,
+  isIndexableWorkspacePath,
+  normalizePathSeparators,
+} from "./indexing/workspaceFilePolicy";
+import {
+  createSqliteIndexWorkerClient,
+  type SqliteIndexWorkerClient,
+} from "./storage/sqliteIndexWorkerClient";
+
+export { detectWorkspaceLanguageId, isIndexableWorkspacePath } from "./indexing/workspaceFilePolicy";
 
 export type WorkspaceUri = {
   fsPath: string;
+  toString?(): string;
 };
+
+export type WorkspaceFileStat = { mtime: number; size: number };
 
 export type WorkspaceFolder = {
   uri: WorkspaceUri;
@@ -24,10 +46,14 @@ export type VsCodeFileSystemWatcher = {
 };
 
 export type VsCodeWorkspaceApi = {
+  Uri?: {
+    parse(value: string): WorkspaceUri;
+  };
   workspace: {
     workspaceFolders?: readonly WorkspaceFolder[];
     findFiles(include: string, exclude?: string | null, maxResults?: number): MaybePromise<readonly WorkspaceUri[]>;
     fs: {
+      stat?(uri: WorkspaceUri): MaybePromise<WorkspaceFileStat>;
       readFile(uri: WorkspaceUri): MaybePromise<Uint8Array>;
     };
     createFileSystemWatcher?(globPattern: string): VsCodeFileSystemWatcher;
@@ -38,6 +64,8 @@ export type VsCodeWorkspaceApi = {
 export type CreateVsCodeWorkspaceIntelligenceOptions = Partial<WorkspaceIntelligenceBudgets> & {
   maxWorkspaceFiles?: number;
   parserRuntime?: ParserRuntime;
+  storageUri?: WorkspaceUri;
+  createIndexClient?: () => SqliteIndexWorkerClient;
 };
 
 const DEFAULT_MAX_FILE_BYTES = 100_000;
@@ -49,20 +77,40 @@ const SOURCE_EXCLUDE_PATTERN =
 export function createVsCodeWorkspaceIntelligence(
   vscodeApi: VsCodeWorkspaceApi,
   options: CreateVsCodeWorkspaceIntelligenceOptions = {},
-): WorkspaceIntelligence {
+): WorkspaceIntelligence & { dispose(): Promise<void> } {
   const sourceCache = new Map<string, string>();
   const dirtyPaths = new Set<string>();
   const deletedPaths = new Set<string>();
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
   const maxWorkspaceFiles = options.maxWorkspaceFiles ?? DEFAULT_MAX_WORKSPACE_FILES;
-  const { parserRuntime, maxWorkspaceFiles: _maxWorkspaceFiles, ...budgets } = options;
+  const {
+    parserRuntime,
+    maxWorkspaceFiles: _maxWorkspaceFiles,
+    storageUri,
+    createIndexClient,
+    ...budgets
+  } = options;
+  let persistentClient: SqliteIndexWorkerClient | undefined;
+  let persistentIndexer: WorkspaceIndexer | undefined;
+  let persistentIndexStart: Promise<void> | undefined;
+  let persistentDiagnostic: string | undefined;
+  let disposePromise: Promise<void> | undefined;
 
   const watcher = vscodeApi.workspace.createFileSystemWatcher?.(SOURCE_INCLUDE_PATTERN);
-  watcher?.onDidCreate((uri) => markDirty(uri));
-  watcher?.onDidChange((uri) => markDirty(uri));
-  watcher?.onDidDelete((uri) => markDeleted(uri));
+  watcher?.onDidCreate((uri) => {
+    markDirty(uri);
+    queuePersistentChange(uri, "create");
+  });
+  watcher?.onDidChange((uri) => {
+    markDirty(uri);
+    queuePersistentChange(uri, "change");
+  });
+  watcher?.onDidDelete((uri) => {
+    markDeleted(uri);
+    queuePersistentChange(uri, "delete");
+  });
 
-  return createWorkspaceIntelligence({
+  const memoryIntelligence = createWorkspaceIntelligence({
     budgets,
     parserRuntime,
     async readWorkspaceFiles() {
@@ -118,6 +166,110 @@ export function createVsCodeWorkspaceIntelligence(
       return readSourceRangeFromText(sourceCache.get(normalizePathSeparators(filePath)) ?? "", startLine, endLine);
     },
   });
+  const persistenceReady = storageUri ? startPersistentIndex().catch(recordPersistentError) : Promise.resolve();
+
+  return {
+    async buildCodeIntelligencePrompt(query) {
+      await persistenceReady;
+      if (persistentClient) {
+        try {
+          const prompt = renderPersistedCodeIntelligencePrompt(query, await persistentClient.searchCodeChunks(query, 6));
+          if (prompt) return prompt;
+        } catch (error) {
+          recordPersistentError(error);
+        }
+      }
+      return memoryIntelligence.buildCodeIntelligencePrompt(query);
+    },
+    getStatus: () => memoryIntelligence.getStatus(),
+    getDiagnostics: () => [
+      ...memoryIntelligence.getDiagnostics(),
+      ...(persistentDiagnostic
+        ? [{ filePath: "<workspace>", severity: "warning" as const, message: persistentDiagnostic }]
+        : []),
+    ],
+    dispose() {
+      if (!disposePromise) {
+        disposePromise = (async () => {
+          watcher?.dispose();
+          await persistenceReady;
+          if (persistentIndexStart) await waitForDispose(persistentIndexStart, 5_000);
+          if (persistentIndexer) await waitForDispose(persistentIndexer.dispose(), 5_000);
+          await persistentClient?.dispose();
+        })();
+      }
+      return disposePromise;
+    },
+  };
+
+  async function startPersistentIndex(): Promise<void> {
+    if (!vscodeApi.Uri || !vscodeApi.workspace.fs.stat) {
+      throw new Error("Persistent workspace indexing requires VS Code URI and stat APIs");
+    }
+    const indexDirectory = join(storageUri!.fsPath, "index");
+    await mkdir(indexDirectory, { recursive: true });
+    persistentClient = createIndexClient?.() ?? createDefaultIndexClient();
+    const ownerId = randomUUID();
+    const status = await persistentClient.initialize(join(indexDirectory, "code-index.sqlite"), ownerId);
+    if (status.state !== "ready" || status.role !== "writer") return;
+
+    persistentIndexer = createWorkspaceIndexer({
+      ownerId,
+      store: persistentClient,
+      parserRuntime: parserRuntime ?? {
+        async parse(filePath, languageId, text) {
+          return { filePath, languageId, text, tree: undefined, diagnostics: [] };
+        },
+      },
+      listFiles: listPersistentFiles,
+      statFile: statPersistentFile,
+      readFile: async (fileUri) => {
+        const bytes = await vscodeApi.workspace.fs.readFile(vscodeApi.Uri!.parse(fileUri));
+        return new TextDecoder().decode(bytes);
+      },
+      maxFileBytes,
+    });
+    persistentIndexStart = persistentIndexer.start().catch(recordPersistentError);
+  }
+
+  async function listPersistentFiles(): Promise<WorkspaceFileRef[]> {
+    const uris = await vscodeApi.workspace.findFiles(SOURCE_INCLUDE_PATTERN, SOURCE_EXCLUDE_PATTERN, maxWorkspaceFiles);
+    const files = await Promise.all(uris.map((uri) => statPersistentUri(uri)));
+    return files.filter((file): file is WorkspaceFileRef => file !== undefined);
+  }
+
+  async function statPersistentFile(fileUri: string): Promise<WorkspaceFileRef | undefined> {
+    try {
+      return await statPersistentUri(vscodeApi.Uri!.parse(fileUri));
+    } catch (error) {
+      if (isFileNotFound(error)) return undefined;
+      throw error;
+    }
+  }
+
+  async function statPersistentUri(uri: WorkspaceUri): Promise<WorkspaceFileRef | undefined> {
+    const path = getWatcherCacheKey(uri);
+    const languageId = detectWorkspaceLanguageId(path);
+    if (!languageId || !isIndexableWorkspacePath(path)) return undefined;
+    const stat = await vscodeApi.workspace.fs.stat!(uri);
+    return { uri: workspaceUriString(uri), path, languageId, mtime: stat.mtime, byteLength: stat.size };
+  }
+
+  function queuePersistentChange(uri: WorkspaceUri, eventKind: "create" | "change" | "delete"): void {
+    if (!storageUri || !isIndexableWorkspacePath(getWatcherCacheKey(uri))) return;
+    void persistenceReady
+      .then(() => persistentIndexer?.enqueue({ fileUri: workspaceUriString(uri), eventKind }))
+      .catch(recordPersistentError);
+  }
+
+  function workspaceUriString(uri: WorkspaceUri): string {
+    const rendered = uri.toString?.();
+    return rendered && rendered !== "[object Object]" ? rendered : pathToFileURL(uri.fsPath).toString();
+  }
+
+  function recordPersistentError(error: unknown): void {
+    persistentDiagnostic = error instanceof Error ? error.message : String(error);
+  }
 
   function markDirty(uri: WorkspaceUri): void {
     const cacheKey = getWatcherCacheKey(uri);
@@ -139,44 +291,29 @@ export function createVsCodeWorkspaceIntelligence(
   }
 }
 
-export function isIndexableWorkspacePath(filePath: string): boolean {
-  const normalized = normalizePathSeparators(filePath).toLowerCase();
-  const parts = normalized.split("/").filter(Boolean);
-  const fileName = parts.at(-1) ?? "";
-
-  if (
-    parts.some(
-      (part) => part === ".git" || part === "node_modules" || part === "dist" || part.startsWith(".local-vscode-"),
-    )
-  ) {
-    return false;
-  }
-
-  if (fileName === ".env" || fileName.startsWith(".env.")) {
-    return false;
-  }
-
-  return !/(^|[._-])(secret|secrets|token|tokens|api[_-]?key|apikey|key)([._-]|$)/i.test(fileName);
+function createDefaultIndexClient(): SqliteIndexWorkerClient {
+  return createSqliteIndexWorkerClient({ worker: new Worker(join(__dirname, "sqliteIndexWorker.js")) });
 }
 
-export function detectWorkspaceLanguageId(filePath: string): string | undefined {
-  const normalized = normalizePathSeparators(filePath).toLowerCase();
-  if (normalized.endsWith(".tsx")) {
-    return "typescriptreact";
-  }
-  if (normalized.endsWith(".ts")) {
-    return "typescript";
-  }
-  if (normalized.endsWith(".jsx")) {
-    return "javascriptreact";
-  }
-  if (normalized.endsWith(".js")) {
-    return "javascript";
-  }
-  if (normalized.endsWith(".py")) {
-    return "python";
-  }
-  return undefined;
+async function waitForDispose(dispose: Promise<void>, timeoutMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    dispose,
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function isFileNotFound(error: unknown): boolean {
+  return Boolean(
+    error &&
+    typeof error === "object" &&
+    (("code" in error && error.code === "FileNotFound") ||
+      ("name" in error && error.name === "FileNotFound")),
+  );
 }
 
 export function normalizeWorkspaceRelativePath(filePath: string, workspaceRoots: readonly string[]): string {
@@ -224,8 +361,4 @@ function getWorkspaceRelativePath(
     return normalizePathSeparators(vscodeRelativePath);
   }
   return normalizeWorkspaceRelativePath(uri.fsPath, workspaceRoots);
-}
-
-function normalizePathSeparators(filePath: string): string {
-  return filePath.replace(/\\/g, "/");
 }

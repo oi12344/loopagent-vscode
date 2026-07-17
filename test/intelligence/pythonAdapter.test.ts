@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { createPythonAdapter } from "../../src/extension/intelligence/languages/pythonAdapter";
 import type { IndexDiagnostic } from "../../src/extension/intelligence/graph/graphTypes";
+import { buildExtractionSnapshot } from "../../src/extension/intelligence/indexing/extractionSnapshot";
 import { createTreeSitterParserRuntime } from "../../src/extension/intelligence/parser/treeSitterRuntime";
 
 const require = createRequire(import.meta.url);
@@ -21,6 +22,13 @@ async function extractWithTree(text: string) {
 }
 
 describe("Python adapter", () => {
+  it("includes the AST start column in transient symbol IDs", async () => {
+    const result = await extractWithTree("def run():\n    pass");
+    const run = result.nodes.find((node) => node.name === "run");
+
+    expect(run?.id).toBe("symbol:app/sample.py:function:run:1:0");
+  });
+
   it("extracts imports, classes, functions, methods, and calls", () => {
     const adapter = createPythonAdapter();
     const result = adapter.extract({
@@ -58,6 +66,42 @@ describe("Python adapter", () => {
         expect.objectContaining({ referenceKind: "calls", referenceName: "build_user" }),
       ]),
     );
+  });
+
+  it("persists fallback function, class, and method bodies without a syntax tree", () => {
+    const text = [
+      "def build_user():",
+      "    return load_user()",
+      "class UserService:",
+      "    def run(self):",
+      "        return build_user()",
+    ].join("\n");
+    const parsed = {
+      filePath: "app/service.py",
+      languageId: "python",
+      text,
+      tree: undefined,
+      diagnostics: [],
+    };
+    const extraction = createPythonAdapter().extract(parsed);
+    const snapshot = buildExtractionSnapshot({
+      fileUri: "file:///workspace/app/service.py",
+      filePath: parsed.filePath,
+      parsed,
+      extraction,
+    });
+    const sourceFor = (name: string) => {
+      const node = snapshot.nodes.find((candidate) => candidate.name === name);
+      return snapshot.chunks.find((chunk) => chunk.nodeId === node?.id)?.sourceText;
+    };
+
+    expect(sourceFor("build_user")).toBe("def build_user():\n    return load_user()");
+    expect(sourceFor("UserService")).toBe([
+      "class UserService:",
+      "    def run(self):",
+      "        return build_user()",
+    ].join("\n"));
+    expect(sourceFor("run")).toBe("    def run(self):\n        return build_user()");
   });
 
   it("handles aliases and indentation scope exits without owning parser diagnostics", () => {

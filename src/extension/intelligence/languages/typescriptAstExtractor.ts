@@ -10,7 +10,7 @@ import {
   visitNamedNodes,
 } from "./treeSitterAst";
 
-const FUNCTION_NODE_TYPES = new Set(["function_declaration", "generator_function_declaration"]);
+const FUNCTION_NODE_TYPES = new Set(["function_declaration", "generator_function_declaration", "function_signature"]);
 const VARIABLE_FUNCTION_NODE_TYPES = new Set(["arrow_function", "function_expression"]);
 const CALLABLE_NODE_TYPES = new Set([...FUNCTION_NODE_TYPES, ...VARIABLE_FUNCTION_NODE_TYPES, "method_definition"]);
 
@@ -49,6 +49,10 @@ export function extractTypeScriptAst(parsed: ParsedSource): ExtractionResult {
         addTopLevelDeclaration(node, "class", ancestors);
         break;
       case "method_definition":
+        addMethod(node, ancestors);
+        break;
+      case "method_signature":
+      case "abstract_method_signature":
         addMethod(node, ancestors);
         break;
       case "interface_declaration":
@@ -118,7 +122,10 @@ export function extractTypeScriptAst(parsed: ParsedSource): ExtractionResult {
   function addMethod(node: SyntaxNode, ancestors: readonly SyntaxNode[]): void {
     const classSyntaxNode = getNearestAncestor(
       ancestors,
-      (ancestor) => ancestor.type === "class_declaration" || ancestor.type === "abstract_class_declaration",
+      (ancestor) =>
+        ancestor.type === "class_declaration" ||
+        ancestor.type === "abstract_class_declaration" ||
+        ancestor.type === "interface_declaration",
     );
     const classNode = classSyntaxNode ? codeNodeBySyntaxNode.get(classSyntaxNode) : undefined;
     const name = getField(node, "name")?.text;
@@ -141,15 +148,16 @@ export function extractTypeScriptAst(parsed: ParsedSource): ExtractionResult {
     const range = toCodeRange(rangeNode);
     const exported = parentNode.kind === "file" && isExported(ancestors);
     const codeNode: CodeNode = {
-      id: `symbol:${parsed.filePath}:${kind}:${name}:${range.startLine}`,
+      id: `symbol:${parsed.filePath}:${kind}:${name}:${range.startLine}:${range.startColumn}`,
       kind,
       name,
       qualifiedName,
       filePath: parsed.filePath,
       languageId: parsed.languageId,
       ...range,
+      signature: createCallableSignature(rangeNode, name),
       isExported: exported,
-      metadata: isDefaultExport(ancestors) ? { isDefaultExport: true } : undefined,
+      metadata: createNodeMetadata(identityNode, ancestors),
     };
     nodes.push(codeNode);
     edges.push(createEdge(parentNode.id, codeNode.id, "contains", parsed.filePath, range.startLine));
@@ -189,6 +197,33 @@ export function extractTypeScriptAst(parsed: ParsedSource): ExtractionResult {
     const callable = getNearestCallableSyntaxNode(ancestors);
     return callable ? codeNodeBySyntaxNode.get(callable) : fileNode;
   }
+}
+
+function createNodeMetadata(node: SyntaxNode, ancestors: readonly SyntaxNode[]): CodeNode["metadata"] {
+  const metadata: Record<string, unknown> = {};
+  if (isDefaultExport(ancestors)) metadata.isDefaultExport = true;
+  if (node.type === "function_signature" || node.type === "method_signature" || node.type === "abstract_method_signature") {
+    metadata.declarationOnly = true;
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+function createCallableSignature(node: SyntaxNode, name: string): string | undefined {
+  if (
+    !CALLABLE_NODE_TYPES.has(node.type) &&
+    node.type !== "function_signature" &&
+    node.type !== "method_signature" &&
+    node.type !== "abstract_method_signature"
+  ) {
+    return undefined;
+  }
+  const typeParameters = getField(node, "type_parameters")?.text ?? "";
+  const parameters = getField(node, "parameters")?.text;
+  const returnType = getField(node, "return_type")?.text ?? "";
+  if (!parameters) {
+    return undefined;
+  }
+  return `${name}${typeParameters}${parameters}${returnType}`.trim().replace(/\s+/g, " ");
 }
 
 function getNearestCallableSyntaxNode(ancestors: readonly SyntaxNode[]): SyntaxNode | undefined {

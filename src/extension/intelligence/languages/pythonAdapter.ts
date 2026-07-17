@@ -33,7 +33,7 @@ const KEYWORD_CALLS = new Set([
 
 type IndexedContainerScope = {
   kind: "class" | "function" | "method";
-  nodeId: string;
+  node: CodeNode;
   indent: number;
 };
 
@@ -73,7 +73,7 @@ function extractPythonFallback(parsed: ParsedSource): ExtractionResult {
       return;
     }
 
-    unwindScopes(containerStack, indent);
+    unwindScopes(containerStack, indent, lineNumber - 1);
 
     const importMatch = line.match(/^\s*from\s+([A-Za-z_][\w.]*)\s+import\s+(.+)$/);
     if (importMatch) {
@@ -87,7 +87,7 @@ function extractPythonFallback(parsed: ParsedSource): ExtractionResult {
       const node = createSymbolNode(parsed, "class", classMatch[1]!, lineNumber);
       nodes.push(node);
       edges.push(createEdge(fileNode.id, node.id, "contains", parsed.filePath, lineNumber));
-      containerStack.push({ kind: "class", nodeId: node.id, indent });
+      containerStack.push({ kind: "class", node, indent });
       return;
     }
 
@@ -98,8 +98,8 @@ function extractPythonFallback(parsed: ParsedSource): ExtractionResult {
       if (currentScope?.kind === "class" && indent > currentScope.indent) {
         const node = createSymbolNode(parsed, "method", name, lineNumber);
         nodes.push(node);
-        edges.push(createEdge(currentScope.nodeId, node.id, "contains", parsed.filePath, lineNumber));
-        containerStack.push({ kind: "method", nodeId: node.id, indent });
+        edges.push(createEdge(currentScope.node.id, node.id, "contains", parsed.filePath, lineNumber));
+        containerStack.push({ kind: "method", node, indent });
         return;
       }
 
@@ -107,7 +107,7 @@ function extractPythonFallback(parsed: ParsedSource): ExtractionResult {
         const node = createSymbolNode(parsed, "function", name, lineNumber);
         nodes.push(node);
         edges.push(createEdge(fileNode.id, node.id, "contains", parsed.filePath, lineNumber));
-        containerStack.push({ kind: "function", nodeId: node.id, indent });
+        containerStack.push({ kind: "function", node, indent });
       }
       if (indent > 0) {
         containerStack.push({ kind: "local_function", indent });
@@ -137,6 +137,8 @@ function extractPythonFallback(parsed: ParsedSource): ExtractionResult {
     }
   });
 
+  unwindScopes(containerStack, -1, lines.length);
+
   return { nodes, edges, importBindings, unresolvedReferences, diagnostics: [] };
 }
 
@@ -158,9 +160,10 @@ function parseFromImportBindings(parsed: ParsedSource, source: string, importLis
     });
 }
 
-function unwindScopes(containerStack: ContainerScope[], indent: number): void {
+function unwindScopes(containerStack: ContainerScope[], indent: number, endLine: number): void {
   while (containerStack.length > 0 && indent <= containerStack[containerStack.length - 1]!.indent) {
-    containerStack.pop();
+    const scope = containerStack.pop()!;
+    if (scope.kind !== "local_function") scope.node.endLine = endLine;
   }
 }
 
@@ -173,7 +176,7 @@ function getCurrentContainerId(containerStack: ContainerScope[]): string | undef
     return undefined;
   }
   const scope = [...containerStack].reverse().find(isCallableScope);
-  return scope?.nodeId;
+  return scope?.node.id;
 }
 
 function isCallableScope(scope: ContainerScope): scope is IndexedContainerScope {

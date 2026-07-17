@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { HostToWebviewMessage, ModelThinkingMode, RunModelSelection } from "../shared/messages";
+import type { HostToWebviewMessage, ModelThinkingMode, RunModelSelection, TaskMode } from "../shared/messages";
 import { createDefaultVsCodeApi, type VsCodeApi } from "./vscodeApi";
 import "./styles.css";
 
@@ -20,7 +20,7 @@ type AssistantTurn = {
   role: "assistant";
   runId: string;
   provider: string;
-  process: string[];
+  reasoning: string;
   content: string;
   status: "thinking" | "streaming" | "done" | "error";
   error?: string;
@@ -48,7 +48,7 @@ const modelOptions: ModelOption[] = [
     selection: {
       provider: "deepseek",
       model: "deepseek-v4-flash",
-      thinking: "disabled",
+      thinking: "enabled",
     },
     supportsThinking: true,
   },
@@ -65,13 +65,28 @@ const modelOptions: ModelOption[] = [
   },
 ];
 
+const suggestedTasks = ["Explain the active file", "Find where this is implemented"];
+
+function TaskSuggestions({ onSelect }: { onSelect(task: string): void }) {
+  return (
+    <div className="task-suggestions" aria-label="Suggested tasks">
+      {suggestedTasks.map((task) => (
+        <button key={task} type="button" className="suggestion-button" onClick={() => onSelect(task)}>
+          {task}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [message, setMessage] = React.useState("");
   const [isRunning, setIsRunning] = React.useState(false);
   const [activeRunId, setActiveRunId] = React.useState<string | null>(null);
   const [turns, setTurns] = React.useState<ChatTurn[]>([]);
   const [selectedModelId, setSelectedModelId] = React.useState(modelOptions[0].id);
-  const [thinkingMode, setThinkingMode] = React.useState<ModelThinkingMode>("disabled");
+  const [thinkingMode, setThinkingMode] = React.useState<ModelThinkingMode>("enabled");
+  const [taskMode, setTaskMode] = React.useState<TaskMode>("edit");
   const [openMenu, setOpenMenu] = React.useState<"model" | "thinking" | null>(null);
   const nextTurnId = React.useRef(0);
 
@@ -90,7 +105,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       role: "assistant",
       runId,
       provider,
-      process: [],
+      reasoning: "",
       content: "",
       status: "thinking",
     };
@@ -147,7 +162,15 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       if (hostMessage.type === "assistantThinking") {
         updateAssistantTurn(hostMessage.runId, (turn) => ({
           ...turn,
-          process: appendUniqueProcess(turn.process, hostMessage.message),
+          status: turn.content.length > 0 ? "streaming" : "thinking",
+        }));
+        return;
+      }
+
+      if (hostMessage.type === "assistantReasoningDelta") {
+        updateAssistantTurn(hostMessage.runId, (turn) => ({
+          ...turn,
+          reasoning: `${turn.reasoning}${hostMessage.content}`,
           status: turn.content.length > 0 ? "streaming" : "thinking",
         }));
         return;
@@ -171,10 +194,6 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       }
 
       if (hostMessage.type === "agentEvent") {
-        updateAssistantTurn(hostMessage.runId, (turn) => ({
-          ...turn,
-          process: appendUniqueProcess(turn.process, hostMessage.message),
-        }));
         return;
       }
 
@@ -183,7 +202,6 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         setActiveRunId(null);
         updateAssistantTurn(hostMessage.runId, (turn) => ({
           ...turn,
-          process: appendUniqueProcess(turn.process, "Done"),
           status: "done",
         }));
         return;
@@ -195,7 +213,6 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         updateAssistantTurn(hostMessage.runId, (turn) => ({
           ...turn,
           error: hostMessage.message,
-          process: appendUniqueProcess(turn.process, "Run failed"),
           status: "error",
         }));
       }
@@ -208,10 +225,8 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
     };
   }, []);
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const trimmedMessage = message.trim();
+  function submitTask(task: string, mode: TaskMode = taskMode) {
+    const trimmedMessage = task.trim();
 
     if (!trimmedMessage || isRunning) {
       return;
@@ -235,7 +250,12 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       },
     ]);
     setMessage("");
-    vscodeApi.postMessage({ type: "startTask", task: trimmedMessage, model: runModel });
+    vscodeApi.postMessage({ type: "startTask", task: trimmedMessage, mode, model: runModel });
+  }
+
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    submitTask(message);
   }
 
   function selectModel(option: ModelOption) {
@@ -249,16 +269,22 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   return (
     <main className="app-shell">
       <header className="app-header">
-        <div>
-          <h1>LoopAgent</h1>
-          {activeRunId ? <span className="run-id">{activeRunId}</span> : null}
+        <h1>LoopAgent</h1>
+        <div className="header-meta">
+          <span className={`status-pill status-${isRunning ? "running" : "ready"}`}>
+            <span className="status-dot" aria-hidden="true" />
+            {isRunning ? "Running" : "Ready"}
+          </span>
+          <span className="active-model">{selectedModel.label}</span>
         </div>
-        <span className="status-pill">{isRunning ? "Running" : "Ready"}</span>
       </header>
 
       <section className="chat-log" aria-label="Conversation">
         {turns.length === 0 ? (
-          <p className="empty-state">Start a conversation with LoopAgent.</p>
+          <>
+            <p className="empty-state">Start a conversation with LoopAgent.</p>
+            <TaskSuggestions onSelect={(task) => submitTask(task, "ask")} />
+          </>
         ) : (
           turns.map((turn) => {
             if (turn.role === "user") {
@@ -282,6 +308,15 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
 
         <div className="composer-toolbar">
           <div className="composer-tools">
+            <div className="mode-switch" role="group" aria-label="Mode">
+              <button type="button" className="mode-button" aria-pressed={taskMode === "edit"} onClick={() => setTaskMode("edit")}>
+                Edit
+              </button>
+              <button type="button" className="mode-button" aria-pressed={taskMode === "ask"} onClick={() => setTaskMode("ask")}>
+                Ask
+              </button>
+            </div>
+
             <div className="tool-menu-anchor">
               <button type="button" className="chip-button" onClick={() => setOpenMenu(openMenu === "model" ? null : "model")}>
                 {selectedModel.label}
@@ -378,7 +413,7 @@ function ThinkingMenu({
 
 function UserMessage({ turn }: { turn: UserTurn }) {
   return (
-    <article className="message message-user">
+    <article className="message message-user message-user-right">
       <div className="message-meta">You</div>
       <div className="message-body">{turn.content}</div>
     </article>
@@ -386,6 +421,16 @@ function UserMessage({ turn }: { turn: UserTurn }) {
 }
 
 function AssistantMessage({ turn }: { turn: AssistantTurn }) {
+  const [isProcessOpen, setIsProcessOpen] = React.useState(turn.status !== "done");
+  const previousStatus = React.useRef(turn.status);
+
+  React.useEffect(() => {
+    if (turn.status === "done" && previousStatus.current !== "done") {
+      setIsProcessOpen(false);
+    }
+    previousStatus.current = turn.status;
+  }, [turn.status]);
+
   return (
     <article className={`message message-assistant${turn.status === "error" ? " message-error" : ""}`}>
       <div className="message-meta">
@@ -393,14 +438,14 @@ function AssistantMessage({ turn }: { turn: AssistantTurn }) {
         <span>{formatAssistantStatus(turn.status)}</span>
       </div>
 
-      {turn.process.length > 0 ? (
-        <details className="process-details" open>
-          <summary>Process</summary>
-          <ol>
-            {turn.process.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ol>
+      {turn.reasoning.length > 0 ? (
+        <details
+          className="process-details"
+          open={isProcessOpen}
+          onToggle={(event) => setIsProcessOpen(event.currentTarget.open)}
+        >
+          <summary>思考过程</summary>
+          <div className="reasoning-content">{turn.reasoning}</div>
         </details>
       ) : null}
 
@@ -451,14 +496,6 @@ function attachRunToUserTurn(
       pending: false,
     };
   });
-}
-
-function appendUniqueProcess(process: string[], message: string): string[] {
-  if (process.includes(message)) {
-    return process;
-  }
-
-  return [...process, message];
 }
 
 function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {

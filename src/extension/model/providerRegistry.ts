@@ -1,6 +1,7 @@
 import type * as vscode from "vscode";
 
 import { createExploreCodeTool } from "../agent/exploreCodeTool";
+import type { ReactAgentTool } from "../agent/reactTypes";
 import { createOpenAiReactModelTurn } from "../agent/openAiReactModelTurn";
 import { createReactAgentRunner } from "../agent/reactAgentRunner";
 import type { AgentRunner } from "../agentRunner";
@@ -21,6 +22,18 @@ const REACT_SYSTEM_PROMPT = [
   "Prefer concise code-oriented search queries with likely English identifiers, then answer from the returned observation.",
   "Trace behavior from current production entry points; ignore historical documents, tests, and unreferenced legacy modules unless the user asks for them.",
   "Before answering, verify every claimed call edge against the current source returned by exploreCode.",
+  "After each exploreCode observation, decide whether the available source evidence is sufficient to answer the user's question.",
+  "If the available source evidence is sufficient, answer immediately without calling another tool.",
+  "Only call exploreCode again for a concrete missing fact required to answer the user; use a focused query that does not overlap previous queries.",
+  "When separate read-only searches are needed, you may request them in one assistant turn.",
+  "Do not request an exact duplicate search or search again for facts already supported by source evidence.",
+  "Do not keep searching for completeness or to reconfirm facts already supported by source evidence.",
+  "Before editing, read the relevant file content with readFile.",
+  "Propose all workspace changes only through applyEdit.",
+  "After reading the relevant files, call applyEdit immediately with the complete change proposal.",
+  "Do not ask the user for textual confirmation before calling applyEdit; applyEdit opens the review interface and handles confirmation.",
+  "Do not claim an edit succeeded until applyEdit reports that it was applied.",
+  "Answer only from supported evidence and state any material limitation.",
   "Do not invent repository facts when the tool does not provide enough evidence.",
 ].join("\n");
 
@@ -28,6 +41,8 @@ export type CreateConfiguredAgentRunnerDeps = {
   vscodeApi?: VsCodeWorkspaceApi;
   workspaceIntelligence?: WorkspaceIntelligence;
   parserRuntime?: ParserRuntime;
+  readFileTool?: ReactAgentTool;
+  applyEditTool?: ReactAgentTool;
 };
 
 export async function createConfiguredAgentRunner(
@@ -52,7 +67,11 @@ export async function createConfiguredAgentRunner(
     thinking: config.thinking,
   });
 
-  const tools = [createExploreCodeTool(workspaceIntelligence)];
+  const tools = [
+    createExploreCodeTool(workspaceIntelligence),
+    ...(deps.readFileTool ? [deps.readFileTool] : []),
+    ...(deps.applyEditTool ? [deps.applyEditTool] : []),
+  ];
   return createReactAgentRunner({
     providerName: provider.displayName,
     tools,

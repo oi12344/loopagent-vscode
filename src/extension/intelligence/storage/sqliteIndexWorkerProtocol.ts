@@ -1,10 +1,23 @@
-import type { ClaimedIndexJob, IndexChange, StoredIndexJob } from "./sqliteIndexStore";
+import type {
+  ClaimedIndexJob,
+  FileMetadataUpdate,
+  IndexChange,
+  StoredFileMetadata,
+  StoredIndexJob,
+  StoredCodeChunk,
+} from "./sqliteIndexStore";
 import type { IndexWorkerStatus } from "./sqliteIndexWorkerRuntime";
+import type { ExtractionSnapshot } from "./indexTypes";
 
 export type SqliteWorkerRequest =
   | { id: number; kind: "probe"; databasePath: string }
   | { id: number; kind: "initialize"; databasePath: string; ownerId: string }
   | { id: number; kind: "enqueueChanges"; changes: readonly IndexChange[] }
+  | { id: number; kind: "applyFileSnapshot"; snapshot: ExtractionSnapshot }
+  | { id: number; kind: "listIndexedFiles" }
+  | { id: number; kind: "updateFileMetadata"; update: FileMetadataUpdate }
+  | { id: number; kind: "removeFile"; fileUri: string }
+  | { id: number; kind: "searchCodeChunks"; query: string; limit: number }
   | { id: number; kind: "getPendingJobs" }
   | { id: number; kind: "claimNextJob"; ownerId: string }
   | { id: number; kind: "completeJob"; claim: ClaimedIndexJob }
@@ -19,4 +32,12 @@ export type SqliteWorkerResponse =
 export type SqliteWorkerEvent = { kind: "status"; status: IndexWorkerStatus };
 export type SqliteWorkerMessage = SqliteWorkerResponse | SqliteWorkerEvent;
 
-export type { ClaimedIndexJob, IndexChange, IndexWorkerStatus, StoredIndexJob };
+export type {
+  ClaimedIndexJob,
+  FileMetadataUpdate,
+  IndexChange,
+  IndexWorkerStatus,
+  StoredFileMetadata,
+  StoredIndexJob,
+  StoredCodeChunk,
+};

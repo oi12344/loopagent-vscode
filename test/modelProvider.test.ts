@@ -37,21 +37,66 @@ describe("createModelRunner", () => {
       { type: "runStarted", runId: "run-1", task: "Inspect workspace" },
       { type: "assistantStarted", runId: "run-1", provider: "Test Model" },
       { type: "assistantThinking", runId: "run-1", message: "Calling Test Model" },
-      { type: "assistantThinking", runId: "run-1", message: "Received model reasoning signal" },
+      { type: "assistantReasoningDelta", runId: "run-1", content: "private raw reasoning" },
       { type: "assistantDelta", runId: "run-1", content: "The " },
       { type: "assistantDelta", runId: "run-1", content: "workspace is ready." },
       { type: "assistantFinished", runId: "run-1" },
       { type: "runFinished", runId: "run-1" },
     ]);
-    expect(hostMessages).not.toContainEqual({
-      type: "assistantThinking",
+    expect(hostMessages).toContainEqual({
+      type: "assistantReasoningDelta",
       runId: "run-1",
-      message: "private raw reasoning",
+      content: "private raw reasoning",
     });
   });
 });
 
 describe("createDeepSeekProvider", () => {
+  it("enables thinking by default in the streaming request", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("data: [DONE]\n\n", { status: 200 }));
+    const provider = createDeepSeekProvider({
+      apiKey: "test-api-key",
+      fetch: fetchMock,
+    });
+
+    for await (const _event of provider.stream({
+      messages: [{ role: "user", content: "Hello" }],
+      signal: new AbortController().signal,
+    })) {
+      // This response contains no model events.
+    }
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.thinking).toEqual({ type: "enabled" });
+  });
+
+  it("disables thinking when a specific tool call is required", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("data: [DONE]\n\n", { status: 200 }));
+    const provider = createDeepSeekProvider({
+      apiKey: "test-api-key",
+      fetch: fetchMock,
+    });
+
+    for await (const _event of provider.stream({
+      messages: [{ role: "user", content: "Read the file" }],
+      signal: new AbortController().signal,
+      tools: [{
+        type: "function",
+        function: {
+          name: "readFile",
+          description: "Read a file",
+          parameters: { type: "object" },
+        },
+      }],
+      toolChoice: { type: "function", function: { name: "readFile" } },
+    })) {
+      // This response contains no model events.
+    }
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.thinking).toEqual({ type: "disabled" });
+  });
+
   it("fails before sending a request when the API key is missing", async () => {
     const fetchMock = vi.fn<typeof fetch>();
     const provider = createDeepSeekProvider({

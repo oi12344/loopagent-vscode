@@ -1,8 +1,9 @@
-import type { HostToWebviewMessage } from "../shared/messages";
+import type { HostToWebviewMessage, TaskMode } from "../shared/messages";
 
 export type AgentRunRequest = {
   runId: string;
   task: string;
+  mode?: TaskMode;
   signal: AbortSignal;
 };
 
@@ -14,6 +15,7 @@ export type PostHostMessage = (message: HostToWebviewMessage) => boolean | void 
 
 export type StartAgentRunOptions = {
   task: string;
+  mode?: TaskMode;
   runner: AgentRunner;
   postMessage: PostHostMessage;
   runId?: string;
@@ -25,11 +27,12 @@ export type AgentRunHandle = {
   done: Promise<void>;
 };
 
-export function startAgentRun({ task, runner, postMessage, runId = createRunId() }: StartAgentRunOptions): AgentRunHandle {
+export function startAgentRun({ task, mode = "ask", runner, postMessage, runId = createRunId() }: StartAgentRunOptions): AgentRunHandle {
   const abortController = new AbortController();
   const request: AgentRunRequest = {
     runId,
     task,
+    mode,
     signal: abortController.signal,
   };
 

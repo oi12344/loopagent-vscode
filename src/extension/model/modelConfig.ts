@@ -29,7 +29,7 @@ export async function getModelRuntimeConfig(
   const provider = getConfiguredProviderId();
   const model = configuration.get<string>("model", "deepseek-v4-flash");
   const baseUrl = configuration.get<string>("baseUrl", "").trim() || undefined;
-  const thinking = normalizeThinkingMode(configuration.get<string>("thinking", "disabled"));
+  const thinking = normalizeThinkingMode(configuration.get<string>("thinking", "enabled"));
   const config = createModelRuntimeConfig({
     provider,
     model,

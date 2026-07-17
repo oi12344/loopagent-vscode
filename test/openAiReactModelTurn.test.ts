@@ -62,6 +62,29 @@ describe("createOpenAiReactModelTurn", () => {
     });
   });
 
+  it("preserves streamed reasoning for the runner and follow-up tool history", async () => {
+    const modelTurn = createOpenAiReactModelTurn({
+      provider: createProvider([
+        { type: "reasoningDelta", content: "Inspecting the workspace. " },
+        { type: "reasoningDelta", content: "Searching the symbol." },
+        { type: "toolCallDelta", index: 0, id: "call_1", name: "exploreCode", argumentsDelta: '{"query":"symbol"}' },
+        { type: "finishReason", reason: "tool_calls" },
+      ]),
+      tools: [exploreCodeTool],
+    });
+
+    await expect(
+      modelTurn({ messages: [{ role: "user", content: "Where is it?" }], signal: new AbortController().signal }),
+    ).resolves.toMatchObject({
+      kind: "toolRequests",
+      reasoning: "Inspecting the workspace. Searching the symbol.",
+      assistantMessage: {
+        role: "assistant",
+        reasoningContent: "Inspecting the workspace. Searching the symbol.",
+      },
+    });
+  });
+
   it("returns concatenated final text", async () => {
     const modelTurn = createOpenAiReactModelTurn({
       provider: createProvider([
@@ -77,15 +100,108 @@ describe("createOpenAiReactModelTurn", () => {
     ).resolves.toEqual({ kind: "final", content: "Workspace ready." });
   });
 
-  it.each([
-    {
-      name: "invalid JSON arguments",
-      events: [
+  it("rejects final text when the provider was required to call a tool", async () => {
+    const modelTurn = createOpenAiReactModelTurn({
+      provider: createProvider([
+        { type: "contentDelta", content: "I changed the file." },
+        { type: "finishReason", reason: "stop" },
+      ]),
+      tools: [exploreCodeTool],
+    });
+
+    await expect(
+      modelTurn({
+        messages: [{ role: "user", content: "Change the file." }],
+        signal: new AbortController().signal,
+        toolChoice: "required",
+      }),
+    ).rejects.toThrow("Model did not call a required tool");
+  });
+
+  it("includes tool definitions with the default auto choice", async () => {
+    let seenToolChoice: "auto" | "none" | undefined;
+    let seenTools: unknown;
+    const provider: ModelProvider = {
+      id: "test",
+      displayName: "Test",
+      async *stream(request) {
+        seenToolChoice = request.toolChoice;
+        seenTools = request.tools;
+        yield { type: "contentDelta", content: "Final answer." } as const;
+        yield { type: "finishReason", reason: "stop" } as const;
+      },
+    };
+    const modelTurn = createOpenAiReactModelTurn({ provider, tools: [exploreCodeTool] });
+
+    await modelTurn({ messages: [{ role: "user", content: "Status?" }], signal: new AbortController().signal });
+
+    expect(seenToolChoice).toBe("auto");
+    expect(seenTools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "exploreCode",
+          description: "Search the current workspace code.",
+          parameters: {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"],
+            additionalProperties: false,
+          },
+        },
+      },
+    ]);
+  });
+
+  it("passes the requested tool choice to the provider", async () => {
+    let seenToolChoice: "auto" | "none" | undefined;
+    let seenTools: unknown;
+    const provider: ModelProvider = {
+      id: "test",
+      displayName: "Test",
+      async *stream(request) {
+        seenToolChoice = request.toolChoice;
+        seenTools = request.tools;
+        yield { type: "contentDelta", content: "Final answer." } as const;
+        yield { type: "finishReason", reason: "stop" } as const;
+      },
+    };
+    const modelTurn = createOpenAiReactModelTurn({ provider, tools: [exploreCodeTool] });
+
+    await modelTurn({
+      messages: [{ role: "user", content: "Status?" }],
+      signal: new AbortController().signal,
+      toolChoice: "none",
+    });
+
+    expect(seenToolChoice).toBe("none");
+    expect(seenTools).toBeUndefined();
+  });
+
+  it("returns invalid JSON tool arguments for recoverable feedback", async () => {
+    const modelTurn = createOpenAiReactModelTurn({
+      provider: createProvider([
         { type: "toolCallDelta", index: 0, id: "call_1", name: "exploreCode", argumentsDelta: "{" },
         { type: "finishReason", reason: "tool_calls" },
-      ] satisfies ModelStreamEvent[],
-      message: "Invalid JSON arguments for tool exploreCode",
-    },
+      ]),
+      tools: [exploreCodeTool],
+    });
+
+    await expect(
+      modelTurn({ messages: [{ role: "user", content: "Status?" }], signal: new AbortController().signal }),
+    ).resolves.toMatchObject({
+      kind: "toolRequests",
+      requests: [{
+        id: "call_1",
+        name: "exploreCode",
+        rawArguments: "{",
+        input: undefined,
+        parseError: "Invalid JSON arguments for tool exploreCode",
+      }],
+    });
+  });
+
+  it.each([
     {
       name: "duplicate tool call IDs",
       events: [

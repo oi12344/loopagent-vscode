@@ -1,6 +1,15 @@
 import type { SqliteCapabilities } from "./sqliteCapabilities";
 import type { OpenIndexDatabaseResult } from "./indexDatabase";
-import type { ClaimedIndexJob, IndexChange, SqliteIndexStore, StoredIndexJob } from "./sqliteIndexStore";
+import type {
+  ClaimedIndexJob,
+  FileMetadataUpdate,
+  IndexChange,
+  SqliteIndexStore,
+  StoredFileMetadata,
+  StoredIndexJob,
+  StoredCodeChunk,
+} from "./sqliteIndexStore";
+import type { ExtractionSnapshot } from "./indexTypes";
 
 export type IndexWorkerStatus = {
   state: "initializing" | "ready" | "failed" | "closed";
@@ -16,6 +25,11 @@ export type SqliteWorkerStore = Pick<
   | "releaseWriterLease"
   | "recoverInterruptedJobs"
   | "enqueueChanges"
+  | "applyFileSnapshot"
+  | "listIndexedFiles"
+  | "updateFileMetadata"
+  | "removeFile"
+  | "searchCodeChunks"
   | "listPendingJobs"
   | "claimNextJob"
   | "completeJob"
@@ -26,6 +40,11 @@ export type SqliteIndexWorkerRuntime = {
   initialize(databasePath: string, ownerId: string): IndexWorkerStatus;
   getStatus(): IndexWorkerStatus;
   enqueueChanges(changes: readonly IndexChange[]): void;
+  applyFileSnapshot(snapshot: ExtractionSnapshot): void;
+  listIndexedFiles(): StoredFileMetadata[];
+  updateFileMetadata(update: FileMetadataUpdate): void;
+  removeFile(fileUri: string): void;
+  searchCodeChunks(query: string, limit: number): StoredCodeChunk[];
   getPendingJobs(): StoredIndexJob[];
   claimNextJob(ownerId: string): ClaimedIndexJob | undefined;
   completeJob(claim: ClaimedIndexJob): void;
@@ -184,6 +203,21 @@ export function createSqliteIndexWorkerRuntime(deps: RuntimeDependencies): Sqlit
     },
     enqueueChanges(changes) {
       runWriter((activeStore, activeOwner) => activeStore.enqueueChanges(activeOwner, changes));
+    },
+    applyFileSnapshot(snapshot) {
+      runWriter((activeStore, activeOwner) => activeStore.applyFileSnapshot(activeOwner, snapshot));
+    },
+    listIndexedFiles() {
+      return requireStore().listIndexedFiles();
+    },
+    updateFileMetadata(update) {
+      runWriter((activeStore, activeOwner) => activeStore.updateFileMetadata(activeOwner, update));
+    },
+    removeFile(fileUri) {
+      runWriter((activeStore, activeOwner) => activeStore.removeFile(activeOwner, fileUri));
+    },
+    searchCodeChunks(query, limit) {
+      return requireStore().searchCodeChunks(query, limit);
     },
     getPendingJobs() {
       return requireStore().listPendingJobs();

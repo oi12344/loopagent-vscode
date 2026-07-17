@@ -1,5 +1,8 @@
 import * as vscode from "vscode";
 
+import { createApplyEditTool } from "./extension/agent/applyEditTool";
+import { createEditPreviewService } from "./extension/agent/editPreviewService";
+import { createReadFileTool } from "./extension/agent/readFileTool";
 import { startAgentRun, type AgentRunHandle } from "./extension/agentRunner";
 import { createTreeSitterParserRuntime } from "./extension/intelligence/parser/treeSitterRuntime";
 import { createVsCodeWorkspaceIntelligence } from "./extension/intelligence/vscodeWorkspaceIntelligence";
@@ -10,9 +13,11 @@ import type { WebviewToHostMessage } from "./shared/messages";
 
 const chatViewId = "loopagent.chat";
 const viewContainerId = "workbench.view.extension.loopagent";
+let activeChatProvider: LoopAgentChatViewProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const chatProvider = new LoopAgentChatViewProvider(context);
+  activeChatProvider = chatProvider;
 
   const helloCommand = vscode.commands.registerCommand("loopagent.hello", () => {
     vscode.window.showInformationMessage("Hello from LoopAgent");
@@ -46,17 +51,34 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
-export function deactivate(): void {
-  // Nothing to clean up yet.
+export async function deactivate(): Promise<void> {
+  const provider = activeChatProvider;
+  activeChatProvider = undefined;
+  await provider?.dispose();
 }
 
 class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private activeRun: AgentRunHandle | undefined;
-  private readonly workspaceIntelligence = createVsCodeWorkspaceIntelligence(vscode, {
-    parserRuntime: createTreeSitterParserRuntime(),
-  });
+  private readonly workspaceIntelligence;
+  private readonly editPreviewService;
+  private readonly readFileTool;
+  private readonly applyEditTool;
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  constructor(private readonly context: vscode.ExtensionContext) {
+    this.workspaceIntelligence = createVsCodeWorkspaceIntelligence(vscode, {
+      parserRuntime: createTreeSitterParserRuntime(),
+      storageUri: context.storageUri,
+    });
+    this.editPreviewService = createEditPreviewService(vscode);
+    this.readFileTool = createReadFileTool(vscode);
+    this.applyEditTool = createApplyEditTool(this.editPreviewService);
+  }
+
+  async dispose(): Promise<void> {
+    this.activeRun?.cancel();
+    this.editPreviewService.dispose();
+    await this.workspaceIntelligence.dispose();
+  }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     webviewView.webview.options = {
@@ -96,9 +118,12 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
 
     void createConfiguredAgentRunner(this.context, message.model, {
       workspaceIntelligence: this.workspaceIntelligence,
+      readFileTool: this.readFileTool,
+      applyEditTool: this.applyEditTool,
     }).then((runner) => {
       const run = startAgentRun({
         task: message.task,
+        mode: message.mode ?? "edit",
         runner,
         postMessage: (hostMessage) => webview.postMessage(hostMessage),
       });

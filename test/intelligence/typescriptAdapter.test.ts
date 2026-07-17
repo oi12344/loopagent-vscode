@@ -243,6 +243,57 @@ describe("TypeScript adapter", () => {
     );
   });
 
+  it("extracts normalized signatures for overloaded callables", async () => {
+    const result = await extractWithTree(
+      [
+        "function run(value: string): void;",
+        "function run(value: number): void;",
+        "function run(value: string | number): void {}",
+        "class Service { constructor(value: string) {} execute<T>(value: T): Promise<T> { return Promise.resolve(value); } }",
+        "const map = <T>(value: T): T => value;",
+      ].join("\n"),
+    );
+
+    expect(result.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "run", signature: "run(value: string): void" }),
+        expect.objectContaining({ name: "run", signature: "run(value: number): void" }),
+        expect.objectContaining({ name: "run", signature: "run(value: string | number): void" }),
+        expect.objectContaining({ name: "constructor", signature: "constructor(value: string)" }),
+        expect.objectContaining({ name: "execute", signature: "execute<T>(value: T): Promise<T>" }),
+        expect.objectContaining({ name: "map", signature: "map<T>(value: T): T" }),
+      ]),
+    );
+  });
+
+  it("extracts declaration-only method and constructor overload signatures", async () => {
+    const result = await extractWithTree(
+      [
+        "class Service {",
+        "  constructor(value: string);",
+        "  constructor(value: number);",
+        "  constructor(value: string | number) {}",
+        "  run(value: string): void;",
+        "  run(value: number): void;",
+        "  run(value: string | number): void {}",
+        "}",
+        "interface Contract { run(value: string): void; }",
+      ].join("\n"),
+    );
+    const callableNodes = result.nodes.filter((node) => node.name === "constructor" || node.name === "run");
+
+    expect(callableNodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ signature: "constructor(value: string)", metadata: { declarationOnly: true } }),
+        expect.objectContaining({ signature: "constructor(value: number)", metadata: { declarationOnly: true } }),
+        expect.objectContaining({ signature: "constructor(value: string | number)", metadata: undefined }),
+        expect.objectContaining({ signature: "run(value: string): void", metadata: { declarationOnly: true } }),
+        expect.objectContaining({ signature: "run(value: number): void", metadata: { declarationOnly: true } }),
+        expect.objectContaining({ signature: "run(value: string | number): void", metadata: undefined }),
+      ]),
+    );
+  });
+
   it("extracts multiline imports and preserves callee shape", async () => {
     const result = await extractWithTree(
       [

@@ -1,6 +1,6 @@
-# 稳定 Chunk 与 Snapshot 差异设计
+# 稳定 Chunk 与 Snapshot 最小设计
 
-> 状态：设计和实施计划已批准，等待执行。
+> 状态：最小 card snapshot 已实现，等待工作区增量接入。
 >
 > 父规格：`docs/superpowers/specs/2026-07-10-sqlite-vector-code-index-design.md`
 >
@@ -10,17 +10,17 @@
 
 ## 目标
 
-把一次文件 AST 抽取转换为稳定、可序列化的 `ExtractionSnapshot`，并在 SQLite 事务内只修改真正变化的节点、关系、chunk、FTS 和 embedding 映射。
+将一次文件 AST 抽取转换为稳定、可序列化的 snapshot，先持久化最小的文件和符号 card，并通过 SQLite FTS 查询。行号移动不能改变 card ID、搜索文本或 embedding 文本。
 
-## 范围
+## 本轮范围
 
-1. 稳定文件、节点、边和 chunk 身份。
-2. 生成 file、symbol、class、callsite、test 和 source body chunk。
-3. 计算 `source_hash`、`search_hash`、`embedding_hash`。
-4. 将新旧 snapshot 分类为七种差异。
-5. 在单文件事务内应用精确写入集合并保证回滚一致性。
+1. 保持已完成的稳定文件、节点、边和关系身份。
+2. 为每个文件生成一个 `file_card`，为每个非 file snapshot node 生成一个 `symbol_card`。
+3. 复用内存 `SearchIndex` 的标识符和路径拆词规则生成确定性 `searchText`。
+4. 计算 `sourceHash`、`searchHash`、`embeddingHash`。
+5. 在 writer lease 保护的单文件事务中替换陈旧事实和 card，并只在 `searchHash` 改变时写 FTS。
 
-本规格不负责工作区扫描、watcher、跨文件调度、检索排序或远程 embedding 请求。
+本轮不生成 class、test、callsite 或 source-body card；不进行 AST 子块切分；不建立独立 diff API；不创建 embedding mapping 或执行远程 embedding。
 
 ## 输入与输出
 
@@ -49,38 +49,28 @@ type ExtractionSnapshot = {
 };
 ```
 
-snapshot 只能包含可结构化克隆的数据，不能保存 Tree-sitter tree、parser、函数或 VS Code 对象。
+snapshot 只保存结构化数据，不能保存 Tree-sitter tree、parser、函数或 VS Code 对象。tree 的释放责任始终由调用方承担。
 
 ## 稳定身份
 
-- 文件：规范化 workspace URI。
-- 顶层符号：`kind + qualified_name + normalized_signature`。
-- 类成员：父类语义键 + 成员 kind + 名称 + normalized signature。
-- 文件卡片：固定语义键 `file_card`。
-- 测试卡片：父级 describe 路径 + 测试 API 类型 + 测试名称。
-- 超大函数子块：父符号键 + AST node type + 规范化首语句 hash；ordinal 只解决同键冲突。
+文件 ID 使用规范化 workspace-relative path：统一 `/`、折叠重复分隔符、`.` 和 `..`，移除前导 `./`，保持真实大小写。URI 仅保存为 metadata，不参与主身份。
 
-所有 ID 使用 SHA-256 十六进制摘要：
+节点 ID 使用文件 ID 与语义键的 UTF-8 SHA-256。语义键包括 kind、规范化 qualified name、规范化 signature、declaration/concrete role 和父容器最终语义键；不包含 range、mtime 或时间。重复节点、边、binding、reference 和 diagnostic 保持按抽取顺序的 occurrence ordinal，以满足主键唯一且保持整体行移稳定。
+
+chunk ID 使用文件 ID、chunk kind 与 chunk semantic key 的 UTF-8 SHA-256：
 
 ```ts
-createFileId(fileUri: string): string;
-createSymbolSemanticKey(node: CodeNode, parentKey?: string): string;
-createStableNodeId(fileId: string, semanticKey: string): string;
-createStableChunkId(fileId: string, chunkKind: CodeChunkKind, semanticKey: string): string;
+export function createStableChunkId(
+  fileId: string,
+  kind: CodeChunkKind,
+  semanticKey: string,
+): string;
 ```
 
-ID 不包含行号、mtime 或索引时间。符号重命名视为删除旧身份并新增新身份。
-
-## Chunk 数据契约
+## Chunk 契约
 
 ```ts
-type CodeChunkKind =
-  | "file_card"
-  | "symbol_card"
-  | "class_card"
-  | "callsite_card"
-  | "test_case_card"
-  | "source_body";
+type CodeChunkKind = "file_card" | "symbol_card";
 
 type CodeChunk = {
   id: string;
@@ -96,118 +86,54 @@ type CodeChunk = {
   embeddingHash: string;
   startLine?: number;
   endLine?: number;
-  tokenHint: number;
 };
 ```
 
-card 字段顺序固定，所有 hash 使用 UTF-8 SHA-256。
+`file_card` 包含相对路径、语言、导出符号摘要、主要 import、顶层声明和文件级诊断摘要，不包含整文件源码。
 
-## Chunk 规则
+`symbol_card` 包含名称、qualified name、kind、signature、导出状态、容器和关联 import/call 摘要，不包含完整函数体。类和接口先作为 `symbol_card`，不额外生成聚合 card。
 
-### `file_card`
+## 搜索文本与 Hash
 
-每个文件固定一个，包含相对路径、语言、导出符号摘要、主要 import、顶层声明和文件级诊断摘要。不保存整文件源码。
+`chunking/searchText.ts` 提供共享的 `createSearchTokens(value)`。它覆盖 camelCase、snake_case、kebab-case、qualified name 与路径拆词；`SearchIndex` 和 card 均调用它，避免两套检索语义。
 
-### `symbol_card`
+三个 hash 均为 UTF-8 SHA-256：
 
-每个函数、方法、类、接口、type、enum、变量或 Python 定义一个，包含名称、qualified name、kind、签名、导出状态、所属容器、import/call 摘要和文档注释摘要。
+1. `sourceHash` 对应可显示 card 内容。
+2. `searchHash` 对应 FTS 文本。
+3. `embeddingHash` 对应未来 embedding 输入，排除 range 等波动 metadata。
 
-### `class_card`
-
-聚合类或接口的继承、实现、constructor、字段和方法签名，不重复方法体。
-
-### `callsite_card`
-
-只根据通用 AST 模式生成，例如 factory、registration、provider/client/runner/config 组合调用和顶层对象配置中的函数引用。不得加入项目业务词表。
-
-### `test_case_card`
-
-识别 `describe`、`it`、`test` 及 Python 测试函数，记录 describe 路径、测试名、被测调用和 fixture/import 摘要。
-
-### `source_body`
-
-1. 不超过 120 行且不超过 4,000 字符的函数或方法整体形成一个 chunk。
-2. 超大函数优先按 `if`、`for`、`while`、`try`、`switch`、callback、object literal 的 named AST range 切分。
-3. 子块目标 1,500-3,000 字符，硬上限 5,000 字符。
-4. overlap 前后最多 8 行，只进入 `sourceText`，不进入 `embeddingText`。
-5. 每个子块携带父函数签名、qualified name 和源码范围。
-
-切块必须在 `parsed.tree?.delete()` 前完成；snapshot builder 不接管 tree 的释放责任。
-
-## 搜索文本
-
-`searchText` 复用现有 `searchIndex.ts` 的 camelCase、snake_case、kebab-case、qualified name 和路径拆词语义，输出确定性 token 字符串。迁移完成后纯拆词逻辑归 `chunking/searchText.ts`，旧完整内存 SearchIndex 不再保留。
-
-## 三层 Hash
-
-1. `source_hash`：准确的 `sourceText`，决定 prompt 内容是否更新。
-2. `search_hash`：确定性的 `searchText`，决定是否重写 FTS。
-3. `embedding_hash`：排除范围、时间等波动信息的 `embeddingText`，决定是否重新生成 embedding。
-
-范围单独保存。仅在文件前插入空行时，三个 hash 都不变化。
-
-## 七类差异
-
-按 `embedding_hash -> search_hash -> source_hash -> metadata` 的优先级分类：
-
-- `unchanged`：三个 hash 和范围元数据相同，不写入。
-- `metadata-only`：三个 hash 相同，只更新范围或非检索元数据。
-- `source-changed`：只更新 chunk 源码、source hash 和范围；不写 FTS，不改变 embedding 映射。
-- `search-changed`：更新 chunk，并只在 search hash 变化时重写 FTS；embedding 继续复用。
-- `embedding-changed`：更新 chunk，把当前 provider/model 映射标记为 `pending`；FTS 是否重写仍由 search hash 决定。
-- `added`：插入完整事实、chunk、FTS 和待处理 embedding 映射。
-- `removed`：删除所属节点、出边、引用、诊断、chunk、FTS 和映射；内容寻址 cache 延迟回收。
-
-`SnapshotChangeSet` 分别列出 node、edge、binding、reference、diagnostic、chunk、FTS 和 embedding 操作，数组按稳定 ID 排序。分类名称不能替代精确写入集合。
-
-## 关系所有权
-
-边、binding、reference 和诊断尽可能记录 `owner_chunk_id`。当稳定 chunk 仍存在但出边消失时，事务必须删除旧出边；不能只 upsert 新边。跨文件入边由工作区增量规格使用持久化证据重新解析。
+范围单独保存；仅插入空行时三个 hash 不变。
 
 ## 单文件事务
 
-`applyFileSnapshot` 在一个 SQLite transaction 中按以下顺序执行：
+`applyFileSnapshot(ownerId, snapshot): void` 先验证 writer lease，并在同一 SQLite transaction 中：
 
-1. 读取旧文件 snapshot。
-2. 计算确定性的 `SnapshotChangeSet`。
-3. 删除 removed chunk 的 FTS 和所属事实。
-4. 删除变化 owner 的陈旧出边、binding、reference 和诊断。
-5. upsert nodes、bindings、references、diagnostics 和 edges。
-6. 按精确集合更新 chunk；只对 search hash 变化的 chunk 重写 FTS。
-7. 只对 embedding hash 变化的映射设置 `pending`。
-8. 更新 file hash、mtime、版本、indexed_at 和 `ready` 状态。
-9. 提交；任一步失败自动 rollback。
+1. 读取该 file 已持久化的 card 和事实 ID。
+2. 删除 incoming snapshot 中不存在的 chunk、edge、binding、reference 和 diagnostic。
+3. upsert incoming node、关系和 chunk。
+4. 三个 hash 未变的 card 只更新 range 并保留原 `updated_at`；对新 card 或 `searchHash` 改变的 card 重写对应 FTS 行。
+5. 更新 file hash、版本、indexed_at 和 ready 状态后提交。
 
-worker 返回计数，不返回完整持久化 snapshot：
-
-```ts
-type SnapshotWriteStats = {
-  inserted: number;
-  updated: number;
-  removed: number;
-  ftsWrites: number;
-  embeddingsInvalidated: number;
-};
-```
-
-## 失败处理
-
-- AST 抽取失败：不调用 snapshot 写入，保留数据库上一版。
-- snapshot 构建失败：释放 tree，job 由上层标记失败。
-- 约束或 SQL 错误：回滚整个文件事务，查询仍看到旧版本。
-- 不可识别的 diff 状态：拒绝写入，不做全量覆盖 fallback。
+不创建 `SnapshotChangeSet` 或七类 enum。对每个 card 的直接 hash 比较足以决定是否更新 chunk、FTS 或未来 embedding。任何 SQL 或约束错误回滚整个文件，旧 snapshot 保持可读。
 
 ## 验证
 
-1. 行号移动后 node、edge、chunk ID 保持稳定，范围正确变化。
-2. overload 由 normalized signature 区分。
-3. 六种 chunk 的内容、ID、搜索拆词和三层 hash 符合规则。
-4. 超大函数只在 named AST 边界切分，硬上限和 tree 单次释放得到验证。
-5. 七类 diff 分别产生精确 chunk、FTS、embedding 操作。
-6. 两函数文件只改第二个函数时，第一个 chunk 的 `updated_at` 和 embedding 映射不变。
-7. 陈旧出边和 FTS 行被删除，不存在孤立记录。
-8. 注入外键错误后整个文件事务回滚，旧 snapshot 完整保留。
+1. 行号移动后 node、edge、file/symbol card ID 不变，范围正确更新。
+2. overload 和重复声明保持唯一稳定身份。
+3. file/symbol card 的内容、搜索拆词和三层 hash 确定。
+4. 两函数文件仅移动范围时，FTS 行和 card `updated_at` 不变。
+5. 删除符号后不残留 edge、chunk 或 FTS 行。
+6. 外键错误使整个文件事务回滚，旧 snapshot 完整保留。
+7. 已有 `SearchIndex` 测试继续验证同一拆词语义。
+
+## 后续触发条件
+
+- 真实代码问答缺少函数体时，增加 `source_body`；首版使用固定文本上限切分。
+- language adapter 输出测试、继承或调用点事实，且评估显示符号卡不足时，增加对应 card。
+- 需要第二个持久化后端或实测大量无效写入时，再抽取 diff API。
+- embedding provider/model 与批处理器存在后，再写 `chunk_embeddings` 的 pending、retry 与 cache 生命周期。
 
 ## 完成门禁
 
-本规格完成后，调用方可以把单个变化文件转换为稳定 snapshot 并安全持久化；它仍不负责发现文件变化或安排跨文件重解析。
+本规格完成后，调用方可以把单个变化文件转换为稳定的最小 card snapshot、事务写入 SQLite 并通过 FTS 查询。工作区发现、watcher、跨文件重解析、复杂源码切分和远程 embedding 继续由后续独立计划承担。

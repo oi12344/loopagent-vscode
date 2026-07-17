@@ -1,4 +1,4 @@
-import type { ModelToolCall } from "../model/types";
+import type { ModelToolCall, ModelToolChoice } from "../model/types";
 
 export type ReactAgentMessage =
   | {
@@ -8,6 +8,7 @@ export type ReactAgentMessage =
   | {
       role: "assistant";
       content: string;
+      reasoningContent?: string;
       toolCalls?: ModelToolCall[];
     }
   | {
@@ -22,6 +23,7 @@ export type ReactAgentToolRequest = {
   name: string;
   rawArguments: string;
   input: unknown;
+  parseError?: string;
 };
 
 export type ReactAgentToolInvocation = {
@@ -34,6 +36,7 @@ export type ReactAgentTool = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  isConcurrencySafe?: (input: unknown) => boolean;
   invoke(invocation: ReactAgentToolInvocation): string | Promise<string>;
 };
 
@@ -41,9 +44,11 @@ export type ReactModelTurnResult =
   | {
       kind: "final";
       content: string;
+      reasoning?: string;
     }
   | {
       kind: "toolRequests";
+      reasoning?: string;
       assistantMessage: Extract<ReactAgentMessage, { role: "assistant" }>;
       requests: ReactAgentToolRequest[];
     };
@@ -51,4 +56,5 @@ export type ReactModelTurnResult =
 export type ReactModelTurn = (input: {
   messages: ReactAgentMessage[];
   signal: AbortSignal;
+  toolChoice?: ModelToolChoice;
 }) => Promise<ReactModelTurnResult>;

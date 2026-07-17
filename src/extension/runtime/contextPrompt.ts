@@ -2,6 +2,16 @@ import type { CodeRuntimeContext, CodeRuntimeTextExcerpt } from "./codeRuntimeCo
 
 export type { CodeRuntimeContext } from "./codeRuntimeContext";
 
+/**
+ * 打印 lines 数组，每行一条，便于调试查看上下文构建过程。
+ */
+export function printLines(lines: string[]): void {
+  console.log(`[contextPrompt] printLines: lines.length=${lines.length}`);
+  for (const line of lines) {
+    console.log(line);
+  }
+}
+
 export function renderCodeRuntimeContextPrompt(context: CodeRuntimeContext): string {
   if (!hasUsefulContext(context)) {
     return "";
@@ -74,7 +84,9 @@ export function renderCodeRuntimeContextPrompt(context: CodeRuntimeContext): str
   lines.push(`- 使用字符: ${context.budget.usedChars}/${context.budget.maxChars}`);
   lines.push(`- 是否截断: ${context.budget.truncated ? "是" : "否"}`);
 
-  return lines.join("\n").trim();
+  const result = lines.join("\n").trim();
+  console.log(`[contextPrompt] renderCodeRuntimeContextPrompt: result.length=${result.length}`);
+  return result;
 }
 
 function appendExcerpt(
@@ -84,9 +96,11 @@ function appendExcerpt(
   title: string,
 ): void {
   if (!excerpt || excerpt.text.length === 0) {
+    console.log(`[contextPrompt] appendExcerpt: skipped (title=${title})`);
     return;
   }
 
+  console.log(`[contextPrompt] appendExcerpt: title=${title}, lines=${excerpt.startLine}-${excerpt.endLine}, text.length=${excerpt.text.length}`);
   lines.push("");
   lines.push(`### ${title} (${excerpt.startLine}-${excerpt.endLine}${excerpt.truncated ? ", 已截断" : ""})`);
   lines.push(`\`\`\`${languageId}`);
@@ -95,7 +109,7 @@ function appendExcerpt(
 }
 
 function hasUsefulContext(context: CodeRuntimeContext): boolean {
-  return Boolean(
+  const result = Boolean(
     context.workspace.name ||
       context.workspace.roots.length > 0 ||
       context.activeEditor ||
@@ -104,8 +118,12 @@ function hasUsefulContext(context: CodeRuntimeContext): boolean {
       context.projectFiles.length > 0 ||
       context.diagnostics.length > 0,
   );
+  console.log(`[contextPrompt] hasUsefulContext: ${result}`);
+  return result;
 }
 
 function sanitizeCodeBlock(text: string): string {
-  return text.replace(/```/g, "``\\`");
+  const result = text.replace(/```/g, "``\\`");
+  console.log(`[contextPrompt] sanitizeCodeBlock: input.length=${text.length}, replaced=${result !== text}`);
+  return result;
 }

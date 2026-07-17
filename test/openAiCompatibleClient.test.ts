@@ -108,10 +108,11 @@ describe("createOpenAiCompatibleClient", () => {
 
     for await (const event of client.stream({
       messages: [
-        {
-          role: "assistant",
-          content: "",
-          toolCalls: [
+      {
+        role: "assistant",
+        content: "",
+        reasoningContent: "Checking the model runner.",
+        toolCalls: [
             {
               id: "call_0",
               type: "function",
@@ -148,6 +149,7 @@ describe("createOpenAiCompatibleClient", () => {
       {
         role: "assistant",
         content: "",
+        reasoning_content: "Checking the model runner.",
         tool_calls: [
           {
             id: "call_0",

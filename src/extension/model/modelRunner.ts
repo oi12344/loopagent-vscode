@@ -41,19 +41,17 @@ export function createModelRunner({ provider, systemPrompt, systemPromptProvider
       } satisfies HostToWebviewMessage;
 
       const messages = createMessages(task, systemPrompts);
-      let reportedReasoningSignal = false;
 
       for await (const event of provider.stream({ messages, signal })) {
         if (signal.aborted) {
           return;
         }
 
-        if (event.type === "reasoningDelta" && !reportedReasoningSignal) {
-          reportedReasoningSignal = true;
+        if (event.type === "reasoningDelta") {
           yield {
-            type: "assistantThinking",
+            type: "assistantReasoningDelta",
             runId,
-            message: "Received model reasoning signal",
+            content: event.content,
           } satisfies HostToWebviewMessage;
         }
 

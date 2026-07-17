@@ -10,8 +10,7 @@ export default defineConfig({
     },
   },
   test: {
-    environment: "jsdom",
+    environment: "node",
     exclude: [...configDefaults.exclude, ".worktrees/**", "test/integration/**", "dist/**"],
-    setupFiles: ["./test/setup.ts"],
   },
 });

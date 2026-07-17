@@ -65,6 +65,8 @@
 
 项目根目录可保留 `.worktrees/` 中的功能 worktree。Vitest 配置必须排除 `.worktrees/**`，避免根目录的 `npm test` 重复扫描隔离 worktree 内的源码、测试和构建产物。
 
+Vitest 默认使用 Node 环境；只有需要真实 DOM 的 `test/App.test.tsx` 通过文件注释启用 `jsdom`。测试 setup 不再全局加载，以避免每个 Node/SQLite 测试重复初始化 DOM 环境。
+
 ## 本地 VS Code 调试流程
 
 本地测试插件时，使用固定入口：

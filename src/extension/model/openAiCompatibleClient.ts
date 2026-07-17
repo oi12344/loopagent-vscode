@@ -114,6 +114,7 @@ function serializeMessage(message: ModelMessage): Record<string, unknown> {
       return {
         role: message.role,
         content: message.content,
+        ...(message.reasoningContent ? { reasoning_content: message.reasoningContent } : {}),
         ...(message.toolCalls ? { tool_calls: message.toolCalls } : {}),
       };
     case "tool":
