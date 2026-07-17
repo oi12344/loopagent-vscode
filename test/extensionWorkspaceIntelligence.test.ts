@@ -24,6 +24,14 @@ describe("LoopAgent extension workspace intelligence lifecycle", () => {
 
     vi.resetModules();
     vi.doMock("vscode", () => ({
+      CodeLens: class {},
+      EventEmitter: class {
+        readonly event = () => createDisposable();
+        fire() {}
+        dispose() {}
+      },
+      Position: class {},
+      Range: class {},
       commands: {
         executeCommand: vi.fn(),
         registerCommand: vi.fn(() => createDisposable()),
@@ -41,6 +49,9 @@ describe("LoopAgent extension workspace intelligence lifecycle", () => {
         joinPath: vi.fn((_base, ...segments: string[]) => ({
           toString: () => segments.join("/"),
         })),
+      },
+      languages: {
+        registerCodeLensProvider: vi.fn(() => createDisposable()),
       },
       workspace: {
         registerTextDocumentContentProvider: vi.fn(() => createDisposable()),

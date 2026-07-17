@@ -10,6 +10,10 @@ type FakeUri = {
   toString(): string;
 };
 
+type FakeCodeLens = {
+  command?: { title: string; command: string; arguments?: unknown[] };
+};
+
 type FakeWorkspaceEditEntry =
   | { kind: "replace"; path: string; text: string }
   | { kind: "create"; path: string }
@@ -44,8 +48,8 @@ class FakeWorkspaceEdit {
 function createFakeVsCodeApi(
   initialFiles: Record<string, string>,
   options: {
-    confirmation?: "Apply all" | "Cancel" | undefined;
-    beforeConfirmation?: () => void;
+    reviewChoice?: "accept" | "discard";
+    beforeReviewChoice?: () => void;
     symbolicLinkPaths?: string[];
     dirtyPaths?: string[];
     dirtyContents?: Record<string, string>;
@@ -58,6 +62,8 @@ function createFakeVsCodeApi(
   readFile: ReturnType<typeof vi.fn>;
   applyEdit: ReturnType<typeof vi.fn>;
   executeCommand: ReturnType<typeof vi.fn>;
+  showInformationMessage: ReturnType<typeof vi.fn>;
+  reviewActions: string[];
   previewText(uri: FakeUri): string | undefined;
 } {
   const root = createUri("file", "E:\\work\\repo");
@@ -74,8 +80,24 @@ function createFakeVsCodeApi(
     return new TextEncoder().encode(content);
   });
   const applyEdit = vi.fn(async () => true);
-  const executeCommand = vi.fn(async () => undefined);
+  const registeredCommands = new Map<string, (...args: unknown[]) => unknown>();
+  const reviewActions: string[] = [];
+  const showInformationMessage = vi.fn(async () => undefined);
   let contentProvider: { provideTextDocumentContent(uri: FakeUri): string } | undefined;
+  let codeLensProvider: { provideCodeLenses(document: { uri: FakeUri }): FakeCodeLens[] | Promise<FakeCodeLens[]> } | undefined;
+  let activeEditorUri: FakeUri | undefined;
+  let reviewTriggered = false;
+  const executeCommand = vi.fn(async (command: string, ...args: unknown[]) => {
+    if (command === "vscode.diff") activeEditorUri = args[1] as FakeUri;
+    if (command !== "vscode.diff" || reviewTriggered || !options.reviewChoice || !codeLensProvider) return;
+    reviewTriggered = true;
+    const lenses = await codeLensProvider.provideCodeLenses({ uri: args[1] as FakeUri });
+    reviewActions.push(...lenses.map((lens) => lens.command?.title ?? ""));
+    const title = options.reviewChoice === "accept" ? "接受全部" : "放弃";
+    const action = lenses.find((lens) => lens.command?.title === title)?.command;
+    options.beforeReviewChoice?.();
+    if (action) await registeredCommands.get(action.command)?.();
+  });
   const stat = vi.fn(async (uri: FakeUri) => {
     if (symbolicLinks.has(uri.fsPath)) return { type: 1 | 64 };
     if (files.has(uri.fsPath)) return { type: 1 };
@@ -87,18 +109,41 @@ function createFakeVsCodeApi(
     api: {
       Uri: {
         joinPath: (base: FakeUri, ...parts: string[]) => createUri("file", `${base.fsPath}\\${parts.join("\\")}`),
-        parse: (value: string) => createUri(value.split(":", 1)[0] ?? "untitled", value),
+        parse: (value: string) => {
+          const separator = value.indexOf(":");
+          return createUri(value.slice(0, separator), value.slice(separator + 1));
+        },
+      },
+      CodeLens: class {
+        constructor(readonly range: unknown, readonly command?: FakeCodeLens["command"]) {}
+      },
+      EventEmitter: class {
+        readonly event = () => ({ dispose() {} });
+        fire() {}
+        dispose() {}
       },
       FileType: { Directory: 2, SymbolicLink: 64 },
       WorkspaceEdit: FakeWorkspaceEdit,
       Position: class {},
       Range: class {},
-      commands: { executeCommand },
+      commands: {
+        executeCommand,
+        registerCommand: (command: string, callback: (...args: unknown[]) => unknown) => {
+          registeredCommands.set(command, callback);
+          return { dispose: () => registeredCommands.delete(command) };
+        },
+      },
+      languages: {
+        registerCodeLensProvider: (_selector: unknown, provider: typeof codeLensProvider) => {
+          codeLensProvider = provider;
+          return { dispose: () => { codeLensProvider = undefined; } };
+        },
+      },
       window: {
-        showInformationMessage: vi.fn(async () => {
-          options.beforeConfirmation?.();
-          return options.confirmation;
-        }),
+        get activeTextEditor() {
+          return activeEditorUri ? { document: { uri: activeEditorUri } } : undefined;
+        },
+        showInformationMessage,
       },
       workspace: {
         workspaceFolders: [{ uri: root }],
@@ -123,6 +168,8 @@ function createFakeVsCodeApi(
     readFile,
     applyEdit,
     executeCommand,
+    showInformationMessage,
+    reviewActions,
     previewText: (uri) => contentProvider?.provideTextDocumentContent(uri),
   };
 }
@@ -183,7 +230,7 @@ describe("code generation edit tools", () => {
     const fake = createFakeVsCodeApi(
       { "src/example.ts": "saved content" },
       {
-        confirmation: "Cancel",
+        reviewChoice: "discard",
         dirtyPaths: ["src/example.ts"],
         dirtyContents: { "src/example.ts": "before" },
       },
@@ -210,10 +257,12 @@ describe("code generation edit tools", () => {
     expect(fake.previewText(original)).toBe("before");
     expect(fake.previewText(target)).toBe("after");
     expect(fake.executeCommand).toHaveBeenNthCalledWith(2, "toggle.diff.renderSideBySide", target);
+    expect(fake.reviewActions).toEqual(["接受全部", "放弃"]);
+    expect(fake.showInformationMessage).not.toHaveBeenCalled();
   });
 
   it("opens code diff previews and does not write them when cancelled", async () => {
-    const fake = createFakeVsCodeApi({ "src/first.ts": "before", "src/second.ts": "old" }, { confirmation: "Cancel" });
+    const fake = createFakeVsCodeApi({ "src/first.ts": "before", "src/second.ts": "old" }, { reviewChoice: "discard" });
     const service = createEditPreviewService(fake.api);
 
     await expect(
@@ -248,7 +297,7 @@ describe("code generation edit tools", () => {
   it("applies confirmed create, replace, rename and delete operations once", async () => {
     const fake = createFakeVsCodeApi(
       { "src/replace.ts": "before", "src/from.ts": "rename me", "src/delete.ts": "delete me" },
-      { confirmation: "Apply all" },
+      { reviewChoice: "accept" },
     );
     const service = createEditPreviewService(fake.api);
 
@@ -275,7 +324,7 @@ describe("code generation edit tools", () => {
   });
 
   it("rejects invalid replacements, snapshot conflicts, and cancellation without writing", async () => {
-    const invalid = createFakeVsCodeApi({ "src/example.ts": "duplicate duplicate" }, { confirmation: "Apply all" });
+    const invalid = createFakeVsCodeApi({ "src/example.ts": "duplicate duplicate" }, { reviewChoice: "accept" });
     const invalidService = createEditPreviewService(invalid.api);
     for (const oldText of ["", "missing", "duplicate"]) {
       await expect(
@@ -297,7 +346,7 @@ describe("code generation edit tools", () => {
 
     const sourceSymlink = createFakeVsCodeApi(
       { "src/example.ts": "before" },
-      { confirmation: "Apply all", beforeConfirmation: () => sourceSymlink.symbolicLinks.add("E:\\work\\repo\\src\\example.ts") },
+      { reviewChoice: "accept", beforeReviewChoice: () => sourceSymlink.symbolicLinks.add("E:\\work\\repo\\src\\example.ts") },
     );
     const sourceSymlinkService = createEditPreviewService(sourceSymlink.api);
     await expect(
@@ -307,7 +356,7 @@ describe("code generation edit tools", () => {
 
     const conflict = createFakeVsCodeApi(
       { "src/example.ts": "before" },
-      { confirmation: "Apply all", beforeConfirmation: () => conflict.files.set("E:\\work\\repo\\src\\example.ts", "changed") },
+      { reviewChoice: "accept", beforeReviewChoice: () => conflict.files.set("E:\\work\\repo\\src\\example.ts", "changed") },
     );
     const conflictService = createEditPreviewService(conflict.api);
     await expect(
@@ -317,7 +366,7 @@ describe("code generation edit tools", () => {
 
     const createConflict = createFakeVsCodeApi(
       { "src/placeholder.ts": "placeholder" },
-      { confirmation: "Apply all", beforeConfirmation: () => createConflict.files.set("E:\\work\\repo\\src\\new.ts", "other") },
+      { reviewChoice: "accept", beforeReviewChoice: () => createConflict.files.set("E:\\work\\repo\\src\\new.ts", "other") },
     );
     const createConflictService = createEditPreviewService(createConflict.api);
     await expect(
@@ -327,7 +376,7 @@ describe("code generation edit tools", () => {
 
     const renameTargetSymlink = createFakeVsCodeApi(
       { "src/from.ts": "before" },
-      { confirmation: "Apply all", beforeConfirmation: () => renameTargetSymlink.symbolicLinks.add("E:\\work\\repo\\src\\to.ts") },
+      { reviewChoice: "accept", beforeReviewChoice: () => renameTargetSymlink.symbolicLinks.add("E:\\work\\repo\\src\\to.ts") },
     );
     const renameTargetSymlinkService = createEditPreviewService(renameTargetSymlink.api);
     await expect(
@@ -337,8 +386,8 @@ describe("code generation edit tools", () => {
 
     const controller = new AbortController();
     const cancelled = createFakeVsCodeApi({ "src/example.ts": "before" }, {
-      confirmation: "Apply all",
-      beforeConfirmation: () => controller.abort(),
+      reviewChoice: "accept",
+      beforeReviewChoice: () => controller.abort(),
     });
     const cancelledService = createEditPreviewService(cancelled.api);
     await expect(
