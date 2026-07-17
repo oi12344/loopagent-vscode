@@ -150,6 +150,19 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByText("Process").closest("details")).not.toHaveAttribute("open");
   });
 
+  it("preserves provider reasoning newlines", () => {
+    render(<App />);
+
+    postHostMessage({ type: "runStarted", runId: "run-1", task: "Inspect the project" });
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "DeepSeek" });
+    postHostMessage({ type: "assistantReasoningDelta", runId: "run-1", content: "Inspecting the active file.\nChecking callers." });
+
+    const reasoning = screen.getByText(
+      (_, element) => element?.textContent === "Inspecting the active file.\nChecking callers.",
+    );
+    expect(reasoning.textContent).toBe("Inspecting the active file.\nChecking callers.");
+  });
+
   it("renders run failures in the assistant turn", async () => {
     const user = userEvent.setup();
     const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
