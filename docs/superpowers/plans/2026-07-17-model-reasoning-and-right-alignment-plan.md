@@ -10,7 +10,7 @@
 
 ## 全局约束
 
-- 只修改 src/shared/messages.ts、src/extension/model/modelRunner.ts、src/webview/App.tsx、src/webview/styles.css、test/modelRunnerContext.test.ts、test/App.test.tsx 与本计划的实施记录。
+- 只修改 src/shared/messages.ts、src/extension/model/modelRunner.ts、src/webview/App.tsx、src/webview/styles.css、test/modelRunnerContext.test.ts、test/modelProvider.test.ts、test/App.test.tsx 与本计划的实施记录。
 - 不修改 WebviewToHostMessage、模型请求、工具执行、Extension Host、模型配置或 ReactAgentRunner。
 - 只显示 provider 已返回的 reasoningDelta 字符串；不生成、总结、推断或补全隐藏思考。
 - assistantThinking 与 agentEvent 不得作为 Process 内容；没有 reasoning 流时不显示空 Process。
@@ -25,6 +25,7 @@
 - src/shared/messages.ts：新增 assistantReasoningDelta Host 消息成员。
 - src/extension/model/modelRunner.ts：逐段转发 ModelStreamEvent.reasoningDelta。
 - test/modelRunnerContext.test.ts：验证原始 reasoning 分段的 Host 映射。
+- test/modelProvider.test.ts：更新既有 provider 流映射的推理事件断言。
 - src/webview/App.tsx：保存并显示 reasoning，忽略通用过程日志，添加右侧用户气泡类。
 - src/webview/styles.css：模型推理文本与右侧气泡的主题感知样式。
 - test/App.test.tsx：验证 reasoning 显示边界、完成折叠和用户气泡类。
@@ -37,6 +38,7 @@
 - Modify: src/shared/messages.ts
 - Modify: src/extension/model/modelRunner.ts
 - Modify: test/modelRunnerContext.test.ts
+- Modify: test/modelProvider.test.ts
 
 **Consumes：** ModelStreamEvent.reasoningDelta 的 content 字段，以及 HostToWebviewMessage 联合类型。
 
@@ -76,13 +78,29 @@ it("forwards provider reasoning deltas without replacing their content", async (
 });
 ~~~
 
+将 test/modelProvider.test.ts 既有 `turns provider stream events into structured assistant chat messages` 的期望消息替换为：
+
+~~~ts
+{ type: "assistantReasoningDelta", runId: "run-1", content: "private raw reasoning" },
+~~~
+
+并将该用例末尾的否定断言替换为：
+
+~~~ts
+expect(hostMessages).toContainEqual({
+  type: "assistantReasoningDelta",
+  runId: "run-1",
+  content: "private raw reasoning",
+});
+~~~
+
 - [ ] **步骤 2：运行定向测试确认红灯**
 
 ~~~powershell
-npm test -- --run test/modelRunnerContext.test.ts
+npm test -- --run test/modelRunnerContext.test.ts test/modelProvider.test.ts
 ~~~
 
-预期：测试失败，因为 Host 消息联合类型和 modelRunner 尚未产生 assistantReasoningDelta。
+预期：测试失败，因为 Host 消息联合类型和 modelRunner 尚未产生 assistantReasoningDelta；既有 provider 流断言仍期待旧的 Received model reasoning signal。
 
 - [ ] **步骤 3：添加最小消息契约与转发**
 
@@ -113,8 +131,8 @@ if (event.type === "reasoningDelta") {
 - [ ] **步骤 4：运行定向测试确认绿灯并提交**
 
 ~~~powershell
-npm test -- --run test/modelRunnerContext.test.ts
-git add -- src/shared/messages.ts src/extension/model/modelRunner.ts test/modelRunnerContext.test.ts
+npm test -- --run test/modelRunnerContext.test.ts test/modelProvider.test.ts
+git add -- src/shared/messages.ts src/extension/model/modelRunner.ts test/modelRunnerContext.test.ts test/modelProvider.test.ts
 git commit -m "feat(model): stream reasoning to webview"
 ~~~
 
@@ -274,7 +292,7 @@ npm run typecheck
 npm run compile
 git diff --check
 git status --short
-rg -n -i "console\.log|TODO|TBD" src/shared/messages.ts src/extension/model/modelRunner.ts src/webview/App.tsx src/webview/styles.css test/modelRunnerContext.test.ts test/App.test.tsx
+rg -n -i "console\.log|TODO|TBD" src/shared/messages.ts src/extension/model/modelRunner.ts src/webview/App.tsx src/webview/styles.css test/modelRunnerContext.test.ts test/modelProvider.test.ts test/App.test.tsx
 ~~~
 
 预期：测试、类型检查、构建和 diff 检查全部成功；rg 无匹配时退出码 1 按清理通过处理；不删除无关用户文件。

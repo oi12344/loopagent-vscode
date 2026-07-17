@@ -51,9 +51,10 @@ provider.stream()
 ## 验证
 
 - `test/modelRunnerContext.test.ts` 验证 `reasoningDelta` 被原样映射到新 Host 事件。
+- `test/modelProvider.test.ts` 更新既有 provider 流映射断言，使其验证原始 reasoning 文本被转发。
 - `test/App.test.tsx` 验证 `Process` 显示推理文本、忽略 `assistantThinking` 与 `agentEvent` 的通用运行文案，并在完成后折叠。
 - 在 `test/App.test.tsx` 验证用户消息拥有右侧气泡类与既有提交契约。
-- 运行 `npm test -- --run test/modelRunnerContext.test.ts test/App.test.tsx`、`npm run typecheck`、`npm test`、`npm run compile` 和 `git diff --check`。
+- 运行 `npm test -- --run test/modelRunnerContext.test.ts test/modelProvider.test.ts test/App.test.tsx`、`npm run typecheck`、`npm test`、`npm run compile` 和 `git diff --check`。
 - 在唯一的 Extension Development Host 中使用能返回 reasoning 的模型，确认 `Process` 不含工具日志且用户消息位于右侧。
 
 ## 相关文件
@@ -63,4 +64,5 @@ provider.stream()
 - `src/webview/App.tsx`
 - `src/webview/styles.css`
 - `test/modelRunnerContext.test.ts`
+- `test/modelProvider.test.ts`
 - `test/App.test.tsx`
