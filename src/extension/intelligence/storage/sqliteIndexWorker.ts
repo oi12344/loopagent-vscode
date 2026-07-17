@@ -54,6 +54,8 @@ function dispatch(request: SqliteWorkerRequest): unknown {
       return runtime.enqueueChanges(request.changes);
     case "applyFileSnapshot":
       return runtime.applyFileSnapshot(request.snapshot);
+    case "indexNodeSearchTokens":
+      return runtime.indexNodeSearchTokens(request.snapshot);
     case "listIndexedFiles":
       return runtime.listIndexedFiles();
     case "updateFileMetadata":
@@ -62,6 +64,8 @@ function dispatch(request: SqliteWorkerRequest): unknown {
       return runtime.removeFile(request.fileUri);
     case "searchCodeChunks":
       return runtime.searchCodeChunks(request.query, request.limit);
+    case "searchNodes":
+      return runtime.searchNodes(request.query, request.limit);
     case "getPendingJobs":
       return runtime.getPendingJobs();
     case "claimNextJob":

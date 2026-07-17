@@ -8,6 +8,7 @@ import type {
   StoredFileMetadata,
   StoredIndexJob,
   StoredCodeChunk,
+  SearchNodeResult,
   SqliteWorkerMessage,
   SqliteWorkerRequest,
   SqliteWorkerResponse,
@@ -34,10 +35,12 @@ export type SqliteIndexWorkerClient = {
   initialize(databasePath: string, ownerId: string): Promise<IndexWorkerStatus>;
   enqueueChanges(changes: readonly IndexChange[]): Promise<void>;
   applyFileSnapshot(snapshot: ExtractionSnapshot): Promise<void>;
+  indexNodeSearchTokens(snapshot: ExtractionSnapshot): Promise<void>;
   listIndexedFiles(): Promise<StoredFileMetadata[]>;
   updateFileMetadata(update: FileMetadataUpdate): Promise<void>;
   removeFile(fileUri: string): Promise<void>;
   searchCodeChunks(query: string, limit: number): Promise<StoredCodeChunk[]>;
+  searchNodes(query: string, limit: number): Promise<SearchNodeResult[]>;
   getPendingJobs(): Promise<StoredIndexJob[]>;
   claimNextJob(ownerId: string): Promise<ClaimedIndexJob | undefined>;
   completeJob(claim: ClaimedIndexJob): Promise<void>;
@@ -85,6 +88,10 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
     return this.request((id) => ({ id, kind: "applyFileSnapshot", snapshot }));
   }
 
+  indexNodeSearchTokens(snapshot: ExtractionSnapshot): Promise<void> {
+    return this.request((id) => ({ id, kind: "indexNodeSearchTokens", snapshot }));
+  }
+
   listIndexedFiles(): Promise<StoredFileMetadata[]> {
     return this.request((id) => ({ id, kind: "listIndexedFiles" }));
   }
@@ -99,6 +106,10 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
 
   searchCodeChunks(query: string, limit: number): Promise<StoredCodeChunk[]> {
     return this.request((id) => ({ id, kind: "searchCodeChunks", query, limit }));
+  }
+
+  searchNodes(query: string, limit: number): Promise<SearchNodeResult[]> {
+    return this.request((id) => ({ id, kind: "searchNodes", query, limit }));
   }
 
   getPendingJobs(): Promise<StoredIndexJob[]> {

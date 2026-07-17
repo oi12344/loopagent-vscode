@@ -8,6 +8,7 @@ import type {
   StoredFileMetadata,
   StoredIndexJob,
   StoredCodeChunk,
+  SearchNodeResult,
 } from "./sqliteIndexStore";
 import type { ExtractionSnapshot } from "./indexTypes";
 
@@ -26,10 +27,12 @@ export type SqliteWorkerStore = Pick<
   | "recoverInterruptedJobs"
   | "enqueueChanges"
   | "applyFileSnapshot"
+  | "indexNodeSearchTokens"
   | "listIndexedFiles"
   | "updateFileMetadata"
   | "removeFile"
   | "searchCodeChunks"
+  | "searchNodes"
   | "listPendingJobs"
   | "claimNextJob"
   | "completeJob"
@@ -41,10 +44,12 @@ export type SqliteIndexWorkerRuntime = {
   getStatus(): IndexWorkerStatus;
   enqueueChanges(changes: readonly IndexChange[]): void;
   applyFileSnapshot(snapshot: ExtractionSnapshot): void;
+  indexNodeSearchTokens(snapshot: ExtractionSnapshot): void;
   listIndexedFiles(): StoredFileMetadata[];
   updateFileMetadata(update: FileMetadataUpdate): void;
   removeFile(fileUri: string): void;
   searchCodeChunks(query: string, limit: number): StoredCodeChunk[];
+  searchNodes(query: string, limit: number): SearchNodeResult[];
   getPendingJobs(): StoredIndexJob[];
   claimNextJob(ownerId: string): ClaimedIndexJob | undefined;
   completeJob(claim: ClaimedIndexJob): void;
@@ -207,6 +212,9 @@ export function createSqliteIndexWorkerRuntime(deps: RuntimeDependencies): Sqlit
     applyFileSnapshot(snapshot) {
       runWriter((activeStore, activeOwner) => activeStore.applyFileSnapshot(activeOwner, snapshot));
     },
+    indexNodeSearchTokens(snapshot) {
+      runWriter((activeStore, activeOwner) => activeStore.indexNodeSearchTokens(activeOwner, snapshot));
+    },
     listIndexedFiles() {
       return requireStore().listIndexedFiles();
     },
@@ -218,6 +226,9 @@ export function createSqliteIndexWorkerRuntime(deps: RuntimeDependencies): Sqlit
     },
     searchCodeChunks(query, limit) {
       return requireStore().searchCodeChunks(query, limit);
+    },
+    searchNodes(query, limit) {
+      return requireStore().searchNodes(query, limit);
     },
     getPendingJobs() {
       return requireStore().listPendingJobs();
