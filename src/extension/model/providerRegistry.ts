@@ -30,6 +30,8 @@ const REACT_SYSTEM_PROMPT = [
   "Do not keep searching for completeness or to reconfirm facts already supported by source evidence.",
   "Before editing, read the relevant file content with readFile.",
   "Propose all workspace changes only through applyEdit.",
+  "After reading the relevant files, call applyEdit immediately with the complete change proposal.",
+  "Do not ask the user for textual confirmation before calling applyEdit; applyEdit opens the review interface and handles confirmation.",
   "Do not claim an edit succeeded until applyEdit reports that it was applied.",
   "Answer only from supported evidence and state any material limitation.",
   "Do not invent repository facts when the tool does not provide enough evidence.",

@@ -207,6 +207,10 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
       .join("\n");
     expect(systemPrompt).toContain("Before editing, read the relevant file content with readFile.");
     expect(systemPrompt).toContain("Propose all workspace changes only through applyEdit.");
+    expect(systemPrompt).toContain("After reading the relevant files, call applyEdit immediately with the complete change proposal.");
+    expect(systemPrompt).toContain(
+      "Do not ask the user for textual confirmation before calling applyEdit; applyEdit opens the review interface and handles confirmation.",
+    );
     expect(systemPrompt).toContain("Do not claim an edit succeeded until applyEdit reports that it was applied.");
     expect(readFileTool.invoke).toHaveBeenCalledTimes(1);
     expect(applyEditTool.invoke).toHaveBeenCalledTimes(1);
