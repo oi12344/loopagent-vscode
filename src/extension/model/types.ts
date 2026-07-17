@@ -18,6 +18,12 @@ export type ModelToolCall = {
   };
 };
 
+export type ModelToolChoice =
+  | "auto"
+  | "none"
+  | "required"
+  | { type: "function"; function: { name: string } };
+
 export type ModelMessage =
   | {
       role: "system" | "user";
@@ -40,7 +46,7 @@ export type ModelRequest = {
   messages: ModelMessage[];
   signal: AbortSignal;
   tools?: ModelToolDefinition[];
-  toolChoice?: "auto" | "none" | "required";
+  toolChoice?: ModelToolChoice;
 };
 
 export type ModelStreamEvent =

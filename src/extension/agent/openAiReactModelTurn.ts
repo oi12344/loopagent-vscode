@@ -69,6 +69,9 @@ export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReac
     }
 
     if (content.length > 0) {
+      if (toolChoice === "required" || typeof toolChoice === "object") {
+        throw new Error("Model did not call a required tool");
+      }
       return { kind: "final", content, ...(reasoning ? { reasoning } : {}) };
     }
 

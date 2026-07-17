@@ -1,6 +1,6 @@
 import { isIndexableWorkspacePath } from "../intelligence/indexing/workspaceFilePolicy";
 import type { ReactAgentTool } from "./reactTypes";
-import { assertSavedWorkspaceDocument, resolveWorkspaceFileUri, type VsCodeEditApi } from "./editPreviewService";
+import { readWorkspaceText, resolveWorkspaceFileUri, type VsCodeEditApi } from "./editPreviewService";
 
 const MAX_READ_FILE_LENGTH = 20_000;
 const TRUNCATION_NOTICE = "Read file was truncated at 20000 characters; request a line range.";
@@ -27,7 +27,7 @@ export function createReadFileTool(vscodeApi: VsCodeEditApi): ReactAgentTool {
       }
       signal.throwIfAborted();
       const uri = await resolveWorkspaceFileUri(vscodeApi, path);
-      const content = await readText(vscodeApi, uri);
+      const content = await readWorkspaceText(vscodeApi, uri);
       signal.throwIfAborted();
       const selected = startLine === undefined ? content : content.split(/\r?\n/).slice(startLine - 1, endLine).join("\n");
       return selected.length > MAX_READ_FILE_LENGTH
@@ -57,22 +57,6 @@ function parseReadInput(input: unknown): { path: string; startLine?: number; end
     throw new Error("Invalid readFile input");
   }
   return { path: input.path, startLine: input.startLine, endLine: input.endLine };
-}
-
-async function readText(vscodeApi: VsCodeEditApi, uri: Awaited<ReturnType<typeof resolveWorkspaceFileUri>>): Promise<string> {
-  assertSavedWorkspaceDocument(vscodeApi, uri);
-  try {
-    const bytes = await vscodeApi.workspace.fs.readFile(uri);
-    if (bytes.includes(0)) {
-      throw new Error("Binary files are not supported");
-    }
-    return new TextDecoder().decode(bytes);
-  } catch (error) {
-    if (error instanceof Error && error.message === "Binary files are not supported") {
-      throw error;
-    }
-    throw new Error("Unable to read workspace file");
-  }
 }
 
 function isPositiveInteger(value: unknown): value is number {

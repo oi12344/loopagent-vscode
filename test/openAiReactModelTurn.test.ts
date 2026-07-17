@@ -100,6 +100,24 @@ describe("createOpenAiReactModelTurn", () => {
     ).resolves.toEqual({ kind: "final", content: "Workspace ready." });
   });
 
+  it("rejects final text when the provider was required to call a tool", async () => {
+    const modelTurn = createOpenAiReactModelTurn({
+      provider: createProvider([
+        { type: "contentDelta", content: "I changed the file." },
+        { type: "finishReason", reason: "stop" },
+      ]),
+      tools: [exploreCodeTool],
+    });
+
+    await expect(
+      modelTurn({
+        messages: [{ role: "user", content: "Change the file." }],
+        signal: new AbortController().signal,
+        toolChoice: "required",
+      }),
+    ).rejects.toThrow("Model did not call a required tool");
+  });
+
   it("includes tool definitions with the default auto choice", async () => {
     let seenToolChoice: "auto" | "none" | undefined;
     let seenTools: unknown;

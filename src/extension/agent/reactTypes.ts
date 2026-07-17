@@ -1,4 +1,4 @@
-import type { ModelToolCall } from "../model/types";
+import type { ModelToolCall, ModelToolChoice } from "../model/types";
 
 export type ReactAgentMessage =
   | {
@@ -55,5 +55,5 @@ export type ReactModelTurnResult =
 export type ReactModelTurn = (input: {
   messages: ReactAgentMessage[];
   signal: AbortSignal;
-  toolChoice?: "auto" | "none" | "required";
+  toolChoice?: ModelToolChoice;
 }) => Promise<ReactModelTurnResult>;

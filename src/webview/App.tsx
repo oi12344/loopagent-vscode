@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { HostToWebviewMessage, ModelThinkingMode, RunModelSelection } from "../shared/messages";
+import type { HostToWebviewMessage, ModelThinkingMode, RunModelSelection, TaskMode } from "../shared/messages";
 import { createDefaultVsCodeApi, type VsCodeApi } from "./vscodeApi";
 import "./styles.css";
 
@@ -86,6 +86,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [turns, setTurns] = React.useState<ChatTurn[]>([]);
   const [selectedModelId, setSelectedModelId] = React.useState(modelOptions[0].id);
   const [thinkingMode, setThinkingMode] = React.useState<ModelThinkingMode>("enabled");
+  const [taskMode, setTaskMode] = React.useState<TaskMode>("edit");
   const [openMenu, setOpenMenu] = React.useState<"model" | "thinking" | null>(null);
   const nextTurnId = React.useRef(0);
 
@@ -224,7 +225,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
     };
   }, []);
 
-  function submitTask(task: string) {
+  function submitTask(task: string, mode: TaskMode = taskMode) {
     const trimmedMessage = task.trim();
 
     if (!trimmedMessage || isRunning) {
@@ -249,7 +250,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       },
     ]);
     setMessage("");
-    vscodeApi.postMessage({ type: "startTask", task: trimmedMessage, model: runModel });
+    vscodeApi.postMessage({ type: "startTask", task: trimmedMessage, mode, model: runModel });
   }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -282,7 +283,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         {turns.length === 0 ? (
           <>
             <p className="empty-state">Start a conversation with LoopAgent.</p>
-            <TaskSuggestions onSelect={submitTask} />
+            <TaskSuggestions onSelect={(task) => submitTask(task, "ask")} />
           </>
         ) : (
           turns.map((turn) => {
@@ -307,6 +308,15 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
 
         <div className="composer-toolbar">
           <div className="composer-tools">
+            <div className="mode-switch" role="group" aria-label="Mode">
+              <button type="button" className="mode-button" aria-pressed={taskMode === "edit"} onClick={() => setTaskMode("edit")}>
+                Edit
+              </button>
+              <button type="button" className="mode-button" aria-pressed={taskMode === "ask"} onClick={() => setTaskMode("ask")}>
+                Ask
+              </button>
+            </div>
+
             <div className="tool-menu-anchor">
               <button type="button" className="chip-button" onClick={() => setOpenMenu(openMenu === "model" ? null : "model")}>
                 {selectedModel.label}

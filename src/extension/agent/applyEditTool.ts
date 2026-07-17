@@ -4,7 +4,7 @@ import type { EditOperation, EditPreviewService } from "./editPreviewService";
 export function createApplyEditTool(service: EditPreviewService): ReactAgentTool {
   return {
     name: "applyEdit",
-    description: "Preview and apply a complete, user-confirmed workspace edit proposal.",
+    description: "Open VS Code's review UI for a complete workspace edit proposal; this tool handles user confirmation before applying.",
     inputSchema: {
       type: "object",
       properties: {

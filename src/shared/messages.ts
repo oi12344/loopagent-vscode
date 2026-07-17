@@ -2,6 +2,8 @@ export type ModelProviderId = "fake" | "deepseek";
 
 export type ModelThinkingMode = "disabled" | "enabled";
 
+export type TaskMode = "ask" | "edit";
+
 export type RunModelSelection = {
   provider: ModelProviderId;
   model: string;
@@ -11,6 +13,7 @@ export type RunModelSelection = {
 export type WebviewToHostMessage = {
   type: "startTask";
   task: string;
+  mode?: TaskMode;
   model?: RunModelSelection;
 };
 

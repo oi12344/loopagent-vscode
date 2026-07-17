@@ -180,6 +180,7 @@ async function stageProposal(vscodeApi: VsCodeEditApi, changes: readonly EditOpe
       }
       reserveExclusivePath(exclusivePaths, replacementTargets, from);
       reserveExclusivePath(exclusivePaths, replacementTargets, to);
+      assertSavedWorkspaceDocument(vscodeApi, source);
       const sourceSnapshot = await getSnapshot(vscodeApi, snapshots, from, source);
       await assertMissing(vscodeApi, target);
       plan.push({ kind: "rename", from, to, source: sourceSnapshot, target });
@@ -190,6 +191,7 @@ async function stageProposal(vscodeApi: VsCodeEditApi, changes: readonly EditOpe
       const uri = await resolveWorkspaceFileUri(vscodeApi, change.path);
       const path = normalizeWorkspacePath(change.path);
       reserveExclusivePath(exclusivePaths, replacementTargets, path);
+      assertSavedWorkspaceDocument(vscodeApi, uri);
       plan.push({ kind: "delete", source: await getSnapshot(vscodeApi, snapshots, path, uri) });
       continue;
     }
@@ -229,14 +231,19 @@ async function getSnapshot(
     return existing;
   }
 
-  const content = await readExistingText(vscodeApi, uri);
+  const content = await readWorkspaceText(vscodeApi, uri);
   const snapshot = { path, uri, content };
   snapshots.set(path, snapshot);
   return snapshot;
 }
 
-async function readExistingText(vscodeApi: VsCodeEditApi, uri: vscode.Uri): Promise<string> {
-  assertSavedWorkspaceDocument(vscodeApi, uri);
+export async function readWorkspaceText(vscodeApi: VsCodeEditApi, uri: vscode.Uri): Promise<string> {
+  const openDocument = vscodeApi.workspace.textDocuments.find((document) => sameWorkspaceUri(document.uri, uri));
+  if (openDocument) {
+    const content = openDocument.getText();
+    assertText(content);
+    return content;
+  }
   try {
     const bytes = await vscodeApi.workspace.fs.readFile(uri);
     if (bytes.includes(0)) {
@@ -360,7 +367,7 @@ async function snapshotsStillMatch(vscodeApi: VsCodeEditApi, plan: readonly Plan
       }
     }
     try {
-      if ((await readExistingText(vscodeApi, snapshot.uri)) !== snapshot.content) {
+      if ((await readWorkspaceText(vscodeApi, snapshot.uri)) !== snapshot.content) {
         return false;
       }
     } catch {

@@ -123,6 +123,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     }).then((runner) => {
       const run = startAgentRun({
         task: message.task,
+        mode: message.mode ?? "edit",
         runner,
         postMessage: (hostMessage) => webview.postMessage(hostMessage),
       });

@@ -4,6 +4,9 @@ import type { ReactAgentMessage, ReactAgentTool, ReactAgentToolRequest, ReactMod
 import { createToolRegistry } from "./toolRegistry";
 import { createDefaultReactTools } from "./tools";
 
+const APPLY_EDIT_TOOL_CHOICE = { type: "function", function: { name: "applyEdit" } } as const;
+const READ_FILE_TOOL_CHOICE = { type: "function", function: { name: "readFile" } } as const;
+
 export type CreateReactAgentRunnerOptions = {
   modelTurn: ReactModelTurn;
   providerName?: string;
@@ -24,10 +27,11 @@ export function createReactAgentRunner({
   const toolRegistry = createToolRegistry(tools);
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
   const canApplyEdits = toolsByName.has("applyEdit");
+  const canReadFiles = toolsByName.has("readFile");
 
   return {
     async *run(request) {
-      const { runId, task, signal } = request;
+      const { runId, task, mode, signal } = request;
       if (signal.aborted) {
         return;
       }
@@ -44,8 +48,10 @@ export function createReactAgentRunner({
         }
 
         messages.push({ role: "user", content: task });
-        let forceReviewToolCall = false;
-        let retriedDeferredEditConfirmation = false;
+        const editMode = mode === "edit" && canApplyEdits;
+        let fileReadForEdit = !canReadFiles;
+        let editReviewRequested = false;
+        let lastEditObservation = "";
 
         for (let step = 1; step <= maxSteps + 1; step++) {
           const isFinalAnswerStep = step > maxSteps;
@@ -55,8 +61,16 @@ export function createReactAgentRunner({
 
           yield { type: "assistantThinking", runId, message: `Planning step ${step}` } satisfies HostToWebviewMessage;
 
-          const toolChoice = isFinalAnswerStep ? "none" : forceReviewToolCall ? "required" : "auto";
-          forceReviewToolCall = false;
+          const toolChoice =
+            editMode && !editReviewRequested
+              ? !fileReadForEdit && step < maxSteps
+                ? READ_FILE_TOOL_CHOICE
+                : step >= maxSteps
+                ? APPLY_EDIT_TOOL_CHOICE
+                : "required"
+              : isFinalAnswerStep || editReviewRequested
+                ? "none"
+                : "auto";
           const result = await modelTurn({
             messages,
             signal,
@@ -72,22 +86,15 @@ export function createReactAgentRunner({
           }
 
           if (result.kind === "final") {
-            if (
-              canApplyEdits &&
-              !retriedDeferredEditConfirmation &&
-              step < maxSteps &&
-              isDeferredEditConfirmation(result.content)
-            ) {
-              retriedDeferredEditConfirmation = true;
-              forceReviewToolCall = true;
-              continue;
+            if (editMode && !editReviewRequested) {
+              throw new Error("Edit mode cannot finish before applyEdit opens the review interface");
             }
             yield { type: "assistantDelta", runId, content: result.content } satisfies HostToWebviewMessage;
             yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
             return;
           }
 
-          if (isFinalAnswerStep) {
+          if (isFinalAnswerStep && !(editMode && !editReviewRequested)) {
             throw new Error("Model requested tools during the final answer step");
           }
 
@@ -113,22 +120,45 @@ export function createReactAgentRunner({
               return;
             }
 
-            const contents = batch.concurrent
-              ? await Promise.all(batch.requests.map(({ request }) => toolRegistry.invoke(request, signal)))
-              : [await toolRegistry.invoke(batch.requests[0]!.request, signal)];
+            const invoke = async (toolRequest: ReactAgentToolRequest) => {
+              if (!toolsByName.has(toolRequest.name)) {
+                throw new Error(`Unknown tool: ${toolRequest.name}`);
+              }
+              try {
+                return { content: await toolRegistry.invoke(toolRequest, signal), succeeded: true };
+              } catch (error) {
+                return { content: `Tool error: ${formatRunError(error)}`, succeeded: false };
+              }
+            };
+            const outcomes = batch.concurrent
+              ? await Promise.all(batch.requests.map(({ request }) => invoke(request)))
+              : [await invoke(batch.requests[0]!.request)];
 
             if (signal.aborted) {
               return;
             }
 
             for (const [index, { request, call }] of batch.requests.entries()) {
-              const content = contents[index]!;
+              const outcome = outcomes[index]!;
+              const content = outcome.content;
               if (request.name === "exploreCode") {
                 yield {
                   type: "agentEvent",
                   runId,
                   message: `Tool exploreCode returned (step ${step}, call ${call}): ${content.length} chars`,
                 } satisfies HostToWebviewMessage;
+              }
+              if (!outcome.succeeded) {
+                yield {
+                  type: "agentEvent",
+                  runId,
+                  message: `Tool ${request.name} failed (step ${step}, call ${call}): ${content}`,
+                } satisfies HostToWebviewMessage;
+              } else if (request.name === "applyEdit") {
+                editReviewRequested = true;
+                lastEditObservation = content;
+              } else if (request.name === "readFile") {
+                fileReadForEdit = true;
               }
 
               messages.push({
@@ -140,6 +170,14 @@ export function createReactAgentRunner({
             }
           }
         }
+
+        if (editMode && editReviewRequested) {
+          yield { type: "assistantDelta", runId, content: lastEditObservation } satisfies HostToWebviewMessage;
+          yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
+          return;
+        }
+
+        throw new Error(editMode ? "Edit review was not opened" : "Model did not produce a final answer");
 
       } catch (error) {
         if (signal.aborted) {
@@ -216,14 +254,6 @@ function getExploreCodeQueryPreview(input: unknown): string {
     return "<sensitive query hidden>";
   }
   return normalized.slice(0, 200) || "<empty query>";
-}
-
-function isDeferredEditConfirmation(content: string): boolean {
-  return (
-    /(?:confirm|approve).{0,80}(?:apply|change|edit|modification)/i.test(content) ||
-    /(?:请|是否).{0,16}(?:确认|批准).{0,32}(?:应用|执行|修改|变更)/.test(content) ||
-    /(?:确认|批准).{0,32}(?:应用|执行).{0,32}(?:修改|变更)/.test(content)
-  );
 }
 
 async function resolveSystemPrompt(

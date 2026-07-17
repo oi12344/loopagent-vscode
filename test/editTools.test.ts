@@ -48,6 +48,7 @@ function createFakeVsCodeApi(
     beforeConfirmation?: () => void;
     symbolicLinkPaths?: string[];
     dirtyPaths?: string[];
+    dirtyContents?: Record<string, string>;
   } = {},
 ): {
   api: VsCodeEditApi;
@@ -100,7 +101,11 @@ function createFakeVsCodeApi(
       },
       workspace: {
         workspaceFolders: [{ uri: root }],
-        textDocuments: (options.dirtyPaths ?? []).map((path) => ({ uri: createUri("file", toFsPath(path)), isDirty: true })),
+        textDocuments: (options.dirtyPaths ?? []).map((path) => ({
+          uri: createUri("file", toFsPath(path)),
+          isDirty: true,
+          getText: () => options.dirtyContents?.[path] ?? initialFiles[path] ?? "",
+        })),
         fs: { readFile, stat },
         applyEdit,
         registerTextDocumentContentProvider: vi.fn((_scheme, provider) => {
@@ -160,15 +165,39 @@ describe("code generation edit tools", () => {
 
   it("rejects outside and sensitive paths before reading", async () => {
     const fake = createFakeVsCodeApi(
-      { "src/example.ts": "safe", "src/link/child.ts": "external", "src/dirty.ts": "before", ".env": "SECRET=value" },
-      { symbolicLinkPaths: ["src/link"], dirtyPaths: ["src/dirty.ts"] },
+      { "src/example.ts": "safe", "src/link/child.ts": "external", ".env": "SECRET=value" },
+      { symbolicLinkPaths: ["src/link"] },
     );
 
     for (const path of ["../secret.ts", "C:\\secret.ts", ".env", "src", "src/link/child.ts"]) {
       await expect(readFile({ path }, fake.api)).rejects.toThrow("Invalid readFile path");
     }
-    await expect(readFile({ path: "src/dirty.ts" }, fake.api)).rejects.toThrow("Workspace file has unsaved changes");
     expect(fake.readFile).not.toHaveBeenCalled();
+  });
+
+  it("reads and previews replacements from an unsaved editor buffer", async () => {
+    const fake = createFakeVsCodeApi(
+      { "src/example.ts": "saved content" },
+      {
+        confirmation: "Cancel",
+        dirtyPaths: ["src/example.ts"],
+        dirtyContents: { "src/example.ts": "before" },
+      },
+    );
+
+    await expect(readFile({ path: "src/example.ts" }, fake.api)).resolves.toBe("before");
+
+    const service = createEditPreviewService(fake.api);
+    await expect(
+      service.apply(
+        [{ kind: "replace", path: "src/example.ts", oldText: "before", newText: "after" }],
+        new AbortController().signal,
+      ),
+    ).resolves.toContain("cancelled");
+
+    const preview = fake.executeCommand.mock.calls[0]?.[1] as FakeUri;
+    expect(fake.previewText(preview)).toContain("-before");
+    expect(fake.previewText(preview)).toContain("+after");
   });
 
   it("opens one review document and does not write it when cancelled", async () => {
@@ -238,10 +267,10 @@ describe("code generation edit tools", () => {
     const dirty = createFakeVsCodeApi({ "src/example.ts": "before" }, { dirtyPaths: ["src/example.ts"] });
     const dirtyService = createEditPreviewService(dirty.api);
     await expect(
-      dirtyService.apply([{ kind: "replace", path: "src/example.ts", oldText: "before", newText: "after" }], new AbortController().signal),
+      dirtyService.apply([{ kind: "delete", path: "src/example.ts" }], new AbortController().signal),
     ).rejects.toThrow("unsaved changes");
     await expect(
-      dirtyService.apply([{ kind: "replace", path: "src/EXAMPLE.ts", oldText: "before", newText: "after" }], new AbortController().signal),
+      dirtyService.apply([{ kind: "rename", from: "src/EXAMPLE.ts", to: "src/other.ts" }], new AbortController().signal),
     ).rejects.toThrow("unsaved changes");
     expect(dirty.executeCommand).not.toHaveBeenCalled();
 

@@ -283,6 +283,28 @@ textarea:focus {
   position: relative;
 }
 
+.mode-switch {
+  border: 1px solid var(--vscode-panel-border, transparent);
+  border-radius: 4px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.mode-button {
+  background: transparent;
+  border-radius: 0;
+  color: var(--vscode-foreground);
+  min-height: 28px;
+  min-width: 42px;
+  padding: 3px 8px;
+}
+
+.mode-button[aria-pressed="true"] {
+  background: var(--vscode-button-secondaryBackground, var(--vscode-list-activeSelectionBackground));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+}
+
 button {
   background: var(--vscode-button-background);
   border: 0;
@@ -378,9 +400,14 @@ button:disabled {
   }
 
   .tool-menu-anchor,
+  .mode-switch,
   .chip-button,
   .composer-toolbar > button {
     width: 100%;
+  }
+
+  .mode-button {
+    flex: 1 1 50%;
   }
 
   .composer-menu {

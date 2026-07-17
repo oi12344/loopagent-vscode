@@ -17,6 +17,14 @@ async function collectRunnerMessages(
   return messages;
 }
 
+async function collectRunnerMessagesInMode(runner: AgentRunner, mode: "ask" | "edit", task: string) {
+  const messages: HostToWebviewMessage[] = [];
+  for await (const message of runner.run({ runId: "run-1", task, mode, signal: new AbortController().signal })) {
+    messages.push(message);
+  }
+  return messages;
+}
+
 describe("createReactAgentRunner", () => {
   it("finishes when the model returns a final answer", async () => {
     const runner = createReactAgentRunner({
@@ -430,24 +438,47 @@ describe("createReactAgentRunner", () => {
     expect(order).toEqual(["read", "edit"]);
   });
 
-  it("requires a tool call when an edit proposal asks for confirmation in prose", async () => {
-    const choices: string[] = [];
+  it("requires readFile and applyEdit before finishing an Edit-mode task", async () => {
+    const choices: unknown[] = [];
+    const order: string[] = [];
     let turn = 0;
-    const applyEdit = vi.fn(async () => "Review opened.");
     const runner = createReactAgentRunner({
+      maxSteps: 2,
       tools: [
+        {
+          name: "readFile",
+          description: "Read a file.",
+          inputSchema: { type: "object" },
+          invoke: async () => {
+            order.push("read");
+            return "before";
+          },
+        },
         {
           name: "applyEdit",
           description: "Preview an edit.",
           inputSchema: { type: "object" },
-          invoke: applyEdit,
+          invoke: async () => {
+            order.push("review");
+            return "Changes were applied.";
+          },
         },
       ],
       modelTurn: async ({ toolChoice }) => {
-        choices.push(toolChoice ?? "undefined");
+        choices.push(toolChoice);
         turn += 1;
         if (turn === 1) {
-          return { kind: "final", content: "请确认应用此修改？" };
+          return {
+            kind: "toolRequests",
+            assistantMessage: {
+              role: "assistant",
+              content: "",
+              toolCalls: [
+                { id: "read-1", type: "function", function: { name: "readFile", arguments: '{"path":"src/example.ts"}' } },
+              ],
+            },
+            requests: [{ id: "read-1", name: "readFile", rawArguments: '{"path":"src/example.ts"}', input: { path: "src/example.ts" } }],
+          };
         }
         if (turn === 2) {
           return {
@@ -462,16 +493,63 @@ describe("createReactAgentRunner", () => {
             requests: [{ id: "edit-1", name: "applyEdit", rawArguments: '{"changes":[]}', input: { changes: [] } }],
           };
         }
-        return { kind: "final", content: "Review opened." };
+        return { kind: "final", content: "Changes were applied." };
       },
     });
 
-    const messages = await collectRunnerMessages(runner, "Add logging to this file.");
+    const messages = await collectRunnerMessagesInMode(runner, "edit", "每个方法添加日志");
 
-    expect(choices).toEqual(["auto", "required", "auto"]);
-    expect(applyEdit).toHaveBeenCalledTimes(1);
-    expect(messages).not.toContainEqual({ type: "assistantDelta", runId: "run-1", content: "请确认应用此修改？" });
-    expect(messages).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "Review opened." });
+    expect(choices).toEqual([
+      { type: "function", function: { name: "readFile" } },
+      { type: "function", function: { name: "applyEdit" } },
+      "none",
+    ]);
+    expect(order).toEqual(["read", "review"]);
+    expect(messages).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "Changes were applied." });
+  });
+
+  it("returns known tool errors to the model and retries applyEdit", async () => {
+    const choices: unknown[] = [];
+    let turn = 0;
+    let applyAttempts = 0;
+    const runner = createReactAgentRunner({
+      maxSteps: 3,
+      tools: [
+        { name: "readFile", description: "Read.", inputSchema: {}, invoke: async () => "before" },
+        {
+          name: "applyEdit",
+          description: "Review.",
+          inputSchema: {},
+          invoke: async () => {
+            applyAttempts += 1;
+            if (applyAttempts === 1) throw new Error("oldText must match exactly once");
+            return "Changes were applied.";
+          },
+        },
+      ],
+      modelTurn: async ({ messages, toolChoice }) => {
+        choices.push(toolChoice);
+        turn += 1;
+        if (turn === 1) return toolRequest("read-1", "readFile", { path: "src/example.ts" });
+        if (turn === 2) return toolRequest("edit-1", "applyEdit", { changes: [] });
+        if (turn === 3) {
+          expect(messages.at(-1)).toMatchObject({ role: "tool", content: expect.stringContaining("oldText must match") });
+          return toolRequest("edit-2", "applyEdit", { changes: [] });
+        }
+        return { kind: "final", content: "Changes were applied." };
+      },
+    });
+
+    const messages = await collectRunnerMessagesInMode(runner, "edit", "修改文件");
+
+    expect(choices).toEqual([
+      { type: "function", function: { name: "readFile" } },
+      "required",
+      { type: "function", function: { name: "applyEdit" } },
+      "none",
+    ]);
+    expect(applyAttempts).toBe(2);
+    expect(messages.some((message) => message.type === "runFailed")).toBe(false);
   });
 
   it("fails before invoking more than ten tool requests", async () => {
@@ -839,3 +917,16 @@ describe("createReactAgentRunner", () => {
     expect(calledModel).toBe(false);
   });
 });
+
+function toolRequest(id: string, name: string, input: unknown) {
+  const rawArguments = JSON.stringify(input);
+  return {
+    kind: "toolRequests" as const,
+    assistantMessage: {
+      role: "assistant" as const,
+      content: "",
+      toolCalls: [{ id, type: "function" as const, function: { name, arguments: rawArguments } }],
+    },
+    requests: [{ id, name, rawArguments, input }],
+  };
+}
