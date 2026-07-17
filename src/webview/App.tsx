@@ -20,7 +20,7 @@ type AssistantTurn = {
   role: "assistant";
   runId: string;
   provider: string;
-  process: string[];
+  reasoning: string;
   content: string;
   status: "thinking" | "streaming" | "done" | "error";
   error?: string;
@@ -104,7 +104,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       role: "assistant",
       runId,
       provider,
-      process: [],
+      reasoning: "",
       content: "",
       status: "thinking",
     };
@@ -161,7 +161,15 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       if (hostMessage.type === "assistantThinking") {
         updateAssistantTurn(hostMessage.runId, (turn) => ({
           ...turn,
-          process: appendUniqueProcess(turn.process, hostMessage.message),
+          status: turn.content.length > 0 ? "streaming" : "thinking",
+        }));
+        return;
+      }
+
+      if (hostMessage.type === "assistantReasoningDelta") {
+        updateAssistantTurn(hostMessage.runId, (turn) => ({
+          ...turn,
+          reasoning: `${turn.reasoning}${hostMessage.content}`,
           status: turn.content.length > 0 ? "streaming" : "thinking",
         }));
         return;
@@ -185,10 +193,6 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       }
 
       if (hostMessage.type === "agentEvent") {
-        updateAssistantTurn(hostMessage.runId, (turn) => ({
-          ...turn,
-          process: appendUniqueProcess(turn.process, hostMessage.message),
-        }));
         return;
       }
 
@@ -197,7 +201,6 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         setActiveRunId(null);
         updateAssistantTurn(hostMessage.runId, (turn) => ({
           ...turn,
-          process: appendUniqueProcess(turn.process, "Done"),
           status: "done",
         }));
         return;
@@ -209,7 +212,6 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         updateAssistantTurn(hostMessage.runId, (turn) => ({
           ...turn,
           error: hostMessage.message,
-          process: appendUniqueProcess(turn.process, "Run failed"),
           status: "error",
         }));
       }
@@ -401,7 +403,7 @@ function ThinkingMenu({
 
 function UserMessage({ turn }: { turn: UserTurn }) {
   return (
-    <article className="message message-user">
+    <article className="message message-user message-user-right">
       <div className="message-meta">You</div>
       <div className="message-body">{turn.content}</div>
     </article>
@@ -426,18 +428,14 @@ function AssistantMessage({ turn }: { turn: AssistantTurn }) {
         <span>{formatAssistantStatus(turn.status)}</span>
       </div>
 
-      {turn.process.length > 0 ? (
+      {turn.reasoning.length > 0 ? (
         <details
           className="process-details"
           open={isProcessOpen}
           onToggle={(event) => setIsProcessOpen(event.currentTarget.open)}
         >
           <summary>Process</summary>
-          <ol>
-            {turn.process.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ol>
+          <div className="reasoning-content">{turn.reasoning}</div>
         </details>
       ) : null}
 
@@ -488,14 +486,6 @@ function attachRunToUserTurn(
       pending: false,
     };
   });
-}
-
-function appendUniqueProcess(process: string[], message: string): string[] {
-  if (process.includes(message)) {
-    return process;
-  }
-
-  return [...process, message];
 }
 
 function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {

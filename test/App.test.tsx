@@ -104,8 +104,8 @@ describe("LoopAgent webview app", () => {
 
     postHostMessage({ type: "runStarted", runId: "run-1", task: "hello" });
     postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "DeepSeek v4 flash" });
-    postHostMessage({ type: "assistantThinking", runId: "run-1", message: "Calling DeepSeek v4 flash" });
-    postHostMessage({ type: "assistantThinking", runId: "run-1", message: "Received model reasoning signal" });
+    postHostMessage({ type: "assistantReasoningDelta", runId: "run-1", content: "Inspecting the request. " });
+    postHostMessage({ type: "assistantReasoningDelta", runId: "run-1", content: "Preparing the answer." });
     postHostMessage({ type: "assistantDelta", runId: "run-1", content: "Hello! " });
     postHostMessage({ type: "assistantDelta", runId: "run-1", content: "How can I help you today?" });
     postHostMessage({ type: "assistantFinished", runId: "run-1" });
@@ -113,8 +113,9 @@ describe("LoopAgent webview app", () => {
 
     expect(screen.getByText("DeepSeek v4 flash")).toBeInTheDocument();
     expect(screen.getByText("Process")).toBeInTheDocument();
-    expect(screen.getByText("Calling DeepSeek v4 flash")).toBeInTheDocument();
-    expect(screen.getByText("Received model reasoning signal")).toBeInTheDocument();
+    expect(screen.getByText("Inspecting the request. Preparing the answer.")).toBeInTheDocument();
+    expect(screen.queryByText("Calling DeepSeek v4 flash")).not.toBeInTheDocument();
+    expect(screen.queryByText("Received model reasoning signal")).not.toBeInTheDocument();
     expect(screen.getByText("Hello! How can I help you today?")).toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Message"), "again");
@@ -125,9 +126,27 @@ describe("LoopAgent webview app", () => {
     render(<App />);
     postHostMessage({ type: "runStarted", runId: "run-1", task: "Inspect the project" });
     postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "DeepSeek" });
-    postHostMessage({ type: "assistantThinking", runId: "run-1", message: "Reading files" });
+    postHostMessage({ type: "assistantReasoningDelta", runId: "run-1", content: "Reading files" });
     postHostMessage({ type: "runFinished", runId: "run-1" });
 
+    expect(screen.getByText("Process").closest("details")).not.toHaveAttribute("open");
+  });
+
+  it("shows only provider reasoning in Process and right-aligns user tasks", () => {
+    render(<App />);
+
+    postHostMessage({ type: "runStarted", runId: "run-1", task: "Inspect the project" });
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "DeepSeek" });
+    postHostMessage({ type: "assistantThinking", runId: "run-1", message: "Building code context" });
+    postHostMessage({ type: "agentEvent", runId: "run-1", message: "Running tool exploreCode" });
+    postHostMessage({ type: "assistantReasoningDelta", runId: "run-1", content: "Inspecting the active file. " });
+    postHostMessage({ type: "assistantReasoningDelta", runId: "run-1", content: "Checking callers." });
+    postHostMessage({ type: "runFinished", runId: "run-1" });
+
+    expect(screen.getByText("Inspecting the active file. Checking callers.")).toBeInTheDocument();
+    expect(screen.queryByText("Building code context")).not.toBeInTheDocument();
+    expect(screen.queryByText("Running tool exploreCode")).not.toBeInTheDocument();
+    expect(screen.getByText("Inspect the project").closest("article")).toHaveClass("message-user-right");
     expect(screen.getByText("Process").closest("details")).not.toHaveAttribute("open");
   });
 
@@ -150,7 +169,7 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
 
-  it("keeps legacy agent events visible as process entries", () => {
+  it("does not render legacy agent events as Process", () => {
     render(<App />);
 
     postHostMessage({ type: "runStarted", runId: "run-1", task: "Inspect the project" });
@@ -158,7 +177,7 @@ describe("LoopAgent webview app", () => {
     postHostMessage({ type: "runFinished", runId: "run-1" });
 
     expect(screen.getByText("Inspect the project")).toBeInTheDocument();
-    expect(screen.getByText("Building context")).toBeInTheDocument();
-    expect(screen.getAllByText("Done").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Building context")).not.toBeInTheDocument();
+    expect(screen.queryByText("Process")).not.toBeInTheDocument();
   });
 });

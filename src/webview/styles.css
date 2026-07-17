@@ -151,8 +151,16 @@ h1 {
 .message-user {
   background: var(--vscode-input-background);
   border-color: transparent;
+}
+
+.message-user-right {
   justify-self: end;
-  max-width: 94%;
+  margin-left: auto;
+  max-width: 80%;
+}
+
+.message-user-right .message-meta {
+  justify-content: flex-end;
 }
 
 .message-assistant {
@@ -201,15 +209,7 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-.process-details ol {
-  display: grid;
-  gap: 4px;
-  list-style-position: inside;
-  margin: 6px 0 0;
-  padding: 0;
-}
-
-.process-details li {
+.reasoning-content {
   color: var(--vscode-descriptionForeground);
   font-size: 12px;
   line-height: 1.45;
@@ -357,6 +357,10 @@ button:disabled {
 }
 
 @media (max-width: 340px) {
+  .message-user-right {
+    max-width: 94%;
+  }
+
   .app-header {
     align-items: flex-start;
   }
