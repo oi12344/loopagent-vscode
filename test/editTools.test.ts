@@ -165,14 +165,15 @@ describe("code generation edit tools", () => {
     expect(fake.readFile).not.toHaveBeenCalled();
   });
 
-  it("previews a replace proposal and does not write it when cancelled", async () => {
+  it("opens a single-file replace preview and does not write it when cancelled", async () => {
     const fake = createFakeVsCodeApi({ "src/example.ts": "before" }, { confirmation: "Cancel" });
     const service = createEditPreviewService(fake.api);
 
     await expect(
       service.apply([{ kind: "replace", path: "src/example.ts", oldText: "before", newText: "after" }], new AbortController().signal),
     ).resolves.toContain("cancelled");
-    expect(fake.executeCommand).toHaveBeenCalledWith("vscode.diff", expect.anything(), expect.anything(), expect.any(String));
+    expect(fake.executeCommand).toHaveBeenCalledWith("vscode.open", expect.anything());
+    expect(fake.executeCommand).not.toHaveBeenCalledWith("vscode.diff", expect.anything(), expect.anything(), expect.any(String));
     expect(fake.applyEdit).not.toHaveBeenCalled();
   });
 

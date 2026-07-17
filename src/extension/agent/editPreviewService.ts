@@ -296,44 +296,27 @@ async function openPreviews(
 ): Promise<void> {
   await Promise.all(
     plan.map(async (item) => {
-      const [left, right, title] = getPreviewUris(vscodeApi, previewContents, proposalId, item);
-      await vscodeApi.commands.executeCommand("vscode.diff", left, right, title);
+      await vscodeApi.commands.executeCommand("vscode.open", getPreviewUri(vscodeApi, previewContents, proposalId, item));
     }),
   );
 }
 
-function getPreviewUris(
+function getPreviewUri(
   vscodeApi: VsCodeEditApi,
   previewContents: Map<string, string>,
   proposalId: string,
   item: PlannedChange,
-): [vscode.Uri, vscode.Uri, string] {
+): vscode.Uri {
   if (item.kind === "replace") {
-    return [
-      item.source.uri,
-      addPreview(vscodeApi, previewContents, proposalId, item.path, "target", item.target),
-      `LoopAgent: ${item.path}`,
-    ];
+    return addPreview(vscodeApi, previewContents, proposalId, item.path, "target", item.target);
   }
   if (item.kind === "create") {
-    return [
-      addPreview(vscodeApi, previewContents, proposalId, item.path, "original", ""),
-      addPreview(vscodeApi, previewContents, proposalId, item.path, "target", item.content),
-      `LoopAgent: ${item.path}`,
-    ];
+    return addPreview(vscodeApi, previewContents, proposalId, item.path, "target", item.content);
   }
   if (item.kind === "rename") {
-    return [
-      item.source.uri,
-      addPreview(vscodeApi, previewContents, proposalId, item.to, "target", item.source.content),
-      `LoopAgent: ${item.from} -> ${item.to}`,
-    ];
+    return addPreview(vscodeApi, previewContents, proposalId, item.to, "target", item.source.content);
   }
-  return [
-    item.source.uri,
-    addPreview(vscodeApi, previewContents, proposalId, item.source.path, "target", ""),
-    `LoopAgent: ${item.source.path}`,
-  ];
+  return addPreview(vscodeApi, previewContents, proposalId, item.source.path, "target", "");
 }
 
 function addPreview(
