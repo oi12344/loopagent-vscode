@@ -294,29 +294,29 @@ async function openPreviews(
   proposalId: string,
   plan: readonly PlannedChange[],
 ): Promise<void> {
-  await Promise.all(
-    plan.map(async (item) => {
-      await vscodeApi.commands.executeCommand("vscode.open", getPreviewUri(vscodeApi, previewContents, proposalId, item));
-    }),
-  );
+  const preview = addPreview(vscodeApi, previewContents, proposalId, "changes.patch", "review", renderReview(plan));
+  await vscodeApi.commands.executeCommand("vscode.open", preview);
 }
 
-function getPreviewUri(
-  vscodeApi: VsCodeEditApi,
-  previewContents: Map<string, string>,
-  proposalId: string,
-  item: PlannedChange,
-): vscode.Uri {
+function renderReview(plan: readonly PlannedChange[]): string {
+  return ["# LoopAgent 变更", ...plan.map(renderReviewItem)].join("\n\n");
+}
+
+function renderReviewItem(item: PlannedChange): string {
   if (item.kind === "replace") {
-    return addPreview(vscodeApi, previewContents, proposalId, item.path, "target", item.target);
+    return `## 修改 ${item.path}\n\n\`\`\`diff\n${formatDiffLines("-", item.source.content)}\n${formatDiffLines("+", item.target)}\n\`\`\``;
   }
   if (item.kind === "create") {
-    return addPreview(vscodeApi, previewContents, proposalId, item.path, "target", item.content);
+    return `## 新增 ${item.path}\n\n\`\`\`diff\n${formatDiffLines("+", item.content)}\n\`\`\``;
   }
   if (item.kind === "rename") {
-    return addPreview(vscodeApi, previewContents, proposalId, item.to, "target", item.source.content);
+    return `## 重命名\n\n${item.from} -> ${item.to}`;
   }
-  return addPreview(vscodeApi, previewContents, proposalId, item.source.path, "target", "");
+  return `## 删除 ${item.source.path}\n\n\`\`\`diff\n${formatDiffLines("-", item.source.content)}\n\`\`\``;
+}
+
+function formatDiffLines(prefix: "+" | "-", content: string): string {
+  return content.split(/\r?\n/).map((line) => `${prefix}${line}`).join("\n");
 }
 
 function addPreview(
@@ -324,7 +324,7 @@ function addPreview(
   previewContents: Map<string, string>,
   proposalId: string,
   path: string,
-  side: "original" | "target",
+  side: "original" | "target" | "review",
   content: string,
 ): vscode.Uri {
   const uri = vscodeApi.Uri.parse(`${PREVIEW_SCHEME}:/${proposalId}/${side}/${encodeURIComponent(path)}`);

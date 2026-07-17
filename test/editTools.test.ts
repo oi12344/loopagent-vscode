@@ -56,6 +56,7 @@ function createFakeVsCodeApi(
   readFile: ReturnType<typeof vi.fn>;
   applyEdit: ReturnType<typeof vi.fn>;
   executeCommand: ReturnType<typeof vi.fn>;
+  previewText(uri: FakeUri): string | undefined;
 } {
   const root = createUri("file", "E:\\work\\repo");
   const toFsPath = (path: string) => `${root.fsPath}\\${path.replace(/\//g, "\\")}`;
@@ -72,6 +73,7 @@ function createFakeVsCodeApi(
   });
   const applyEdit = vi.fn(async () => true);
   const executeCommand = vi.fn(async () => undefined);
+  let contentProvider: { provideTextDocumentContent(uri: FakeUri): string } | undefined;
   const stat = vi.fn(async (uri: FakeUri) => {
     if (symbolicLinks.has(uri.fsPath)) return { type: 1 | 64 };
     if (files.has(uri.fsPath)) return { type: 1 };
@@ -101,7 +103,10 @@ function createFakeVsCodeApi(
         textDocuments: (options.dirtyPaths ?? []).map((path) => ({ uri: createUri("file", toFsPath(path)), isDirty: true })),
         fs: { readFile, stat },
         applyEdit,
-        registerTextDocumentContentProvider: vi.fn(() => ({ dispose: vi.fn() })),
+        registerTextDocumentContentProvider: vi.fn((_scheme, provider) => {
+          contentProvider = provider as { provideTextDocumentContent(uri: FakeUri): string };
+          return { dispose: vi.fn() };
+        }),
       },
     } as unknown as VsCodeEditApi,
     files,
@@ -109,6 +114,7 @@ function createFakeVsCodeApi(
     readFile,
     applyEdit,
     executeCommand,
+    previewText: (uri) => contentProvider?.provideTextDocumentContent(uri),
   };
 }
 
@@ -165,15 +171,27 @@ describe("code generation edit tools", () => {
     expect(fake.readFile).not.toHaveBeenCalled();
   });
 
-  it("opens a single-file replace preview and does not write it when cancelled", async () => {
-    const fake = createFakeVsCodeApi({ "src/example.ts": "before" }, { confirmation: "Cancel" });
+  it("opens one review document and does not write it when cancelled", async () => {
+    const fake = createFakeVsCodeApi({ "src/first.ts": "before", "src/second.ts": "old" }, { confirmation: "Cancel" });
     const service = createEditPreviewService(fake.api);
 
     await expect(
-      service.apply([{ kind: "replace", path: "src/example.ts", oldText: "before", newText: "after" }], new AbortController().signal),
+      service.apply(
+        [
+          { kind: "replace", path: "src/first.ts", oldText: "before", newText: "after" },
+          { kind: "replace", path: "src/second.ts", oldText: "old", newText: "new" },
+        ],
+        new AbortController().signal,
+      ),
     ).resolves.toContain("cancelled");
+    expect(fake.executeCommand).toHaveBeenCalledTimes(1);
     expect(fake.executeCommand).toHaveBeenCalledWith("vscode.open", expect.anything());
     expect(fake.executeCommand).not.toHaveBeenCalledWith("vscode.diff", expect.anything(), expect.anything(), expect.any(String));
+    const preview = fake.executeCommand.mock.calls[0]?.[1] as FakeUri;
+    expect(fake.previewText(preview)).toContain("src/first.ts");
+    expect(fake.previewText(preview)).toContain("-before");
+    expect(fake.previewText(preview)).toContain("+after");
+    expect(fake.previewText(preview)).toContain("src/second.ts");
     expect(fake.applyEdit).not.toHaveBeenCalled();
   });
 
