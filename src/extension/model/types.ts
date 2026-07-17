@@ -40,7 +40,7 @@ export type ModelRequest = {
   messages: ModelMessage[];
   signal: AbortSignal;
   tools?: ModelToolDefinition[];
-  toolChoice?: "auto" | "none";
+  toolChoice?: "auto" | "none" | "required";
 };
 
 export type ModelStreamEvent =

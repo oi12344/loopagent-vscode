@@ -430,6 +430,50 @@ describe("createReactAgentRunner", () => {
     expect(order).toEqual(["read", "edit"]);
   });
 
+  it("requires a tool call when an edit proposal asks for confirmation in prose", async () => {
+    const choices: string[] = [];
+    let turn = 0;
+    const applyEdit = vi.fn(async () => "Review opened.");
+    const runner = createReactAgentRunner({
+      tools: [
+        {
+          name: "applyEdit",
+          description: "Preview an edit.",
+          inputSchema: { type: "object" },
+          invoke: applyEdit,
+        },
+      ],
+      modelTurn: async ({ toolChoice }) => {
+        choices.push(toolChoice ?? "undefined");
+        turn += 1;
+        if (turn === 1) {
+          return { kind: "final", content: "请确认应用此修改？" };
+        }
+        if (turn === 2) {
+          return {
+            kind: "toolRequests",
+            assistantMessage: {
+              role: "assistant",
+              content: "",
+              toolCalls: [
+                { id: "edit-1", type: "function", function: { name: "applyEdit", arguments: '{"changes":[]}' } },
+              ],
+            },
+            requests: [{ id: "edit-1", name: "applyEdit", rawArguments: '{"changes":[]}', input: { changes: [] } }],
+          };
+        }
+        return { kind: "final", content: "Review opened." };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner, "Add logging to this file.");
+
+    expect(choices).toEqual(["auto", "required", "auto"]);
+    expect(applyEdit).toHaveBeenCalledTimes(1);
+    expect(messages).not.toContainEqual({ type: "assistantDelta", runId: "run-1", content: "请确认应用此修改？" });
+    expect(messages).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "Review opened." });
+  });
+
   it("fails before invoking more than ten tool requests", async () => {
     const queries = Array.from({ length: 11 }, (_, index) => `query-${index + 1}`);
     const invoke = vi.fn(async () => "unused");
