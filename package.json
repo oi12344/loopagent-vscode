@@ -123,6 +123,8 @@
     "test:e2e:code-exploration": "node scripts/run-code-exploration-e2e.mjs",
     "test": "vitest run",
     "test:vscode:sqlite-probe": "node scripts/run-sqlite-vscode-probe.mjs",
+    "benchmark:search": "tsx benchmark/search-index-performance.ts",
+    "benchmark:search:profile": "node --prof benchmark/search-index-performance.ts && node --prof-process isolate-*.log > profile.txt && echo 'Profile saved to profile.txt'",
     "typecheck": "tsc --noEmit -p ./"
   },
   "devDependencies": {
