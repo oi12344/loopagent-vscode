@@ -10,7 +10,7 @@
 
 ## 方案
 
-将视图容器注册点改为 `contributes.viewsContainers.auxiliarybar`。保留容器 ID `loopagent`、视图 ID `loopagent.chat` 和现有 `loopagent.focusChat` 命令，因此 Webview provider、任务运行和消息布局不需要改动。
+将视图容器注册点改为 `contributes.viewsContainers.secondarySidebar`。本机 VS Code 的扩展贡献点实现只识别 `activitybar`、`panel` 和 `secondarySidebar`；`auxiliarybar` 不是有效的自定义容器键。保留容器 ID `loopagent`、视图 ID `loopagent.chat` 和现有 `loopagent.focusChat` 命令，因此 Webview provider、任务运行和消息布局不需要改动。
 
 新安装或重置视图位置时，LoopAgent 会显示在右侧副侧边栏。VS Code 仍允许用户通过自身的“移动视图”功能覆盖该位置，这是宿主产品的预期行为。
 

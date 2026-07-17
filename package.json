@@ -37,7 +37,7 @@
       }
     ],
     "viewsContainers": {
-      "activitybar": [
+      "secondarySidebar": [
         {
           "id": "loopagent",
           "title": "LoopAgent",
