@@ -26,6 +26,7 @@ type WorkspaceIndexerStore = Pick<
   | "enqueueChanges"
   | "claimNextJob"
   | "applyFileSnapshot"
+  | "indexNodeSearchTokens"
   | "updateFileMetadata"
   | "removeFile"
   | "completeJob"
@@ -122,6 +123,7 @@ export function createWorkspaceIndexer(deps: WorkspaceIndexerDependencies): Work
         },
       });
       await deps.store.applyFileSnapshot(snapshot);
+      await deps.store.indexNodeSearchTokens(snapshot);
       await deps.store.updateFileMetadata(metadata);
     } finally {
       parsed.tree?.delete();
