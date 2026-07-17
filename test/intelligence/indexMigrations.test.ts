@@ -64,8 +64,8 @@ describe("SQLite index migrations", () => {
         "id", "file_uri", "event_kind", "status", "attempts", "last_error",
         "created_at", "updated_at",
       ]);
-      expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
-      expect(CURRENT_INDEX_SCHEMA_VERSION).toBe(1);
+      expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+      expect(CURRENT_INDEX_SCHEMA_VERSION).toBe(2);
     } finally {
       database.close();
     }
@@ -118,7 +118,7 @@ describe("SQLite index migrations", () => {
     try {
       expect(result.backupPath).toBe(`${databasePath}.backup-12345`);
       expect(existsSync(result.backupPath!)).toBe(true);
-      expect(result.database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+      expect(result.database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
     } finally {
       result.close();
     }

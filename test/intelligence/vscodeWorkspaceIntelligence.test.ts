@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -145,6 +145,39 @@ describe("createVsCodeWorkspaceIntelligence", () => {
     await intelligence.dispose();
   });
 
+  it("includes exact symbol matches from the persisted search index", async () => {
+    const workspaceRoot = "E:\\work\\repo";
+    const files = new Map([[`${workspaceRoot}\\src\\memoryOnly.ts`, "export function memoryOnly() {}"]]);
+    const client = createFakeIndexClient({
+      nodes: [
+        {
+          nodeId: "n1",
+          nodeName: "createConfiguredAgentRunner",
+          filePath: "src/providerRegistry.ts",
+          score: 3.2,
+          qualifiedName: "providerRegistry::createConfiguredAgentRunner",
+          kind: "function",
+          startLine: 10,
+          endLine: 20,
+        },
+      ],
+    });
+    const storagePath = mkdtempSync(join(tmpdir(), "loopagent-vscode-index-"));
+    temporaryDirectories.push(storagePath);
+    const intelligence = createVsCodeWorkspaceIntelligence(
+      createFakeVsCodeWorkspaceApi(workspaceRoot, files),
+      { storageUri: { fsPath: storagePath }, createIndexClient: () => client },
+    );
+
+    await vi.waitFor(() => expect(client.initialize).toHaveBeenCalled());
+    const prompt = await intelligence.buildCodeIntelligencePrompt("configured runner");
+
+    expect(client.searchNodes).toHaveBeenCalledWith("configured runner", 12);
+    expect(prompt).toContain("### 精确符号匹配");
+    expect(prompt).toContain("providerRegistry::createConfiguredAgentRunner");
+    await intelligence.dispose();
+  });
+
   it("starts persistent indexing on the existing watcher and disposes it once", async () => {
     const workspaceRoot = "E:\\work\\repo";
     const watcher = createFakeWatcher();
@@ -163,7 +196,7 @@ describe("createVsCodeWorkspaceIntelligence", () => {
 
     await vi.waitFor(() => {
       expect(client.initialize).toHaveBeenCalledWith(
-        join(storagePath, "index", "code-index.sqlite"),
+        join(workspaceRoot, ".codegraph", "code-index.sqlite"),
         expect.any(String),
       );
     });
@@ -175,6 +208,24 @@ describe("createVsCodeWorkspaceIntelligence", () => {
 
     expect(watcher.dispose).toHaveBeenCalledTimes(1);
     expect(client.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes a .gitignore into the .codegraph index directory", async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), "loopagent-vscode-workspace-"));
+    temporaryDirectories.push(workspaceRoot);
+    const files = new Map<string, string>();
+    const client = createFakeIndexClient();
+    const intelligence = createVsCodeWorkspaceIntelligence(
+      createFakeVsCodeWorkspaceApi(workspaceRoot, files),
+      { createIndexClient: () => client },
+    );
+
+    await vi.waitFor(() => expect(client.initialize).toHaveBeenCalled());
+
+    const gitignoreContent = readFileSync(join(workspaceRoot, ".codegraph", ".gitignore"), "utf8");
+    expect(gitignoreContent).toContain("*.sqlite");
+
+    await intelligence.dispose();
   });
 
   it("indexes VS Code workspace files and excludes sensitive files", async () => {
@@ -319,6 +370,7 @@ function createFakeWatcher(): FakeWatcher {
 
 function createFakeIndexClient(options: {
   chunks?: Array<{ filePath: string; startLine?: number; endLine?: number; sourceText: string }>;
+  nodes?: Array<{ nodeId: string; nodeName: string; filePath: string; score: number; qualifiedName: string; kind: string; startLine: number; endLine: number }>;
   searchError?: Error;
   claimNextJob?: () => Promise<undefined>;
 } = {}) {
@@ -334,6 +386,10 @@ function createFakeIndexClient(options: {
     searchCodeChunks: vi.fn(async () => {
       if (options.searchError) throw options.searchError;
       return options.chunks ?? [];
+    }),
+    searchNodes: vi.fn(async () => {
+      if (options.searchError) throw options.searchError;
+      return options.nodes ?? [];
     }),
     listIndexedFiles: vi.fn(async () => []),
     enqueueChanges: vi.fn(async () => undefined),
