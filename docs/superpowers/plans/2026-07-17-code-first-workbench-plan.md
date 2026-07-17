@@ -37,7 +37,7 @@
 
 **Produces：** submitTask(task: string)、TaskSuggestions 与受控的助手步骤折叠状态；所有任务仍通过 { type: "startTask", task, model } 发往 Host。
 
-- [ ] **步骤 1：写入建议任务的失败测试**
+- [x] **步骤 1：写入建议任务的失败测试**
 
 在 test/App.test.tsx 的 LoopAgent webview app 组中加入：
 
@@ -58,7 +58,7 @@ it("submits a suggested workspace task", async () => {
 });
 ~~~
 
-- [ ] **步骤 2：运行测试确认红灯**
+- [x] **步骤 2：运行测试确认红灯**
 
 ~~~powershell
 npm test -- --run test/App.test.tsx
@@ -66,7 +66,7 @@ npm test -- --run test/App.test.tsx
 
 预期：新增用例因缺少 Explain the active file 按钮失败，其他用例继续通过。
 
-- [ ] **步骤 3：写入完成后折叠的失败测试**
+- [x] **步骤 3：写入完成后折叠的失败测试**
 
 在同一文件加入：
 
@@ -82,7 +82,7 @@ it("collapses completed execution steps", () => {
 });
 ~~~
 
-- [ ] **步骤 4：再次运行测试确认红灯**
+- [x] **步骤 4：再次运行测试确认红灯**
 
 ~~~powershell
 npm test -- --run test/App.test.tsx
@@ -90,7 +90,7 @@ npm test -- --run test/App.test.tsx
 
 预期：新增折叠用例失败，因为完成后 details 仍保持展开。
 
-- [ ] **步骤 5：在 App.tsx 实现最小交互**
+- [x] **步骤 5：在 App.tsx 实现最小交互**
 
 将当前提交主体提取为共享函数，表单只阻止默认行为：
 
@@ -177,7 +177,7 @@ React.useEffect(() => {
 </details>
 ~~~
 
-- [ ] **步骤 6：运行测试确认绿灯并提交**
+- [x] **步骤 6：运行测试确认绿灯并提交**
 
 ~~~powershell
 npm test -- --run test/App.test.tsx
@@ -197,7 +197,7 @@ git commit -m "feat(ui): add code-first task flow"
 
 **Produces：** 不依赖 JavaScript 尺寸计算的紧凑侧栏布局，支持深色、浅色和最大 340px 窄宽度。
 
-- [ ] **步骤 1：实现最小 CSS 调整**
+- [x] **步骤 1：实现最小 CSS 调整**
 
 保留现有类名，在 styles.css 中加入或调整：
 
@@ -247,7 +247,7 @@ git commit -m "feat(ui): add code-first task flow"
 
 为状态栏、建议按钮和输入工具栏补充规则；使用 min-width: 0、overflow-wrap: anywhere 和现有 @media (max-width: 340px)，使长模型名称、建议文案和发送按钮不溢出或覆盖。不得新增渐变、圆形装饰、图片或硬编码主题颜色。
 
-- [ ] **步骤 2：运行静态检查**
+- [x] **步骤 2：运行静态检查**
 
 ~~~powershell
 npm run typecheck
@@ -256,7 +256,7 @@ npm run compile
 
 预期：两条命令均以退出码 0 完成。
 
-- [ ] **步骤 3：在唯一调试窗口验收并提交**
+- [x] **步骤 3：在唯一调试窗口验收并提交**
 
 ~~~powershell
 npm run debug:vscode
@@ -276,7 +276,7 @@ git commit -m "style(ui): refine agent workbench"
 
 **Produces：** 只记录实际执行结果的中文验收记录。
 
-- [ ] **步骤 1：运行集中验证与清理检查**
+- [x] **步骤 1：运行集中验证与清理检查**
 
 ~~~powershell
 npm test
@@ -289,7 +289,7 @@ rg -n -i "console\.log|TODO|TBD" src/webview test/App.test.tsx
 
 预期：测试、类型检查、构建和 diff 格式检查全部通过，且没有本功能遗留的调试输出、占位标记或未跟踪构建产物。发现无关用户改动时不删除。
 
-- [ ] **步骤 2：写入实际验收记录并提交**
+- [x] **步骤 2：写入实际验收记录并提交**
 
 在本文档末尾增加 实施结果，只记录实际通过的命令、真实侧栏检查结论和未完成项（若存在）。然后运行：
 
@@ -297,3 +297,22 @@ rg -n -i "console\.log|TODO|TBD" src/webview test/App.test.tsx
 git add -- docs/superpowers/plans/2026-07-17-code-first-workbench-plan.md
 git commit -m "docs(ui): record workbench verification"
 ~~~
+
+## 实施结果
+
+### 已交付变更
+
+- Task 1 已由提交 `7bd1c72 feat(ui): add code-first task flow` 交付：添加两个任务建议，复用既有 `startTask` 消息契约，并在助手回合完成时折叠执行步骤。
+- Task 2 已由提交 `1a519b9 style(ui): refine agent workbench` 交付：完成工作台的紧凑主题感知样式调整。
+
+### 验证与清理
+
+- Task 1 的聚焦测试 `npm test -- --run test/App.test.tsx` 报告 8/8 通过；当时的全量 `npm test` 报告 51 个测试文件、293 个测试通过，类型检查和 `git diff --check` 通过。
+- Task 2 的 `npm run typecheck`、`npm run compile` 和 `git diff --check` 通过；固定 CSS 颜色搜索无匹配。
+- 本次集中执行 `npm test`：51 个测试文件、293 个测试全部通过；`npm run typecheck`、`npm run compile` 与 `git diff --check` 均以退出码 0 完成。
+- 写入本记录前，`git status --short` 无输出；`rg -n -i "console\\.log|TODO|TBD" src/webview test/App.test.tsx` 无匹配（退出码 1 按无匹配处理），未发现本功能的调试输出、占位标记或未跟踪构建产物。
+
+### 侧栏验收与已知限制
+
+- 已通过唯一的 Extension Development Host 启动并关闭完成侧栏检查。Computer Use 截图因 `SetIsBorderRequired failed: 不支持此接口 (0x80004002)` 受阻；CDP 兜底截图确认空状态的两个建议、`Ready` 状态、当前模型和输入区均可见，320px Workbench 截图确认窄宽换行正常且内部无重叠。
+- 本地假模型交互脚本在提交前未等待 React 的模型选择提交，因此沿用既有 DeepSeek 选择并以 `fetch failed` 结束。该脚本未验证发送禁用状态或成功完成后的折叠状态；两项行为由新增单元测试覆盖，未重复该交互或另启调试宿主。
