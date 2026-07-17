@@ -67,7 +67,7 @@
   - [x] 保留降级逻辑：SQLite fail → memory（Promise.all 任一失败即走原 catch）
   - [x] buildCodeIntelligencePrompt 签名不变，exploreCode 工具接口不变
   - [ ] 性能对比测试：内存 vs SQLite（未做，不在本次范围）
-  - [ ] 日志记录：查询使用了哪个路径（未做，不在本次范围）
+  - [x] 日志记录：查询使用了哪个路径（buildCodeIntelligencePrompt 已加 console.log，含 path=sqlite/memory 及降级 reason）
 - 关键需要：buildCodeIntelligencePrompt 签名不变
 
 **实际执行记录（2026-07-18）：**

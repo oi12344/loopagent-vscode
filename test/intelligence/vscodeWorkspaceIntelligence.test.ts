@@ -145,6 +145,48 @@ describe("createVsCodeWorkspaceIntelligence", () => {
     await intelligence.dispose();
   });
 
+  it("logs path=sqlite when the persistent index serves the prompt", async () => {
+    const workspaceRoot = "E:\\work\\repo";
+    const files = new Map([[`${workspaceRoot}\\src\\memoryOnly.ts`, "export function memoryOnly() {}"]]);
+    const client = createFakeIndexClient({
+      chunks: [{ filePath: "src/persisted.ts", startLine: 3, endLine: 3, sourceText: "export function persistedHit() {}" }],
+    });
+    const storagePath = mkdtempSync(join(tmpdir(), "loopagent-vscode-index-"));
+    temporaryDirectories.push(storagePath);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const intelligence = createVsCodeWorkspaceIntelligence(
+      createFakeVsCodeWorkspaceApi(workspaceRoot, files),
+      { storageUri: { fsPath: storagePath }, createIndexClient: () => client },
+    );
+
+    await vi.waitFor(() => expect(client.initialize).toHaveBeenCalled());
+    await intelligence.buildCodeIntelligencePrompt("persistedHit");
+
+    expect(logSpy.mock.calls.some((call) => String(call[0]).includes("path=sqlite"))).toBe(true);
+    await intelligence.dispose();
+    logSpy.mockRestore();
+  });
+
+  it("logs path=memory with the fallback reason when persistent search rejects", async () => {
+    const workspaceRoot = "E:\\work\\repo";
+    const files = new Map([[`${workspaceRoot}\\src\\memoryOnly.ts`, "export function memoryOnly() {}"]]);
+    const client = createFakeIndexClient({ searchError: new Error("search failed") });
+    const storagePath = mkdtempSync(join(tmpdir(), "loopagent-vscode-index-"));
+    temporaryDirectories.push(storagePath);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const intelligence = createVsCodeWorkspaceIntelligence(
+      createFakeVsCodeWorkspaceApi(workspaceRoot, files),
+      { storageUri: { fsPath: storagePath }, createIndexClient: () => client },
+    );
+
+    await vi.waitFor(() => expect(client.initialize).toHaveBeenCalled());
+    await intelligence.buildCodeIntelligencePrompt("memoryOnly");
+
+    expect(logSpy.mock.calls.some((call) => String(call[0]).includes("path=memory") && String(call[0]).includes("reason=error"))).toBe(true);
+    await intelligence.dispose();
+    logSpy.mockRestore();
+  });
+
   it("includes exact symbol matches from the persisted search index", async () => {
     const workspaceRoot = "E:\\work\\repo";
     const files = new Map([[`${workspaceRoot}\\src\\memoryOnly.ts`, "export function memoryOnly() {}"]]);
