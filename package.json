@@ -82,7 +82,7 @@
             "disabled",
             "enabled"
           ],
-          "default": "disabled",
+          "default": "enabled",
           "description": "Thinking mode for providers that support it."
         }
       }

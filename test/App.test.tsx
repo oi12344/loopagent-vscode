@@ -23,7 +23,7 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByRole("form", { name: "Chat composer" })).toHaveClass("chat-composer");
     expect(screen.getByLabelText("Message")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "DeepSeek v4 Flash" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Think: Off" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Think: On" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     expect(screen.getByText("Start a conversation with LoopAgent.")).toBeInTheDocument();
   });
@@ -38,7 +38,7 @@ describe("LoopAgent webview app", () => {
     expect(postMessage).toHaveBeenCalledWith({
       type: "startTask",
       task: "Explain the active file",
-      model: { provider: "deepseek", model: "deepseek-v4-flash", thinking: "disabled" },
+      model: { provider: "deepseek", model: "deepseek-v4-flash", thinking: "enabled" },
     });
     expect(screen.getByText("Explain the active file")).toBeInTheDocument();
   });
@@ -49,8 +49,8 @@ describe("LoopAgent webview app", () => {
 
     render(<App vscodeApi={{ postMessage }} />);
 
-    await user.click(screen.getByRole("button", { name: "Think: Off" }));
-    await user.click(screen.getByRole("menuitem", { name: "On Enables provider reasoning mode" }));
+    await user.click(screen.getByRole("button", { name: "Think: On" }));
+    await user.click(screen.getByRole("menuitem", { name: "Off Uses direct answer mode" }));
     await user.type(screen.getByLabelText("Message"), "hello");
     await user.click(screen.getByRole("button", { name: "Send" }));
 
@@ -60,7 +60,7 @@ describe("LoopAgent webview app", () => {
       model: {
         provider: "deepseek",
         model: "deepseek-v4-flash",
-        thinking: "enabled",
+        thinking: "disabled",
       },
     });
     expect(screen.getByText("hello")).toBeInTheDocument();

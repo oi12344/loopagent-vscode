@@ -8,6 +8,7 @@ describe("package manifest", () => {
   it("requires the VS Code Node 22 sqlite baseline", () => {
     expect(manifest.engines.vscode).toBe("^1.103.0");
     expect(manifest.devDependencies["@types/vscode"]).toBe("^1.103.0");
+    expect(manifest.contributes.configuration.properties["loopagent.model.thinking"].default).toBe("enabled");
   });
 
   it("excludes integration probes from production VSIX", () => {

@@ -13,7 +13,7 @@ export type DeepSeekProviderOptions = {
 
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_MODEL = "deepseek-v4-flash";
-const DEFAULT_THINKING: DeepSeekThinkingMode = "disabled";
+const DEFAULT_THINKING: DeepSeekThinkingMode = "enabled";
 
 export function createDeepSeekProvider({
   apiKey,

@@ -52,6 +52,24 @@ describe("createModelRunner", () => {
 });
 
 describe("createDeepSeekProvider", () => {
+  it("enables thinking by default in the streaming request", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("data: [DONE]\n\n", { status: 200 }));
+    const provider = createDeepSeekProvider({
+      apiKey: "test-api-key",
+      fetch: fetchMock,
+    });
+
+    for await (const _event of provider.stream({
+      messages: [{ role: "user", content: "Hello" }],
+      signal: new AbortController().signal,
+    })) {
+      // This response contains no model events.
+    }
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.thinking).toEqual({ type: "enabled" });
+  });
+
   it("fails before sending a request when the API key is missing", async () => {
     const fetchMock = vi.fn<typeof fetch>();
     const provider = createDeepSeekProvider({

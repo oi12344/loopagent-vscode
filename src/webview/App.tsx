@@ -48,7 +48,7 @@ const modelOptions: ModelOption[] = [
     selection: {
       provider: "deepseek",
       model: "deepseek-v4-flash",
-      thinking: "disabled",
+      thinking: "enabled",
     },
     supportsThinking: true,
   },
@@ -85,7 +85,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [activeRunId, setActiveRunId] = React.useState<string | null>(null);
   const [turns, setTurns] = React.useState<ChatTurn[]>([]);
   const [selectedModelId, setSelectedModelId] = React.useState(modelOptions[0].id);
-  const [thinkingMode, setThinkingMode] = React.useState<ModelThinkingMode>("disabled");
+  const [thinkingMode, setThinkingMode] = React.useState<ModelThinkingMode>("enabled");
   const [openMenu, setOpenMenu] = React.useState<"model" | "thinking" | null>(null);
   const nextTurnId = React.useRef(0);
 
