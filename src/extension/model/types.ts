@@ -26,6 +26,7 @@ export type ModelMessage =
   | {
       role: "assistant";
       content: string;
+      reasoningContent?: string;
       toolCalls?: ModelToolCall[];
     }
   | {

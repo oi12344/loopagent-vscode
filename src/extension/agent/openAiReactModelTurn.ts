@@ -20,6 +20,7 @@ type PendingToolCall = {
 export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReactModelTurnOptions): ReactModelTurn {
   return async ({ messages, signal, toolChoice = "auto" }) => {
     let content = "";
+    let reasoning = "";
     let finishReason: string | undefined;
     const pendingCalls = new Map<number, PendingToolCall>();
 
@@ -39,7 +40,9 @@ export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReac
             })),
       toolChoice,
     })) {
-      if (event.type === "contentDelta") {
+      if (event.type === "reasoningDelta") {
+        reasoning += event.content;
+      } else if (event.type === "contentDelta") {
         content += event.content;
       } else if (event.type === "toolCallDelta") {
         const pending = pendingCalls.get(event.index) ?? { name: "", arguments: "" };
@@ -58,7 +61,7 @@ export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReac
         throw new Error(`Unexpected finish reason for tool calls: ${finishReason ?? "missing"}`);
       }
 
-      return createToolRequests(pendingCalls);
+      return createToolRequests(pendingCalls, reasoning);
     }
 
     if (finishReason === "tool_calls") {
@@ -66,7 +69,7 @@ export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReac
     }
 
     if (content.length > 0) {
-      return { kind: "final", content };
+      return { kind: "final", content, ...(reasoning ? { reasoning } : {}) };
     }
 
     throw new Error("Model response was empty");
@@ -86,7 +89,7 @@ function toModelMessage(message: ReactAgentMessage): ModelMessage {
   return message;
 }
 
-function createToolRequests(pendingCalls: Map<number, PendingToolCall>) {
+function createToolRequests(pendingCalls: Map<number, PendingToolCall>, reasoning = "") {
   const toolCalls: ModelToolCall[] = [];
   const requests: ReactAgentToolRequest[] = [];
   const ids = new Set<string>();
@@ -125,7 +128,8 @@ function createToolRequests(pendingCalls: Map<number, PendingToolCall>) {
 
   return {
     kind: "toolRequests" as const,
-    assistantMessage: { role: "assistant" as const, content: "", toolCalls },
+    ...(reasoning ? { reasoning } : {}),
+    assistantMessage: { role: "assistant" as const, content: "", ...(reasoning ? { reasoningContent: reasoning } : {}), toolCalls },
     requests,
   };
 }

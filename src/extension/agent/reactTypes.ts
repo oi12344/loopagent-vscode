@@ -8,6 +8,7 @@ export type ReactAgentMessage =
   | {
       role: "assistant";
       content: string;
+      reasoningContent?: string;
       toolCalls?: ModelToolCall[];
     }
   | {
@@ -42,9 +43,11 @@ export type ReactModelTurnResult =
   | {
       kind: "final";
       content: string;
+      reasoning?: string;
     }
   | {
       kind: "toolRequests";
+      reasoning?: string;
       assistantMessage: Extract<ReactAgentMessage, { role: "assistant" }>;
       requests: ReactAgentToolRequest[];
     };

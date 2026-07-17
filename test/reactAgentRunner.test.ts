@@ -363,6 +363,22 @@ describe("createReactAgentRunner", () => {
     expect(starts).toEqual(["tool-1", "tool-2"]);
   });
 
+  it("forwards model reasoning before the final answer", async () => {
+    const runner = createReactAgentRunner({
+      modelTurn: async () => ({
+        kind: "final",
+        reasoning: "Checking the relevant condition.",
+        content: "Workspace is ready.",
+      }),
+    });
+
+    await expect(collectRunnerMessages(runner)).resolves.toContainEqual({
+      type: "assistantReasoningDelta",
+      runId: "run-1",
+      content: "Checking the relevant condition.",
+    });
+  });
+
   it("waits for readFile before applying an edit from the same model step", async () => {
     const order: string[] = [];
     let turn = 0;

@@ -62,6 +62,29 @@ describe("createOpenAiReactModelTurn", () => {
     });
   });
 
+  it("preserves streamed reasoning for the runner and follow-up tool history", async () => {
+    const modelTurn = createOpenAiReactModelTurn({
+      provider: createProvider([
+        { type: "reasoningDelta", content: "Inspecting the workspace. " },
+        { type: "reasoningDelta", content: "Searching the symbol." },
+        { type: "toolCallDelta", index: 0, id: "call_1", name: "exploreCode", argumentsDelta: '{"query":"symbol"}' },
+        { type: "finishReason", reason: "tool_calls" },
+      ]),
+      tools: [exploreCodeTool],
+    });
+
+    await expect(
+      modelTurn({ messages: [{ role: "user", content: "Where is it?" }], signal: new AbortController().signal }),
+    ).resolves.toMatchObject({
+      kind: "toolRequests",
+      reasoning: "Inspecting the workspace. Searching the symbol.",
+      assistantMessage: {
+        role: "assistant",
+        reasoningContent: "Inspecting the workspace. Searching the symbol.",
+      },
+    });
+  });
+
   it("returns concatenated final text", async () => {
     const modelTurn = createOpenAiReactModelTurn({
       provider: createProvider([

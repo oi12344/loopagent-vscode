@@ -62,6 +62,10 @@ export function createReactAgentRunner({
             return;
           }
 
+          if (result.reasoning) {
+            yield { type: "assistantReasoningDelta", runId, content: result.reasoning } satisfies HostToWebviewMessage;
+          }
+
           if (result.kind === "final") {
             yield { type: "assistantDelta", runId, content: result.content } satisfies HostToWebviewMessage;
             yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
