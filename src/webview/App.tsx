@@ -65,6 +65,20 @@ const modelOptions: ModelOption[] = [
   },
 ];
 
+const suggestedTasks = ["Explain the active file", "Find where this is implemented"];
+
+function TaskSuggestions({ onSelect }: { onSelect(task: string): void }) {
+  return (
+    <div className="task-suggestions" aria-label="Suggested tasks">
+      {suggestedTasks.map((task) => (
+        <button key={task} type="button" className="suggestion-button" onClick={() => onSelect(task)}>
+          {task}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [message, setMessage] = React.useState("");
   const [isRunning, setIsRunning] = React.useState(false);
@@ -208,10 +222,8 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
     };
   }, []);
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const trimmedMessage = message.trim();
+  function submitTask(task: string) {
+    const trimmedMessage = task.trim();
 
     if (!trimmedMessage || isRunning) {
       return;
@@ -238,6 +250,11 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
     vscodeApi.postMessage({ type: "startTask", task: trimmedMessage, model: runModel });
   }
 
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    submitTask(message);
+  }
+
   function selectModel(option: ModelOption) {
     setSelectedModelId(option.id);
     if (!option.supportsThinking) {
@@ -249,16 +266,22 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   return (
     <main className="app-shell">
       <header className="app-header">
-        <div>
-          <h1>LoopAgent</h1>
-          {activeRunId ? <span className="run-id">{activeRunId}</span> : null}
+        <h1>LoopAgent</h1>
+        <div className="header-meta">
+          <span className={`status-pill status-${isRunning ? "running" : "ready"}`}>
+            <span className="status-dot" aria-hidden="true" />
+            {isRunning ? "Running" : "Ready"}
+          </span>
+          <span className="active-model">{selectedModel.label}</span>
         </div>
-        <span className="status-pill">{isRunning ? "Running" : "Ready"}</span>
       </header>
 
       <section className="chat-log" aria-label="Conversation">
         {turns.length === 0 ? (
-          <p className="empty-state">Start a conversation with LoopAgent.</p>
+          <>
+            <p className="empty-state">Start a conversation with LoopAgent.</p>
+            <TaskSuggestions onSelect={submitTask} />
+          </>
         ) : (
           turns.map((turn) => {
             if (turn.role === "user") {
@@ -386,6 +409,16 @@ function UserMessage({ turn }: { turn: UserTurn }) {
 }
 
 function AssistantMessage({ turn }: { turn: AssistantTurn }) {
+  const [isProcessOpen, setIsProcessOpen] = React.useState(turn.status !== "done");
+  const previousStatus = React.useRef(turn.status);
+
+  React.useEffect(() => {
+    if (turn.status === "done" && previousStatus.current !== "done") {
+      setIsProcessOpen(false);
+    }
+    previousStatus.current = turn.status;
+  }, [turn.status]);
+
   return (
     <article className={`message message-assistant${turn.status === "error" ? " message-error" : ""}`}>
       <div className="message-meta">
@@ -394,7 +427,11 @@ function AssistantMessage({ turn }: { turn: AssistantTurn }) {
       </div>
 
       {turn.process.length > 0 ? (
-        <details className="process-details" open>
+        <details
+          className="process-details"
+          open={isProcessOpen}
+          onToggle={(event) => setIsProcessOpen(event.currentTarget.open)}
+        >
           <summary>Process</summary>
           <ol>
             {turn.process.map((item) => (

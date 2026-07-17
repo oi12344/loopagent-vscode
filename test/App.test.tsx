@@ -28,6 +28,21 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByText("Start a conversation with LoopAgent.")).toBeInTheDocument();
   });
 
+  it("submits a suggested workspace task", async () => {
+    const user = userEvent.setup();
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    render(<App vscodeApi={{ postMessage }} />);
+
+    await user.click(screen.getByRole("button", { name: "Explain the active file" }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: "startTask",
+      task: "Explain the active file",
+      model: { provider: "deepseek", model: "deepseek-v4-flash", thinking: "disabled" },
+    });
+    expect(screen.getByText("Explain the active file")).toBeInTheDocument();
+  });
+
   it("sends the selected model and thinking mode with the task", async () => {
     const user = userEvent.setup();
     const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
@@ -104,6 +119,16 @@ describe("LoopAgent webview app", () => {
 
     await user.type(screen.getByLabelText("Message"), "again");
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  });
+
+  it("collapses completed execution steps", () => {
+    render(<App />);
+    postHostMessage({ type: "runStarted", runId: "run-1", task: "Inspect the project" });
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "DeepSeek" });
+    postHostMessage({ type: "assistantThinking", runId: "run-1", message: "Reading files" });
+    postHostMessage({ type: "runFinished", runId: "run-1" });
+
+    expect(screen.getByText("Process").closest("details")).not.toHaveAttribute("open");
   });
 
   it("renders run failures in the assistant turn", async () => {
