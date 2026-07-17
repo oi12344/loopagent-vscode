@@ -19,3 +19,10 @@ CREATE INDEX idx_chunks_file_id ON chunks(file_id); CREATE INDEX idx_chunks_node
 CREATE INDEX idx_file_dependencies_from_file_id ON file_dependencies(from_file_id); CREATE INDEX idx_file_dependencies_to_file_id ON file_dependencies(to_file_id);
 CREATE INDEX idx_index_jobs_status_updated_at ON index_jobs(status, updated_at); CREATE INDEX idx_chunk_embeddings_status_updated_at ON chunk_embeddings(status, updated_at);
 `;
+
+export const INDEX_SCHEMA_V2_FTS = `
+CREATE VIRTUAL TABLE search_index_fts USING fts5(token, node_id UNINDEXED, node_name UNINDEXED, qualified_name UNINDEXED, file_path UNINDEXED, node_kind UNINDEXED, weight, tokenize = 'unicode61');
+CREATE TABLE search_node_metadata (node_id TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL, scope TEXT NOT NULL, file_priority INTEGER NOT NULL DEFAULT 0, definition_match INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE search_file_metadata (file_uri TEXT PRIMARY KEY, content_hash TEXT NOT NULL, indexed_at INTEGER NOT NULL);
+CREATE INDEX idx_search_node_metadata_kind ON search_node_metadata(kind);
+`;

@@ -45,6 +45,13 @@ export type StoredCodeChunk = {
   sourceText: string;
 };
 
+export type SearchNodeResult = {
+  nodeId: string;
+  nodeName: string;
+  filePath: string;
+  score: number;
+};
+
 type JobRow = {
   id: number;
   file_uri: string;
@@ -282,8 +289,181 @@ export class SqliteIndexStore {
           WHERE files.uri = ?
         )
       `).run(fileUri);
+      this.database.prepare(`
+        DELETE FROM search_index_fts
+        WHERE node_id IN (
+          SELECT nodes.id FROM nodes
+          JOIN files ON files.id = nodes.file_id
+          WHERE files.uri = ?
+        )
+      `).run(fileUri);
+      this.database.prepare(`
+        DELETE FROM search_node_metadata
+        WHERE node_id IN (
+          SELECT nodes.id FROM nodes
+          JOIN files ON files.id = nodes.file_id
+          WHERE files.uri = ?
+        )
+      `).run(fileUri);
+      this.database.prepare("DELETE FROM search_file_metadata WHERE file_uri = ?").run(fileUri);
       this.database.prepare("DELETE FROM files WHERE uri = ?").run(fileUri);
     });
+  }
+
+  indexNodeSearchTokens(ownerId: string, snapshot: ExtractionSnapshot): void {
+    this.transaction(() => {
+      this.assertWriterLease(ownerId);
+      const filePriority = snapshot.file.path.includes("node_modules") ? -1 : 1;
+      const now = this.now();
+
+      // Clear existing search index for this file
+      this.database.prepare(`
+        DELETE FROM search_index_fts
+        WHERE node_id IN (
+          SELECT nodes.id FROM nodes
+          JOIN files ON files.id = nodes.file_id
+          WHERE files.uri = ?
+        )
+      `).run(snapshot.file.uri);
+
+      this.database.prepare(`
+        DELETE FROM search_node_metadata
+        WHERE node_id IN (
+          SELECT nodes.id FROM nodes
+          JOIN files ON files.id = nodes.file_id
+          WHERE files.uri = ?
+        )
+      `).run(snapshot.file.uri);
+
+      // Insert tokens for each node
+      const insertSearchToken = this.database.prepare(`
+        INSERT INTO search_index_fts(token, node_id, node_name, qualified_name, file_path, node_kind, weight)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      const insertNodeMetadata = this.database.prepare(`
+        INSERT INTO search_node_metadata(node_id, kind, scope, file_priority, definition_match)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+
+      for (const node of snapshot.nodes) {
+        const tokens = this.generateSearchTokens(node);
+        for (const { token, weight } of tokens) {
+          insertSearchToken.run(token, node.id, node.name, node.qualifiedName, snapshot.file.path, node.kind, weight);
+        }
+        insertNodeMetadata.run(node.id, node.kind, "global", filePriority, 1);
+      }
+
+      // Update file search metadata
+      this.database.prepare(`
+        INSERT INTO search_file_metadata(file_uri, content_hash, indexed_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(file_uri) DO UPDATE SET content_hash = excluded.content_hash, indexed_at = excluded.indexed_at
+      `).run(snapshot.file.uri, snapshot.file.contentHash, now);
+    });
+  }
+
+  searchNodes(query: string, limit: number = 12): Array<{ nodeId: string; nodeName: string; filePath: string; score: number }> {
+    if (!Number.isInteger(limit) || limit <= 0) {
+      throw new Error("Search limit must be a positive integer");
+    }
+
+    const tokens = createSearchTokens(query);
+    if (tokens.length === 0) return [];
+
+    // Build FTS MATCH expression: "token1" OR "token2" OR ...
+    const matchExpr = tokens.map((token) => `"${token}"`).join(" OR ");
+
+    // Query with BM25 scoring using the FTS table directly
+    const rows = this.database.prepare(`
+      SELECT
+        node_id,
+        node_name,
+        file_path,
+        bm25(search_index_fts) * -1 as score
+      FROM search_index_fts
+      WHERE search_index_fts MATCH ?
+      ORDER BY bm25(search_index_fts)
+      LIMIT ?
+    `).all(matchExpr, limit) as Array<{
+      node_id: string;
+      node_name: string;
+      file_path: string;
+      score: number;
+    }>;
+
+    return rows.map((row) => ({
+      nodeId: row.node_id,
+      nodeName: row.node_name,
+      filePath: row.file_path,
+      score: row.score,
+    }));
+  }
+
+  clearFileSearchIndex(ownerId: string, fileUri: string): void {
+    this.transaction(() => {
+      this.assertWriterLease(ownerId);
+      this.database.prepare(`
+        DELETE FROM search_index_fts
+        WHERE node_id IN (
+          SELECT nodes.id FROM nodes
+          JOIN files ON files.id = nodes.file_id
+          WHERE files.uri = ?
+        )
+      `).run(fileUri);
+      this.database.prepare(`
+        DELETE FROM search_node_metadata
+        WHERE node_id IN (
+          SELECT nodes.id FROM nodes
+          JOIN files ON files.id = nodes.file_id
+          WHERE files.uri = ?
+        )
+      `).run(fileUri);
+      this.database.prepare("DELETE FROM search_file_metadata WHERE file_uri = ?").run(fileUri);
+    });
+  }
+
+  private generateSearchTokens(node: {
+    name: string;
+    qualifiedName: string;
+    filePath: string;
+  }): Array<{ token: string; weight: number }> {
+    const tokens: Array<{ token: string; weight: number }> = [];
+
+    // Weight 3: exact definition name match (highest priority)
+    tokens.push({ token: node.name.toLowerCase(), weight: 3 });
+
+    // Weight 2: tokens from camelCase/snake_case splitting of name
+    for (const segment of createSearchTokens(node.name)) {
+      tokens.push({ token: segment, weight: 2 });
+    }
+
+    // Weight 1.5: qualified name tokens
+    for (const segment of createSearchTokens(node.qualifiedName)) {
+      tokens.push({ token: segment, weight: 1.5 });
+    }
+
+    // Weight 1: file path segments
+    const pathParts = node.filePath.split(/[\\/._-]+/);
+    for (const part of pathParts) {
+      if (part.length >= 2) {
+        tokens.push({ token: part.toLowerCase(), weight: 1 });
+      }
+      for (const segment of createSearchTokens(part)) {
+        tokens.push({ token: segment, weight: 0.8 });
+      }
+    }
+
+    // Deduplicate while keeping highest weight
+    const dedupMap = new Map<string, number>();
+    for (const { token, weight } of tokens) {
+      const existing = dedupMap.get(token) ?? 0;
+      dedupMap.set(token, Math.max(existing, weight));
+    }
+
+    return Array.from(dedupMap.entries()).map(([token, weight]) => ({
+      token,
+      weight,
+    }));
   }
 
   private upsertFileEvent(fileUri: string, eventKind: IndexJobEvent): void {
