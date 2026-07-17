@@ -82,13 +82,13 @@ function TaskSuggestions({ onSelect }: { onSelect(task: string): void }) {
 export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [message, setMessage] = React.useState("");
   const [isRunning, setIsRunning] = React.useState(false);
-  const [activeRunId, setActiveRunId] = React.useState<string | null>(null);
   const [turns, setTurns] = React.useState<ChatTurn[]>([]);
   const [selectedModelId, setSelectedModelId] = React.useState(modelOptions[0].id);
   const [thinkingMode, setThinkingMode] = React.useState<ModelThinkingMode>("enabled");
   const [taskMode, setTaskMode] = React.useState<TaskMode>("edit");
   const [openMenu, setOpenMenu] = React.useState<"model" | "thinking" | null>(null);
   const nextTurnId = React.useRef(0);
+  const composerToolsRef = React.useRef<HTMLDivElement | null>(null);
 
   const selectedModel = modelOptions.find((option) => option.id === selectedModelId) ?? modelOptions[0];
   const effectiveThinkingMode = selectedModel.supportsThinking ? thinkingMode : "disabled";
@@ -137,84 +137,89 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         return;
       }
 
-      if (hostMessage.type === "runStarted") {
-        setActiveRunId(hostMessage.runId);
-        setIsRunning(true);
-        setTurns((currentTurns) => attachRunToUserTurn(currentTurns, hostMessage.runId, hostMessage.task, createTurnId));
-        return;
-      }
+      switch (hostMessage.type) {
+        case "runStarted": {
+          setIsRunning(true);
+          setTurns((currentTurns) => attachRunToUserTurn(currentTurns, hostMessage.runId, hostMessage.task, createTurnId));
+          return;
+        }
 
-      if (hostMessage.type === "assistantStarted") {
-        setActiveRunId(hostMessage.runId);
-        setIsRunning(true);
-        updateAssistantTurn(
-          hostMessage.runId,
-          (turn) => ({
+        case "assistantStarted": {
+          setIsRunning(true);
+          updateAssistantTurn(
+            hostMessage.runId,
+            (turn) => ({
+              ...turn,
+              provider: hostMessage.provider,
+              status: "thinking",
+            }),
+            hostMessage.provider,
+          );
+          return;
+        }
+
+        case "assistantThinking": {
+          updateAssistantTurn(hostMessage.runId, (turn) => ({
             ...turn,
-            provider: hostMessage.provider,
-            status: "thinking",
-          }),
-          hostMessage.provider,
-        );
-        return;
-      }
+            status: turn.content.length > 0 ? "streaming" : "thinking",
+          }));
+          return;
+        }
 
-      if (hostMessage.type === "assistantThinking") {
-        updateAssistantTurn(hostMessage.runId, (turn) => ({
-          ...turn,
-          status: turn.content.length > 0 ? "streaming" : "thinking",
-        }));
-        return;
-      }
+        case "assistantReasoningDelta": {
+          updateAssistantTurn(hostMessage.runId, (turn) => ({
+            ...turn,
+            reasoning: `${turn.reasoning}${hostMessage.content}`,
+            status: turn.content.length > 0 ? "streaming" : "thinking",
+          }));
+          return;
+        }
 
-      if (hostMessage.type === "assistantReasoningDelta") {
-        updateAssistantTurn(hostMessage.runId, (turn) => ({
-          ...turn,
-          reasoning: `${turn.reasoning}${hostMessage.content}`,
-          status: turn.content.length > 0 ? "streaming" : "thinking",
-        }));
-        return;
-      }
+        case "assistantDelta": {
+          updateAssistantTurn(hostMessage.runId, (turn) => ({
+            ...turn,
+            content: `${turn.content}${hostMessage.content}`,
+            status: "streaming",
+          }));
+          return;
+        }
 
-      if (hostMessage.type === "assistantDelta") {
-        updateAssistantTurn(hostMessage.runId, (turn) => ({
-          ...turn,
-          content: `${turn.content}${hostMessage.content}`,
-          status: "streaming",
-        }));
-        return;
-      }
+        case "assistantFinished": {
+          updateAssistantTurn(hostMessage.runId, (turn) => ({
+            ...turn,
+            status: "done",
+          }));
+          return;
+        }
 
-      if (hostMessage.type === "assistantFinished") {
-        updateAssistantTurn(hostMessage.runId, (turn) => ({
-          ...turn,
-          status: "done",
-        }));
-        return;
-      }
+        case "agentEvent": {
+          return;
+        }
 
-      if (hostMessage.type === "agentEvent") {
-        return;
-      }
+        case "runFinished": {
+          setIsRunning(false);
+          updateAssistantTurn(hostMessage.runId, (turn) => ({
+            ...turn,
+            status: "done",
+          }));
+          return;
+        }
 
-      if (hostMessage.type === "runFinished") {
-        setIsRunning(false);
-        setActiveRunId(null);
-        updateAssistantTurn(hostMessage.runId, (turn) => ({
-          ...turn,
-          status: "done",
-        }));
-        return;
-      }
+        case "runFailed": {
+          setIsRunning(false);
+          updateAssistantTurn(hostMessage.runId, (turn) => ({
+            ...turn,
+            error: hostMessage.message,
+            status: "error",
+          }));
+          return;
+        }
 
-      if (hostMessage.type === "runFailed") {
-        setIsRunning(false);
-        setActiveRunId(null);
-        updateAssistantTurn(hostMessage.runId, (turn) => ({
-          ...turn,
-          error: hostMessage.message,
-          status: "error",
-        }));
+        default: {
+          const _exhaustive: never = hostMessage;
+          void _exhaustive;
+          return;
+        }
       }
     }
 
@@ -224,6 +229,32 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       window.removeEventListener("message", handleHostMessage);
     };
   }, []);
+
+  React.useEffect(() => {
+    if (openMenu === null) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      if (composerToolsRef.current && !composerToolsRef.current.contains(event.target as Node)) {
+        setOpenMenu(null);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpenMenu(null);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [openMenu]);
 
   function submitTask(task: string, mode: TaskMode = taskMode) {
     const trimmedMessage = task.trim();
@@ -238,7 +269,6 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
     };
 
     setIsRunning(true);
-    setActiveRunId(null);
     setOpenMenu(null);
     setTurns((currentTurns) => [
       ...currentTurns,
@@ -307,7 +337,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         />
 
         <div className="composer-toolbar">
-          <div className="composer-tools">
+          <div className="composer-tools" ref={composerToolsRef}>
             <div className="mode-switch" role="group" aria-label="Mode">
               <button type="button" className="mode-button" aria-pressed={taskMode === "edit"} onClick={() => setTaskMode("edit")}>
                 Edit
