@@ -195,12 +195,19 @@ describe("code generation edit tools", () => {
       ),
     ).resolves.toContain("cancelled");
 
-    const preview = fake.executeCommand.mock.calls[0]?.[1] as FakeUri;
-    expect(fake.previewText(preview)).toContain("-before");
-    expect(fake.previewText(preview)).toContain("+after");
+    expect(fake.executeCommand).toHaveBeenCalledWith(
+      "vscode.diff",
+      expect.anything(),
+      expect.anything(),
+      "LoopAgent: src/example.ts",
+    );
+    const original = fake.executeCommand.mock.calls[0]?.[1] as FakeUri;
+    const target = fake.executeCommand.mock.calls[0]?.[2] as FakeUri;
+    expect(fake.previewText(original)).toBe("before");
+    expect(fake.previewText(target)).toBe("after");
   });
 
-  it("opens one review document and does not write it when cancelled", async () => {
+  it("opens code diff previews and does not write them when cancelled", async () => {
     const fake = createFakeVsCodeApi({ "src/first.ts": "before", "src/second.ts": "old" }, { confirmation: "Cancel" });
     const service = createEditPreviewService(fake.api);
 
@@ -213,14 +220,21 @@ describe("code generation edit tools", () => {
         new AbortController().signal,
       ),
     ).resolves.toContain("cancelled");
-    expect(fake.executeCommand).toHaveBeenCalledTimes(1);
-    expect(fake.executeCommand).toHaveBeenCalledWith("vscode.open", expect.anything());
-    expect(fake.executeCommand).not.toHaveBeenCalledWith("vscode.diff", expect.anything(), expect.anything(), expect.any(String));
-    const preview = fake.executeCommand.mock.calls[0]?.[1] as FakeUri;
-    expect(fake.previewText(preview)).toContain("src/first.ts");
-    expect(fake.previewText(preview)).toContain("-before");
-    expect(fake.previewText(preview)).toContain("+after");
-    expect(fake.previewText(preview)).toContain("src/second.ts");
+    expect(fake.executeCommand).toHaveBeenCalledTimes(2);
+    expect(fake.executeCommand).toHaveBeenNthCalledWith(
+      1,
+      "vscode.diff",
+      expect.anything(),
+      expect.anything(),
+      "LoopAgent: src/first.ts",
+    );
+    expect(fake.executeCommand).toHaveBeenNthCalledWith(
+      2,
+      "vscode.diff",
+      expect.anything(),
+      expect.anything(),
+      "LoopAgent: src/second.ts",
+    );
     expect(fake.applyEdit).not.toHaveBeenCalled();
   });
 
