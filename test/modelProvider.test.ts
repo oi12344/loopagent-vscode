@@ -70,6 +70,33 @@ describe("createDeepSeekProvider", () => {
     expect(body.thinking).toEqual({ type: "enabled" });
   });
 
+  it("disables thinking when a specific tool call is required", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("data: [DONE]\n\n", { status: 200 }));
+    const provider = createDeepSeekProvider({
+      apiKey: "test-api-key",
+      fetch: fetchMock,
+    });
+
+    for await (const _event of provider.stream({
+      messages: [{ role: "user", content: "Read the file" }],
+      signal: new AbortController().signal,
+      tools: [{
+        type: "function",
+        function: {
+          name: "readFile",
+          description: "Read a file",
+          parameters: { type: "object" },
+        },
+      }],
+      toolChoice: { type: "function", function: { name: "readFile" } },
+    })) {
+      // This response contains no model events.
+    }
+
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
+    expect(body.thinking).toEqual({ type: "disabled" });
+  });
+
   it("fails before sending a request when the API key is missing", async () => {
     const fetchMock = vi.fn<typeof fetch>();
     const provider = createDeepSeekProvider({

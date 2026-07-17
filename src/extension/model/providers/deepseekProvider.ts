@@ -30,6 +30,10 @@ export function createDeepSeekProvider({
         throw new ModelProviderError("missing_api_key", "DeepSeek API key is not configured");
       }
 
+      const requestThinking = request.toolChoice === "required" || typeof request.toolChoice === "object"
+        ? "disabled"
+        : thinking;
+
       const client = createOpenAiCompatibleClient({
         id: "deepseek",
         displayName: `DeepSeek ${model}`,
@@ -38,7 +42,7 @@ export function createDeepSeekProvider({
         model,
         fetch: fetchImpl,
         body: {
-          thinking: { type: thinking },
+          thinking: { type: requestThinking },
         },
       });
 
