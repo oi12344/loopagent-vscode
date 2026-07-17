@@ -22,7 +22,7 @@ export type VsCodeEditApi = {
   window: Pick<typeof vscode.window, "showInformationMessage">;
   workspace: Pick<
     typeof vscode.workspace,
-    "workspaceFolders" | "textDocuments" | "fs" | "applyEdit" | "registerTextDocumentContentProvider"
+    "workspaceFolders" | "textDocuments" | "fs" | "applyEdit" | "getConfiguration" | "registerTextDocumentContentProvider"
   >;
 };
 
@@ -316,6 +316,9 @@ async function openPreviews(
     const original = addPreview(vscodeApi, previewContents, proposalId, originalPath, "original", originalContent);
     const target = addPreview(vscodeApi, previewContents, proposalId, targetPath, "target", targetContent);
     await vscodeApi.commands.executeCommand("vscode.diff", original, target, `LoopAgent: ${title}`);
+    if (vscodeApi.workspace.getConfiguration("diffEditor", target).get("renderSideBySide", true)) {
+      await vscodeApi.commands.executeCommand("toggle.diff.renderSideBySide", target);
+    }
   }
 }
 

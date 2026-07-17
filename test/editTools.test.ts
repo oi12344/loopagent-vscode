@@ -49,6 +49,7 @@ function createFakeVsCodeApi(
     symbolicLinkPaths?: string[];
     dirtyPaths?: string[];
     dirtyContents?: Record<string, string>;
+    renderSideBySide?: boolean;
   } = {},
 ): {
   api: VsCodeEditApi;
@@ -101,6 +102,9 @@ function createFakeVsCodeApi(
       },
       workspace: {
         workspaceFolders: [{ uri: root }],
+        getConfiguration: () => ({
+          get: (_section: string, defaultValue: boolean) => options.renderSideBySide ?? defaultValue,
+        }),
         textDocuments: (options.dirtyPaths ?? []).map((path) => ({
           uri: createUri("file", toFsPath(path)),
           isDirty: true,
@@ -205,6 +209,7 @@ describe("code generation edit tools", () => {
     const target = fake.executeCommand.mock.calls[0]?.[2] as FakeUri;
     expect(fake.previewText(original)).toBe("before");
     expect(fake.previewText(target)).toBe("after");
+    expect(fake.executeCommand).toHaveBeenNthCalledWith(2, "toggle.diff.renderSideBySide", target);
   });
 
   it("opens code diff previews and does not write them when cancelled", async () => {
@@ -220,7 +225,7 @@ describe("code generation edit tools", () => {
         new AbortController().signal,
       ),
     ).resolves.toContain("cancelled");
-    expect(fake.executeCommand).toHaveBeenCalledTimes(2);
+    expect(fake.executeCommand).toHaveBeenCalledTimes(4);
     expect(fake.executeCommand).toHaveBeenNthCalledWith(
       1,
       "vscode.diff",
@@ -229,12 +234,14 @@ describe("code generation edit tools", () => {
       "LoopAgent: src/first.ts",
     );
     expect(fake.executeCommand).toHaveBeenNthCalledWith(
-      2,
+      3,
       "vscode.diff",
       expect.anything(),
       expect.anything(),
       "LoopAgent: src/second.ts",
     );
+    expect(fake.executeCommand).toHaveBeenNthCalledWith(2, "toggle.diff.renderSideBySide", expect.anything());
+    expect(fake.executeCommand).toHaveBeenNthCalledWith(4, "toggle.diff.renderSideBySide", expect.anything());
     expect(fake.applyEdit).not.toHaveBeenCalled();
   });
 
