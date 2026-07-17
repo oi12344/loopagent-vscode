@@ -434,7 +434,7 @@ function AssistantMessage({ turn }: { turn: AssistantTurn }) {
           open={isProcessOpen}
           onToggle={(event) => setIsProcessOpen(event.currentTarget.open)}
         >
-          <summary>Process</summary>
+          <summary>思考过程</summary>
           <div className="reasoning-content">{turn.reasoning}</div>
         </details>
       ) : null}

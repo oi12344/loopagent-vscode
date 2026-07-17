@@ -112,7 +112,7 @@ describe("LoopAgent webview app", () => {
     postHostMessage({ type: "runFinished", runId: "run-1" });
 
     expect(screen.getByText("DeepSeek v4 flash")).toBeInTheDocument();
-    expect(screen.getByText("Process")).toBeInTheDocument();
+    expect(screen.getByText("思考过程")).toBeInTheDocument();
     expect(screen.getByText("Inspecting the request. Preparing the answer.")).toBeInTheDocument();
     expect(screen.queryByText("Calling DeepSeek v4 flash")).not.toBeInTheDocument();
     expect(screen.queryByText("Received model reasoning signal")).not.toBeInTheDocument();
@@ -129,7 +129,7 @@ describe("LoopAgent webview app", () => {
     postHostMessage({ type: "assistantReasoningDelta", runId: "run-1", content: "Reading files" });
     postHostMessage({ type: "runFinished", runId: "run-1" });
 
-    expect(screen.getByText("Process").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("思考过程").closest("details")).not.toHaveAttribute("open");
   });
 
   it("shows only provider reasoning in Process and right-aligns user tasks", () => {
@@ -147,7 +147,7 @@ describe("LoopAgent webview app", () => {
     expect(screen.queryByText("Building code context")).not.toBeInTheDocument();
     expect(screen.queryByText("Running tool exploreCode")).not.toBeInTheDocument();
     expect(screen.getByText("Inspect the project").closest("article")).toHaveClass("message-user-right");
-    expect(screen.getByText("Process").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("思考过程").closest("details")).not.toHaveAttribute("open");
   });
 
   it("preserves provider reasoning newlines", () => {
@@ -191,6 +191,6 @@ describe("LoopAgent webview app", () => {
 
     expect(screen.getByText("Inspect the project")).toBeInTheDocument();
     expect(screen.queryByText("Building context")).not.toBeInTheDocument();
-    expect(screen.queryByText("Process")).not.toBeInTheDocument();
+    expect(screen.queryByText("思考过程")).not.toBeInTheDocument();
   });
 });
