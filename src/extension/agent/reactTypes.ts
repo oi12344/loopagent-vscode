@@ -23,6 +23,7 @@ export type ReactAgentToolRequest = {
   name: string;
   rawArguments: string;
   input: unknown;
+  parseError?: string;
 };
 
 export type ReactAgentToolInvocation = {

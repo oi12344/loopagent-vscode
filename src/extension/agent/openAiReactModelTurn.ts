@@ -110,10 +110,11 @@ function createToolRequests(pendingCalls: Map<number, PendingToolCall>, reasonin
     ids.add(pending.id);
 
     let input: unknown;
+    let parseError: string | undefined;
     try {
       input = JSON.parse(pending.arguments);
     } catch {
-      throw new Error(`Invalid JSON arguments for tool ${pending.name}`);
+      parseError = `Invalid JSON arguments for tool ${pending.name}`;
     }
 
     toolCalls.push({
@@ -126,6 +127,7 @@ function createToolRequests(pendingCalls: Map<number, PendingToolCall>, reasonin
       name: pending.name,
       rawArguments: pending.arguments,
       input,
+      ...(parseError ? { parseError } : {}),
     });
   }
 

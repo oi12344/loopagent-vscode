@@ -124,6 +124,9 @@ export function createReactAgentRunner({
               if (!toolsByName.has(toolRequest.name)) {
                 throw new Error(`Unknown tool: ${toolRequest.name}`);
               }
+              if (toolRequest.parseError) {
+                return { content: `Tool error: ${toolRequest.parseError}`, succeeded: false };
+              }
               try {
                 return { content: await toolRegistry.invoke(toolRequest, signal), succeeded: true };
               } catch (error) {

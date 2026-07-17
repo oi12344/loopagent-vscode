@@ -513,7 +513,7 @@ describe("createReactAgentRunner", () => {
     let turn = 0;
     let applyAttempts = 0;
     const runner = createReactAgentRunner({
-      maxSteps: 3,
+      maxSteps: 4,
       tools: [
         { name: "readFile", description: "Read.", inputSchema: {}, invoke: async () => "before" },
         {
@@ -531,8 +531,28 @@ describe("createReactAgentRunner", () => {
         choices.push(toolChoice);
         turn += 1;
         if (turn === 1) return toolRequest("read-1", "readFile", { path: "src/example.ts" });
-        if (turn === 2) return toolRequest("edit-1", "applyEdit", { changes: [] });
+        if (turn === 2) {
+          return {
+            kind: "toolRequests",
+            assistantMessage: {
+              role: "assistant",
+              content: "",
+              toolCalls: [{ id: "edit-invalid", type: "function", function: { name: "applyEdit", arguments: "{" } }],
+            },
+            requests: [{
+              id: "edit-invalid",
+              name: "applyEdit",
+              rawArguments: "{",
+              input: undefined,
+              parseError: "Invalid JSON arguments for tool applyEdit",
+            }],
+          } as const;
+        }
         if (turn === 3) {
+          expect(messages.at(-1)).toMatchObject({ role: "tool", content: expect.stringContaining("Invalid JSON arguments") });
+          return toolRequest("edit-1", "applyEdit", { changes: [] });
+        }
+        if (turn === 4) {
           expect(messages.at(-1)).toMatchObject({ role: "tool", content: expect.stringContaining("oldText must match") });
           return toolRequest("edit-2", "applyEdit", { changes: [] });
         }
@@ -544,6 +564,7 @@ describe("createReactAgentRunner", () => {
 
     expect(choices).toEqual([
       { type: "function", function: { name: "readFile" } },
+      "required",
       "required",
       { type: "function", function: { name: "applyEdit" } },
       "none",

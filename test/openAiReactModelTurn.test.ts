@@ -178,15 +178,30 @@ describe("createOpenAiReactModelTurn", () => {
     expect(seenTools).toBeUndefined();
   });
 
-  it.each([
-    {
-      name: "invalid JSON arguments",
-      events: [
+  it("returns invalid JSON tool arguments for recoverable feedback", async () => {
+    const modelTurn = createOpenAiReactModelTurn({
+      provider: createProvider([
         { type: "toolCallDelta", index: 0, id: "call_1", name: "exploreCode", argumentsDelta: "{" },
         { type: "finishReason", reason: "tool_calls" },
-      ] satisfies ModelStreamEvent[],
-      message: "Invalid JSON arguments for tool exploreCode",
-    },
+      ]),
+      tools: [exploreCodeTool],
+    });
+
+    await expect(
+      modelTurn({ messages: [{ role: "user", content: "Status?" }], signal: new AbortController().signal }),
+    ).resolves.toMatchObject({
+      kind: "toolRequests",
+      requests: [{
+        id: "call_1",
+        name: "exploreCode",
+        rawArguments: "{",
+        input: undefined,
+        parseError: "Invalid JSON arguments for tool exploreCode",
+      }],
+    });
+  });
+
+  it.each([
     {
       name: "duplicate tool call IDs",
       events: [
