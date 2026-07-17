@@ -215,8 +215,11 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(readFileTool.invoke).toHaveBeenCalledTimes(1);
     expect(applyEditTool.invoke).toHaveBeenCalledTimes(1);
     expect(capturedMessages[2]!.slice(-2)).toEqual([
-      expect.objectContaining({ role: "assistant", toolCalls: [expect.objectContaining({ id: "apply-call" })] }),
-      expect.objectContaining({ role: "tool", toolCallId: "apply-call", name: "applyEdit", content: "Changes were applied." }),
+      { role: "user", content: "Rename the constant." },
+      {
+        role: "user",
+        content: "编辑审阅结果：Changes were applied.\n请用中文思考，并用与原始任务相同的语言简洁汇报最终结果。",
+      },
     ]);
   });
 

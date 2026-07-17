@@ -48,6 +48,7 @@ export function createReactAgentRunner({
         }
 
         messages.push({ role: "user", content: task });
+        const initialMessages = [...messages];
         const editMode = mode === "edit" && canApplyEdits;
         let fileReadForEdit = !canReadFiles;
         let editReviewRequested = false;
@@ -71,8 +72,17 @@ export function createReactAgentRunner({
               : isFinalAnswerStep || editReviewRequested
                 ? "none"
                 : "auto";
+          const turnMessages = editReviewRequested
+            ? [
+                ...initialMessages,
+                {
+                  role: "user" as const,
+                  content: `编辑审阅结果：${lastEditObservation}\n请用中文思考，并用与原始任务相同的语言简洁汇报最终结果。`,
+                },
+              ]
+            : messages;
           const result = await modelTurn({
-            messages,
+            messages: turnMessages,
             signal,
             toolChoice,
           });

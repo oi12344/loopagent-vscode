@@ -441,9 +441,11 @@ describe("createReactAgentRunner", () => {
   it("requires readFile and applyEdit before finishing an Edit-mode task", async () => {
     const choices: unknown[] = [];
     const order: string[] = [];
+    let finalMessages: unknown;
     let turn = 0;
     const runner = createReactAgentRunner({
       maxSteps: 2,
+      systemPromptProvider: () => "system context",
       tools: [
         {
           name: "readFile",
@@ -464,7 +466,7 @@ describe("createReactAgentRunner", () => {
           },
         },
       ],
-      modelTurn: async ({ toolChoice }) => {
+      modelTurn: async ({ messages, toolChoice }) => {
         choices.push(toolChoice);
         turn += 1;
         if (turn === 1) {
@@ -493,6 +495,7 @@ describe("createReactAgentRunner", () => {
             requests: [{ id: "edit-1", name: "applyEdit", rawArguments: '{"changes":[]}', input: { changes: [] } }],
           };
         }
+        finalMessages = messages;
         return { kind: "final", content: "Changes were applied." };
       },
     });
@@ -505,6 +508,14 @@ describe("createReactAgentRunner", () => {
       "none",
     ]);
     expect(order).toEqual(["read", "review"]);
+    expect(finalMessages).toEqual([
+      { role: "system", content: "system context" },
+      { role: "user", content: "每个方法添加日志" },
+      {
+        role: "user",
+        content: "编辑审阅结果：Changes were applied.\n请用中文思考，并用与原始任务相同的语言简洁汇报最终结果。",
+      },
+    ]);
     expect(messages).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "Changes were applied." });
   });
 
