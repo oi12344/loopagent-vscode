@@ -44,7 +44,7 @@
 
 **Produces：** { type: "assistantReasoningDelta"; runId: string; content: string }，供 Webview 逐段追加且保留 provider 原文。
 
-- [ ] **步骤 1：写入失败的 reasoning 映射测试**
+- [x] **步骤 1：写入失败的 reasoning 映射测试**
 
 在 test/modelRunnerContext.test.ts 新增 provider 推理流用例：
 
@@ -94,7 +94,7 @@ expect(hostMessages).toContainEqual({
 });
 ~~~
 
-- [ ] **步骤 2：运行定向测试确认红灯**
+- [x] **步骤 2：运行定向测试确认红灯**
 
 ~~~powershell
 npm test -- --run test/modelRunnerContext.test.ts test/modelProvider.test.ts
@@ -102,7 +102,7 @@ npm test -- --run test/modelRunnerContext.test.ts test/modelProvider.test.ts
 
 预期：测试失败，因为 Host 消息联合类型和 modelRunner 尚未产生 assistantReasoningDelta；既有 provider 流断言仍期待旧的 Received model reasoning signal。
 
-- [ ] **步骤 3：添加最小消息契约与转发**
+- [x] **步骤 3：添加最小消息契约与转发**
 
 在 src/shared/messages.ts 的 HostToWebviewMessage 联合中加入：
 
@@ -128,7 +128,7 @@ if (event.type === "reasoningDelta") {
 
 删除 reportedReasoningSignal 变量以及 Received model reasoning signal 事件；保留 Building code context 和 Calling provider 的 assistantThinking 状态事件。
 
-- [ ] **步骤 4：运行定向测试确认绿灯并提交**
+- [x] **步骤 4：运行定向测试确认绿灯并提交**
 
 ~~~powershell
 npm test -- --run test/modelRunnerContext.test.ts test/modelProvider.test.ts
@@ -150,7 +150,7 @@ git commit -m "feat(model): stream reasoning to webview"
 
 **Produces：** AssistantTurn.reasoning 字符串、只显示 reasoning 的 Process details、message-user-right 样式类。
 
-- [ ] **步骤 1：写入失败的 Webview 行为测试**
+- [x] **步骤 1：写入失败的 Webview 行为测试**
 
 在 test/App.test.tsx 新增：
 
@@ -183,7 +183,7 @@ postHostMessage({ type: "assistantReasoningDelta", runId: "run-1", content: "Pre
 
 断言 `Inspecting the request. Preparing the answer.` 出现在 Process 中，并断言旧的 `Calling DeepSeek v4 flash` 和 `Received model reasoning signal` 不再出现。将现有 `collapses completed execution steps` 用例中的 `assistantThinking` 替换为一条 `assistantReasoningDelta`，使该用例仍验证完成后折叠。更新遗留 agentEvent 用例，使其断言通用 Agent 事件不在 Process 中显示。
 
-- [ ] **步骤 2：运行定向测试确认红灯**
+- [x] **步骤 2：运行定向测试确认红灯**
 
 ~~~powershell
 npm test -- --run test/App.test.tsx
@@ -191,7 +191,7 @@ npm test -- --run test/App.test.tsx
 
 预期：测试因 assistantReasoningDelta 未被 App 处理、通用事件仍显示为 Process、用户消息缺少 message-user-right 类而失败。
 
-- [ ] **步骤 3：在 App.tsx 实现最小状态与呈现改动**
+- [x] **步骤 3：在 App.tsx 实现最小状态与呈现改动**
 
 将 AssistantTurn 中的 process 改为 reasoning，并在初始助手消息中使用空字符串：
 
@@ -234,7 +234,7 @@ if (hostMessage.type === "assistantReasoningDelta") {
 
 将 UserMessage 的 article 类名改为 message message-user message-user-right。
 
-- [ ] **步骤 4：在 styles.css 添加右侧气泡与 reasoning 样式**
+- [x] **步骤 4：在 styles.css 添加右侧气泡与 reasoning 样式**
 
 ~~~css
 .message-user-right {
@@ -264,7 +264,7 @@ if (hostMessage.type === "assistantReasoningDelta") {
 
 删除 process-details 针对 ol 与 li 的旧规则；保留 details、summary、错误与回答样式。
 
-- [ ] **步骤 5：运行定向测试确认绿灯并提交**
+- [x] **步骤 5：运行定向测试确认绿灯并提交**
 
 ~~~powershell
 npm test -- --run test/App.test.tsx
@@ -284,7 +284,7 @@ git commit -m "feat(ui): show model reasoning"
 
 **Produces：** 只记录实际验证结果的中文实施记录。
 
-- [ ] **步骤 1：运行集中验证与清理检查**
+- [x] **步骤 1：运行集中验证与清理检查**
 
 ~~~powershell
 npm test
@@ -305,7 +305,7 @@ npm run debug:vscode
 
 在启动的唯一 Extension Development Host 中使用已配置且会返回 reasoningDelta 的 provider，确认 Process 仅显示 provider reasoning、用户任务气泡在右侧、完成后 Process 可手动重新展开。关闭该调试宿主后继续交付；若 provider 或 Windows 自动化不可用，只记录真实限制，不伪称通过。
 
-- [ ] **步骤 3：写入实施结果并提交**
+- [x] **步骤 3：写入实施结果并提交**
 
 在本文档末尾增加 ## 实施结果，只记录实际通过的命令、可视验收结论和未完成项。然后运行：
 
@@ -313,3 +313,10 @@ npm run debug:vscode
 git add -- docs/superpowers/plans/2026-07-17-model-reasoning-and-right-alignment-plan.md
 git commit -m "docs(ui): record reasoning verification"
 ~~~
+
+## 实施结果
+
+- 已完成集中验证：`npm test` 通过（51 个测试文件、296 个测试）；`npm run typecheck`、`npm run compile` 与 `git diff --check` 均通过。
+- 已完成限定清理检查：目标源码与测试文件中 `console.log`、`TODO`、`TBD` 无匹配；`rg` 退出码为 1，按预期视为通过。检查期间未删除无关用户文件。
+- 已启动并关闭唯一的 Extension Development Host；安全初始界面显示 LoopAgent 的空闲面板、模型选择和 Think 控件。
+- 未完成真实 provider 推理流的可视验收：未提交真实模型任务或读取 API 密钥，因此无法确认运行时 Process 内容、右侧用户气泡和完成后重新展开；截图捕获接口返回 `0x80004002`，未继续自动化操作。
