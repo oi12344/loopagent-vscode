@@ -162,6 +162,7 @@ export function createReactAgentRunner({
                 } satisfies HostToWebviewMessage;
               }
               if (!outcome.succeeded) {
+                if (request.name === "applyEdit") lastEditObservation = content;
                 yield {
                   type: "agentEvent",
                   runId,
@@ -190,7 +191,7 @@ export function createReactAgentRunner({
           return;
         }
 
-        throw new Error(editMode ? "Edit review was not opened" : "Model did not produce a final answer");
+        throw new Error(editMode ? lastEditObservation || "Edit review was not opened" : "Model did not produce a final answer");
 
       } catch (error) {
         if (signal.aborted) {

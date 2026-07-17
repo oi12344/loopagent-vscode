@@ -584,6 +584,31 @@ describe("createReactAgentRunner", () => {
     expect(messages.some((message) => message.type === "runFailed")).toBe(false);
   });
 
+  it("reports the last applyEdit error when review retries are exhausted", async () => {
+    let turn = 0;
+    const runner = createReactAgentRunner({
+      maxSteps: 2,
+      tools: [
+        { name: "readFile", description: "Read.", inputSchema: {}, invoke: async () => "before" },
+        { name: "applyEdit", description: "Review.", inputSchema: {}, invoke: async () => {
+          throw new Error("oldText must match exactly once");
+        } },
+      ],
+      modelTurn: async () => {
+        turn += 1;
+        return turn === 1
+          ? toolRequest("read-1", "readFile", { path: "src/example.ts" })
+          : toolRequest(`edit-${turn}`, "applyEdit", { changes: [] });
+      },
+    });
+
+    await expect(collectRunnerMessagesInMode(runner, "edit", "修改文件")).resolves.toContainEqual({
+      type: "runFailed",
+      runId: "run-1",
+      message: "Tool error: oldText must match exactly once",
+    });
+  });
+
   it("fails before invoking more than ten tool requests", async () => {
     const queries = Array.from({ length: 11 }, (_, index) => `query-${index + 1}`);
     const invoke = vi.fn(async () => "unused");
