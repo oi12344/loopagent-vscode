@@ -14,6 +14,14 @@ export const window = {
   showInputBox: async () => undefined,
 };
 
+export const workspace = {
+  getConfiguration: (section?: string) => ({
+    get: (key: string, defaultValue?: unknown) => defaultValue,
+  }),
+  workspaceFolders: undefined,
+  name: "test-workspace",
+};
+
 export const Uri = {
   joinPath: (_base: unknown, ...segments: string[]) => ({
     toString: () => segments.join("/"),
