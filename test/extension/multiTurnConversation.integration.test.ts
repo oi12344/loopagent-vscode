@@ -1,10 +1,28 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { startAgentRun, type AgentRunner, type AgentRunRequest } from "../../src/extension/agentRunner";
 import { createConversationStore } from "../../src/extension/conversation/conversationStore";
+import { createPersistentConversationStore } from "../../src/extension/conversation/persistentConversationStore";
 import { createConversationManager } from "../../src/extension/conversation/conversationManager";
 
 describe("Multi-turn conversation integration", () => {
+  const directories: string[] = [];
+  const openStores: Array<{ close(): void }> = [];
+
+  afterEach(() => {
+    for (const store of openStores.splice(0)) {
+      try {
+        store.close();
+      } catch {
+        // already closed by the test (e.g. simulating a restart)
+      }
+    }
+    for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
+  });
+
   it("supports starting a new conversation and continuing it with history", async () => {
     const conversationStore = createConversationStore();
     const conversationManager = createConversationManager(conversationStore);
@@ -102,5 +120,39 @@ describe("Multi-turn conversation integration", () => {
 
     const history = conversationManager.getConversationHistory("non-existent-id");
     expect(history).toEqual([]);
+  });
+
+  it("restores the active conversation after the store is reopened, simulating a VS Code restart", () => {
+    const directory = mkdtempSync(join(tmpdir(), "loopagent-restart-"));
+    directories.push(directory);
+    const databasePath = join(directory, "conversation.sqlite");
+
+    const firstSessionStore = createPersistentConversationStore(databasePath);
+    openStores.push(firstSessionStore);
+    const firstSessionManager = createConversationManager(firstSessionStore);
+
+    const conversation = firstSessionManager.startConversation();
+    firstSessionManager.addUserMessage(conversation.conversationId, "What is TypeScript?");
+    firstSessionManager.addAssistantMessage(conversation.conversationId, "A typed superset of JavaScript.");
+
+    // 模拟 VS Code 重启：关闭旧连接，用同一个数据库文件重新打开一个新实例
+    firstSessionStore.close();
+
+    const secondSessionStore = createPersistentConversationStore(databasePath);
+    openStores.push(secondSessionStore);
+    const secondSessionManager = createConversationManager(secondSessionStore);
+
+    const restored = secondSessionManager.loadActiveConversation();
+    expect(restored?.conversationId).toBe(conversation.conversationId);
+    expect(restored?.messages).toEqual([
+      { role: "user", content: "What is TypeScript?" },
+      { role: "assistant", content: "A typed superset of JavaScript." },
+    ]);
+
+    // 恢复后追问，历史要接得上
+    secondSessionManager.addUserMessage(conversation.conversationId, "Tell me more");
+    const history = secondSessionManager.getConversationHistory(conversation.conversationId);
+    expect(history).toHaveLength(3);
+    expect(history[2]).toEqual({ role: "user", content: "Tell me more" });
   });
 });
