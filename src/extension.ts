@@ -63,6 +63,14 @@ export async function deactivate(): Promise<void> {
   await provider?.dispose();
 }
 
+function createConversationStoreForWorkspace(workspaceRoot: string): ConversationStore & { close?(): void } {
+  try {
+    return createPersistentConversationStore(join(workspaceRoot, ".loopagent", "conversation.sqlite"));
+  } catch {
+    return createConversationStore();
+  }
+}
+
 class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private activeRun: AgentRunHandle | undefined;
   private readonly workspaceIntelligence;
@@ -84,7 +92,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
 
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     this.conversationStore = workspaceRoot
-      ? createPersistentConversationStore(join(workspaceRoot, ".loopagent", "conversation.sqlite"))
+      ? createConversationStoreForWorkspace(workspaceRoot)
       : createConversationStore();
     this.conversationManager = createConversationManager(this.conversationStore);
   }
