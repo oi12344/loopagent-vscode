@@ -39,6 +39,12 @@ export type ConversationManager = {
    * @returns 对话的消息列表，如果对话不存在返回空数组
    */
   getConversationHistory(conversationId: string): ChatMessage[];
+
+  /** 透传 ConversationStore.loadActiveConversation */
+  loadActiveConversation(): ConversationContext | undefined;
+
+  /** 透传 ConversationStore.clearActiveConversation */
+  clearActiveConversation(): void;
 };
 
 /**
@@ -74,6 +80,14 @@ export function createConversationManager(store: ConversationStore): Conversatio
 
     getConversationHistory(conversationId: string): ChatMessage[] {
       return store.getMessages(conversationId);
+    },
+
+    loadActiveConversation(): ConversationContext | undefined {
+      return store.loadActiveConversation();
+    },
+
+    clearActiveConversation(): void {
+      store.clearActiveConversation();
     },
   };
 }

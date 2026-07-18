@@ -134,4 +134,14 @@ describe("ConversationManager", () => {
     expect(history[2].content).toBe("Second");
     expect(history[3].content).toBe("Response 2");
   });
+
+  it("delegates loadActiveConversation and clearActiveConversation to the store", () => {
+    const store = createConversationStore();
+    const manager = createConversationManager(store);
+
+    expect(manager.loadActiveConversation()).toBeUndefined();
+
+    manager.startConversation();
+    expect(() => manager.clearActiveConversation()).not.toThrow();
+  });
 });
