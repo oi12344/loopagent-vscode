@@ -14,6 +14,9 @@
     "onCommand:loopagent.focusChat",
     "onCommand:loopagent.setModelApiKey",
     "onCommand:loopagent.clearModelApiKey",
+    "onCommand:loopagent.rememberProjectMemory",
+    "onCommand:loopagent.showProjectMemory",
+    "onCommand:loopagent.forgetProjectMemory",
     "onView:loopagent.chat"
   ],
   "main": "./dist/extension.js",
@@ -34,6 +37,18 @@
       {
         "command": "loopagent.clearModelApiKey",
         "title": "LoopAgent: Clear Model API Key"
+      },
+      {
+        "command": "loopagent.rememberProjectMemory",
+        "title": "LoopAgent: Remember Project Memory"
+      },
+      {
+        "command": "loopagent.showProjectMemory",
+        "title": "LoopAgent: Show Project Memory"
+      },
+      {
+        "command": "loopagent.forgetProjectMemory",
+        "title": "LoopAgent: Forget Project Memory"
       },
       {
         "command": "loopagent.acceptEditReview",

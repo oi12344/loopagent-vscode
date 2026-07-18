@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync } from "node:fs";
+import { join, normalize } from "node:path";
+
 import * as vscode from "vscode";
 
 import { createApplyEditTool } from "./extension/agent/applyEditTool";
@@ -6,6 +10,8 @@ import { createReadFileTool } from "./extension/agent/readFileTool";
 import { startAgentRun, type AgentRunHandle } from "./extension/agentRunner";
 import { createTreeSitterParserRuntime } from "./extension/intelligence/parser/treeSitterRuntime";
 import { createVsCodeWorkspaceIntelligence } from "./extension/intelligence/vscodeWorkspaceIntelligence";
+import { openProjectMemory, type ProjectMemory } from "./extension/memory/projectMemory";
+import type { MemoryKind, ReadRange } from "./extension/memory/types";
 import { clearModelApiKey, getConfiguredProviderId, setModelApiKey } from "./extension/model/modelConfig";
 import { createConfiguredAgentRunner } from "./extension/model/providerRegistry";
 import { createWebviewHtml } from "./extension/webviewHtml";
@@ -13,6 +19,7 @@ import type { WebviewToHostMessage } from "./shared/messages";
 
 const chatViewId = "loopagent.chat";
 const viewContainerId = "workbench.view.extension.loopagent";
+const noWorkspaceMessage = "当前没有可用工作区";
 let activeChatProvider: LoopAgentChatViewProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -42,13 +49,126 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   });
 
+  const projectMemory = openWorkspaceProjectMemory(context);
+  const rememberProjectMemoryCommand = vscode.commands.registerCommand("loopagent.rememberProjectMemory", async () => {
+    await runRememberProjectMemory(projectMemory);
+  });
+  const showProjectMemoryCommand = vscode.commands.registerCommand("loopagent.showProjectMemory", async () => {
+    await runShowProjectMemory(projectMemory);
+  });
+  const forgetProjectMemoryCommand = vscode.commands.registerCommand("loopagent.forgetProjectMemory", async () => {
+    await runForgetProjectMemory(projectMemory);
+  });
+
   context.subscriptions.push(
     helloCommand,
     focusChatCommand,
     setModelApiKeyCommand,
     clearModelApiKeyCommand,
     chatViewRegistration,
+    rememberProjectMemoryCommand,
+    showProjectMemoryCommand,
+    forgetProjectMemoryCommand,
+    { dispose: () => projectMemory?.dispose() },
   );
+}
+
+/** Opens (or degrades gracefully from) the project memory store for the current workspace. */
+function openWorkspaceProjectMemory(context: vscode.ExtensionContext): ProjectMemory | undefined {
+  const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+  if (!context.storageUri || workspaceFolders.length === 0) return undefined;
+
+  try {
+    mkdirSync(context.storageUri.fsPath, { recursive: true });
+    const databasePath = join(context.storageUri.fsPath, "memory.sqlite");
+    const workspaceKey = computeWorkspaceKey(workspaceFolders);
+    return openProjectMemory(databasePath, workspaceKey, readFileRange);
+  } catch {
+    // Open failure degrades to no-memory mode; commands report "no workspace available".
+    return undefined;
+  }
+}
+
+function computeWorkspaceKey(workspaceFolders: readonly vscode.WorkspaceFolder[]): string {
+  const roots = workspaceFolders.map((folder) => normalize(folder.uri.fsPath).toLowerCase()).sort();
+  return createHash("sha256").update(roots.join("|")).digest("hex");
+}
+
+const readFileRange: ReadRange = (filePath, startLine, endLine) => {
+  try {
+    const lines = readFileSync(filePath, "utf8").split(/\r?\n/);
+    return lines.slice(startLine, endLine + 1).join("\n");
+  } catch {
+    return "";
+  }
+};
+
+async function runRememberProjectMemory(projectMemory: ProjectMemory | undefined): Promise<void> {
+  if (!projectMemory) {
+    vscode.window.showInformationMessage(noWorkspaceMessage);
+    return;
+  }
+
+  const expectedGeneration = projectMemory.getGeneration();
+  const picked = await vscode.window.showQuickPick<{ label: string; memoryKind: MemoryKind }>(
+    [
+      { label: "事实 (fact)", memoryKind: "fact" },
+      { label: "决策 (decision)", memoryKind: "decision" },
+    ],
+    { placeHolder: "选择记忆类型" },
+  );
+  if (!picked) return;
+
+  const subject = await vscode.window.showInputBox({ prompt: "主题", ignoreFocusOut: true });
+  if (!subject) return;
+
+  const content = await vscode.window.showInputBox({ prompt: "内容", ignoreFocusOut: true });
+  if (!content) return;
+
+  const result = projectMemory.remember({ expectedGeneration, kind: picked.memoryKind, subject, content });
+  if (!result.ok) {
+    vscode.window.showWarningMessage(`记忆未保存：${result.reason}`);
+    return;
+  }
+  vscode.window.showInformationMessage("已记住。");
+}
+
+async function runShowProjectMemory(projectMemory: ProjectMemory | undefined): Promise<void> {
+  if (!projectMemory) {
+    vscode.window.showInformationMessage(noWorkspaceMessage);
+    return;
+  }
+
+  const items = projectMemory.list();
+  if (items.length === 0) {
+    vscode.window.showInformationMessage("暂无项目记忆。");
+    return;
+  }
+
+  await vscode.window.showQuickPick(
+    items.map((item) => ({ label: item.subject, description: item.kind, detail: item.content })),
+  );
+}
+
+async function runForgetProjectMemory(projectMemory: ProjectMemory | undefined): Promise<void> {
+  if (!projectMemory) {
+    vscode.window.showInformationMessage(noWorkspaceMessage);
+    return;
+  }
+
+  const confirmed = await vscode.window.showWarningMessage(
+    "确定要清空全部项目记忆吗？此操作无法撤销。",
+    { modal: true },
+    "清空",
+  );
+  if (confirmed !== "清空") return;
+
+  const result = projectMemory.forget(projectMemory.getGeneration());
+  if (!result.ok) {
+    vscode.window.showWarningMessage("未删除。");
+    return;
+  }
+  vscode.window.showInformationMessage("项目记忆已清空。");
 }
 
 export async function deactivate(): Promise<void> {
