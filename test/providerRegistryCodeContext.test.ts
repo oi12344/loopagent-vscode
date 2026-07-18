@@ -267,6 +267,118 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(createTreeSitterParserRuntime).toHaveBeenCalledTimes(1);
     expect(createVsCodeWorkspaceIntelligence).toHaveBeenCalledWith(fakeVsCodeApi, { parserRuntime: fakeParserRuntime });
   });
+
+  it("injects project memory context alongside the runtime prompt", async () => {
+    const capturedMessages: ModelMessage[][] = [];
+    const workspaceIntelligence = {
+      buildCodeIntelligencePrompt: vi.fn(async () => "unused"),
+    };
+    const fakeProjectMemory = {
+      loadContext: vi.fn(async (task: string) => ({
+        generation: 7,
+        prompt: `<project-memory-data trust="untrusted">\n[{"kind":"fact","subject":"build","content":"Use npm run compile.","sources":["user_confirmation"]}]\n</project-memory-data>`,
+        trace: { candidateCount: 1, includedIds: [1], excluded: [] },
+      })),
+    };
+
+    vi.resetModules();
+    vi.doMock("../src/extension/model/modelConfig", () => ({
+      getModelRuntimeConfig: async () => ({
+        provider: "deepseek",
+        model: "test-model",
+        baseUrl: "",
+        apiKey: "test-key",
+        thinking: "disabled",
+      }),
+    }));
+    vi.doMock("../src/extension/runtime/vscodeRuntimeContext", () => ({
+      collectVsCodeRuntimeContext: async () => ({}),
+    }));
+    vi.doMock("../src/extension/runtime/contextPrompt", () => ({
+      renderCodeRuntimeContextPrompt: () => "runtime context",
+    }));
+    vi.doMock("../src/extension/model/providers/deepseekProvider", () => ({
+      createDeepSeekProvider: (): ModelProvider => ({
+        id: "mock",
+        displayName: "Mock model",
+        stream: async function* ({ messages }) {
+          capturedMessages.push(messages);
+          yield { type: "contentDelta", content: "ok" };
+          yield { type: "finishReason", reason: "stop" };
+        },
+      }),
+    }));
+
+    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
+    const runner = await createConfiguredAgentRunner(
+      {} as never,
+      { provider: "deepseek" },
+      { workspaceIntelligence, projectMemory: fakeProjectMemory as never },
+    );
+
+    await collectHostMessages(runner, "how do I build this project");
+
+    const systemPrompt = capturedMessages[0]!
+      .filter((message) => message.role === "system")
+      .map((message) => message.content)
+      .join("\n\n");
+
+    expect(systemPrompt).toContain("runtime context");
+    expect(systemPrompt).toContain("<project-memory-data");
+    expect(systemPrompt).toContain("Use npm run compile.");
+    expect(fakeProjectMemory.loadContext).toHaveBeenCalledWith("how do I build this project");
+  });
+
+  it("does not block a run when project memory loadContext fails", async () => {
+    const workspaceIntelligence = {
+      buildCodeIntelligencePrompt: vi.fn(async () => "unused"),
+    };
+    const fakeProjectMemory = {
+      loadContext: vi.fn(async () => {
+        throw new Error("memory unavailable");
+      }),
+    };
+
+    vi.resetModules();
+    vi.doMock("../src/extension/model/modelConfig", () => ({
+      getModelRuntimeConfig: async () => ({
+        provider: "deepseek",
+        model: "test-model",
+        baseUrl: "",
+        apiKey: "test-key",
+        thinking: "disabled",
+      }),
+    }));
+    vi.doMock("../src/extension/runtime/vscodeRuntimeContext", () => ({
+      collectVsCodeRuntimeContext: async () => ({}),
+    }));
+    vi.doMock("../src/extension/runtime/contextPrompt", () => ({
+      renderCodeRuntimeContextPrompt: () => "",
+    }));
+    vi.doMock("../src/extension/model/providers/deepseekProvider", () => ({
+      createDeepSeekProvider: (): ModelProvider => ({
+        id: "mock",
+        displayName: "Mock model",
+        stream: async function* () {
+          yield { type: "contentDelta", content: "ok" };
+          yield { type: "finishReason", reason: "stop" };
+        },
+      }),
+    }));
+
+    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
+    const runner = await createConfiguredAgentRunner(
+      {} as never,
+      { provider: "deepseek" },
+      { workspaceIntelligence, projectMemory: fakeProjectMemory as never },
+    );
+
+    await expect(collectHostMessages(runner, "task")).resolves.toContainEqual({
+      type: "assistantDelta",
+      runId: "run-1",
+      content: "ok",
+    });
+  });
 });
 
 async function collectHostMessages(runner: AgentRunner, task: string): Promise<HostToWebviewMessage[]> {

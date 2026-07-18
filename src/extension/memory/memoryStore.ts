@@ -2,6 +2,9 @@ import { DatabaseSync } from "node:sqlite";
 
 import type { MemoryEvidence, MemoryItem, MemoryKind, WriteResult } from "./types";
 
+const LESSON_DEFAULT_TTL_MS = 180 * 24 * 60 * 60 * 1000;
+const MAX_ACTIVE_ITEMS_PER_WORKSPACE = 200;
+
 export function openMemoryDatabase(databasePath: string): DatabaseSync {
   const database = new DatabaseSync(databasePath);
   database.exec(
@@ -51,6 +54,22 @@ export function checkpointAndCloseMemoryDatabase(database: Pick<DatabaseSync, "e
   } finally {
     database.close();
   }
+}
+
+function rowToItem(row: MemoryItemRow): MemoryItem {
+  return {
+    id: row.id,
+    kind: row.kind,
+    subject: row.subject,
+    content: row.content,
+    status: row.status,
+    confidence: row.confidence,
+    evidence: JSON.parse(row.evidence_json) as MemoryEvidence[],
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    ...(row.expires_at === null ? {} : { expiresAt: row.expires_at }),
+    ...(row.supersedes_id === null ? {} : { supersedesId: row.supersedes_id }),
+  };
 }
 
 type MemoryItemRow = {
@@ -127,18 +146,139 @@ export class MemoryStore {
     item: { kind: MemoryKind; subject: string; content: string; confidence: string; evidence: MemoryEvidence[]; expiresAt?: number },
   ): WriteResult {
     return this.guardedWrite(workspaceKey, ownerId, expectedGeneration, (now) => {
-      const evidenceJson = JSON.stringify(item.evidence);
-      const result = this.database
-        .prepare(`
-          INSERT INTO memory_items(workspace_key, kind, subject, content, status, confidence, evidence_json, created_at, updated_at, expires_at, supersedes_id)
-          VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, NULL)
-        `)
-        .run(workspaceKey, item.kind, item.subject, item.content, item.confidence, evidenceJson, now, now, item.expiresAt ?? null);
-      const memoryItemId = Number(result.lastInsertRowid);
-      this.database
-        .prepare("INSERT INTO memory_fts(subject, content, memory_item_id) VALUES (?, ?, ?)")
-        .run(item.subject, item.content, memoryItemId);
+      this.writeItemInternal(workspaceKey, item, now);
+      this.cleanupExpiredAndOverCap(workspaceKey, now);
     });
+  }
+
+  /**
+   * Low-level insert primitive: creates an item (default status 'active') without a lease
+   * or generation check. `remember()` is built on top of this inside a guarded transaction;
+   * it is also exposed directly so callers that already hold their own transaction/lease
+   * discipline (e.g. a future automatic-capture writer) can insert without re-deriving the
+   * insert + FTS-sync logic.
+   */
+  writeItem(
+    workspaceKey: string,
+    item: {
+      kind: MemoryKind;
+      subject: string;
+      content: string;
+      confidence: string;
+      evidence: MemoryEvidence[];
+      status?: string;
+      expiresAt?: number;
+    },
+  ): number {
+    return this.transaction(() => {
+      this.ensureMetaRow(workspaceKey);
+      const now = this.now();
+      const id = this.writeItemInternal(workspaceKey, item, now);
+      this.cleanupExpiredAndOverCap(workspaceKey, now);
+      return id;
+    });
+  }
+
+  /**
+   * Re-checks freshness result for a batch of items and, only if `ownerId` currently holds
+   * the writer lease, transitions them to 'stale' in a single transaction. Read-only instances
+   * (no lease) are a no-op: the caller still excludes the items from the rendered prompt, but
+   * status is left for whichever instance next holds the lease to persist.
+   */
+  markStale(workspaceKey: string, ownerId: string, ids: number[]): void {
+    if (ids.length === 0) return;
+    this.transaction(() => {
+      const lease = this.readLease(workspaceKey);
+      if (!lease || lease.ownerId !== ownerId || lease.expiresAt <= this.now()) return;
+      const now = this.now();
+      const placeholders = ids.map(() => "?").join(",");
+      this.database
+        .prepare(`UPDATE memory_items SET status = 'stale', updated_at = ? WHERE workspace_key = ? AND id IN (${placeholders})`)
+        .run(now, workspaceKey, ...ids);
+    });
+  }
+
+  /**
+   * Bounded FTS candidate search: active, non-expired items whose subject/content match the
+   * (already-escaped) MATCH query, ordered by FTS relevance (bm25) then recency. The query
+   * text itself must already be built from safe literal tokens by the caller -- FTS5 parses
+   * the MATCH argument as a query-language string regardless of parameter binding.
+   */
+  search(workspaceKey: string, matchQuery: string, limit: number): MemoryItem[] {
+    const now = this.now();
+    const rows = this.database
+      .prepare(`
+        SELECT mi.* FROM memory_fts f
+        JOIN memory_items mi ON mi.id = f.memory_item_id
+        WHERE mi.workspace_key = ? AND mi.status = 'active' AND (mi.expires_at IS NULL OR mi.expires_at > ?)
+          AND memory_fts MATCH ?
+        ORDER BY bm25(memory_fts), mi.updated_at DESC
+        LIMIT ?
+      `)
+      .all(workspaceKey, now, matchQuery, limit) as unknown as MemoryItemRow[];
+    return rows.map(rowToItem);
+  }
+
+  private writeItemInternal(
+    workspaceKey: string,
+    item: {
+      kind: MemoryKind;
+      subject: string;
+      content: string;
+      confidence: string;
+      evidence: MemoryEvidence[];
+      status?: string;
+      expiresAt?: number;
+    },
+    now: number,
+  ): number {
+    const status = item.status ?? "active";
+    const expiresAt = item.expiresAt ?? (item.kind === "lesson" ? now + LESSON_DEFAULT_TTL_MS : undefined);
+    const evidenceJson = JSON.stringify(item.evidence);
+    const result = this.database
+      .prepare(`
+        INSERT INTO memory_items(workspace_key, kind, subject, content, status, confidence, evidence_json, created_at, updated_at, expires_at, supersedes_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+      `)
+      .run(workspaceKey, item.kind, item.subject, item.content, status, item.confidence, evidenceJson, now, now, expiresAt ?? null);
+    const memoryItemId = Number(result.lastInsertRowid);
+    this.database
+      .prepare("INSERT INTO memory_fts(subject, content, memory_item_id) VALUES (?, ?, ?)")
+      .run(item.subject, item.content, memoryItemId);
+    return memoryItemId;
+  }
+
+  /**
+   * ponytail: piggybacks retention cleanup on every write transaction instead of running a
+   * background sweeper -- there is no case where memory changes without a write happening.
+   * Removes items past their expires_at, then trims the oldest items beyond the per-workspace
+   * cap. Runs inside the caller's existing transaction.
+   */
+  private cleanupExpiredAndOverCap(workspaceKey: string, now: number): void {
+    const expiredIds = (
+      this.database
+        .prepare("SELECT id FROM memory_items WHERE workspace_key = ? AND expires_at IS NOT NULL AND expires_at <= ?")
+        .all(workspaceKey, now) as unknown as { id: number }[]
+    ).map((row) => row.id);
+    this.deleteItems(expiredIds);
+
+    const overCapIds = (
+      this.database
+        .prepare(`
+          SELECT id FROM memory_items WHERE workspace_key = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT -1 OFFSET ?
+        `)
+        .all(workspaceKey, MAX_ACTIVE_ITEMS_PER_WORKSPACE) as unknown as { id: number }[]
+    ).map((row) => row.id);
+    this.deleteItems(overCapIds);
+  }
+
+  private deleteItems(ids: number[]): void {
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => "?").join(",");
+    this.database.prepare(`DELETE FROM memory_fts WHERE memory_item_id IN (${placeholders})`).run(...ids);
+    this.database.prepare(`DELETE FROM memory_items WHERE id IN (${placeholders})`).run(...ids);
   }
 
   forget(workspaceKey: string, ownerId: string, expectedGeneration: number): WriteResult {
@@ -158,21 +298,9 @@ export class MemoryStore {
 
   list(workspaceKey: string): MemoryItem[] {
     const rows = this.database
-      .prepare("SELECT * FROM memory_items WHERE workspace_key = ? AND status = 'active' ORDER BY created_at, id")
+      .prepare("SELECT * FROM memory_items WHERE workspace_key = ? AND status IN ('active', 'stale') ORDER BY created_at, id")
       .all(workspaceKey) as unknown as MemoryItemRow[];
-    return rows.map((row) => ({
-      id: row.id,
-      kind: row.kind,
-      subject: row.subject,
-      content: row.content,
-      status: row.status,
-      confidence: row.confidence,
-      evidence: JSON.parse(row.evidence_json) as MemoryEvidence[],
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      ...(row.expires_at === null ? {} : { expiresAt: row.expires_at }),
-      ...(row.supersedes_id === null ? {} : { supersedesId: row.supersedes_id }),
-    }));
+    return rows.map(rowToItem);
   }
 
   private guardedWrite(workspaceKey: string, ownerId: string, expectedGeneration: number, mutate: (now: number) => void): WriteResult {

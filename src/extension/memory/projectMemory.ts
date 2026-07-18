@@ -1,11 +1,30 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 import { checkpointAndCloseMemoryDatabase, MemoryStore, openMemoryDatabase } from "./memoryStore";
-import type { MemoryItem, MemoryKind, ReadRange, RememberInput, WriteResult } from "./types";
+import type {
+  MemoryContext,
+  MemoryEvidence,
+  MemoryExclusionReason,
+  MemoryItem,
+  MemoryKind,
+  ReadRange,
+  RememberInput,
+  WriteResult,
+} from "./types";
 
 const DEFAULT_LEASE_TTL_MS = 30_000;
 const DEFAULT_RENEW_INTERVAL_MS = 10_000;
+
+// 读取流程 caps (design doc "容量与保留"): a single retrieval injects at most 4
+// fact/decision items and 2 lesson items, totaling at most 2,400 rendered characters.
+const MAX_FACT_OR_DECISION_ITEMS = 4;
+const MAX_LESSON_ITEMS = 2;
+const MAX_PROMPT_CHARS = 2_400;
+const MAX_SEARCH_CANDIDATES = 12;
+
+const MEMORY_BLOCK_OPEN = '<project-memory-data trust="untrusted">\n';
+const MEMORY_BLOCK_CLOSE = "\n</project-memory-data>";
 
 // Labeled credentials: "api_key: xxx", "the password is xxx", "token=xxx".
 const CREDENTIAL_PATTERN =
@@ -49,8 +68,52 @@ export type ProjectMemory = {
   remember(input: RememberInput): WriteResult;
   list(): MemoryItem[];
   forget(expectedGeneration: number): WriteResult;
+  loadContext(task: string): Promise<MemoryContext>;
   dispose(): void;
 };
+
+const EMPTY_CONTEXT_TRACE = { candidateCount: 0, includedIds: [], excluded: [] };
+
+/** Extracts safe literal word tokens from free-form task text for use as an FTS5 MATCH
+ * query. Only unicode letters/digits survive, each individually quoted, so FTS5 query
+ * syntax (AND/OR/NOT, column filters, parens, quotes) in the task text can never be
+ * interpreted as query syntax -- it is just discarded as non-token noise. */
+function buildFtsMatchQuery(task: string): string | undefined {
+  const tokens = [...task.matchAll(/[\p{L}\p{N}]+/gu)]
+    .map((match) => match[0])
+    .filter((token) => token.length >= 2);
+  const uniqueTokens = [...new Set(tokens)].slice(0, 12);
+  if (uniqueTokens.length === 0) return undefined;
+  return uniqueTokens.map((token) => `"${token}"`).join(" OR ");
+}
+
+async function verifyEvidence(evidence: MemoryEvidence[], readRange: ReadRange): Promise<boolean> {
+  for (const entry of evidence) {
+    if (!entry.sha256 || entry.startLine === undefined || entry.endLine === undefined) continue;
+    if (entry.required === false) continue;
+    try {
+      const content = await readRange(entry.filePath, entry.startLine, entry.endLine);
+      const actualHash = createHash("sha256").update(content).digest("hex");
+      if (actualHash !== entry.sha256) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function toMemoryEntry(item: MemoryItem): { kind: MemoryKind; subject: string; content: string; sources: string[] } {
+  return {
+    kind: item.kind,
+    subject: item.subject,
+    content: item.content,
+    sources: item.evidence.length > 0 ? item.evidence.map((entry) => entry.filePath) : ["user_confirmation"],
+  };
+}
+
+function renderMemoryPrompt(payload: ReturnType<typeof toMemoryEntry>[]): string {
+  return `${MEMORY_BLOCK_OPEN}${JSON.stringify(payload)}${MEMORY_BLOCK_CLOSE}`;
+}
 
 /**
  * Public service for manual project memory: remember/list/forget, backed by the
@@ -82,10 +145,6 @@ export function openProjectMemory(
   }, renewIntervalMs);
   renewTimer.unref?.();
 
-  // readRange is accepted here as a dependency for future evidence-hash validation
-  // (Task 2); Task 1 does not exercise it yet.
-  void readRange;
-
   return {
     getGeneration: () => store.getGeneration(workspaceKey),
 
@@ -109,6 +168,57 @@ export function openProjectMemory(
     list: () => store.list(workspaceKey),
 
     forget: (expectedGeneration: number) => store.forget(workspaceKey, ownerId, expectedGeneration),
+
+    async loadContext(task: string): Promise<MemoryContext> {
+      const generation = store.getGeneration(workspaceKey);
+      try {
+        const matchQuery = buildFtsMatchQuery(task);
+        if (!matchQuery) return { generation, prompt: "", trace: EMPTY_CONTEXT_TRACE };
+
+        const candidates = store.search(workspaceKey, matchQuery, MAX_SEARCH_CANDIDATES);
+        const included: MemoryItem[] = [];
+        const payload: ReturnType<typeof toMemoryEntry>[] = [];
+        const staleIds: number[] = [];
+        const excluded: { id: number; reason: MemoryExclusionReason }[] = [];
+        let factOrDecisionCount = 0;
+        let lessonCount = 0;
+
+        for (const item of candidates) {
+          if (item.kind === "lesson" ? lessonCount >= MAX_LESSON_ITEMS : factOrDecisionCount >= MAX_FACT_OR_DECISION_ITEMS) {
+            excluded.push({ id: item.id, reason: "cap" });
+            continue;
+          }
+          const fresh = await verifyEvidence(item.evidence, readRange);
+          if (!fresh) {
+            staleIds.push(item.id);
+            excluded.push({ id: item.id, reason: "evidence_mismatch" });
+            continue;
+          }
+          // Measure the exact rendered array length with this candidate appended (not just
+          // the entry's own length) so brackets/commas count toward the real 2,400-char cap.
+          const tentativePayload = [...payload, toMemoryEntry(item)];
+          if (JSON.stringify(tentativePayload).length > MAX_PROMPT_CHARS) {
+            excluded.push({ id: item.id, reason: "budget" });
+            continue;
+          }
+          payload.push(toMemoryEntry(item));
+          included.push(item);
+          if (item.kind === "lesson") lessonCount++;
+          else factOrDecisionCount++;
+        }
+
+        if (staleIds.length > 0) store.markStale(workspaceKey, ownerId, staleIds);
+
+        const prompt = payload.length > 0 ? renderMemoryPrompt(payload) : "";
+        return {
+          generation,
+          prompt,
+          trace: { candidateCount: candidates.length, includedIds: included.map((item) => item.id), excluded },
+        };
+      } catch {
+        return { generation, prompt: "", trace: EMPTY_CONTEXT_TRACE };
+      }
+    },
 
     dispose(): void {
       clearInterval(renewTimer);
