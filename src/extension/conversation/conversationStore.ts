@@ -36,6 +36,18 @@ export type ConversationStore = {
    * @returns 对话的消息列表，如果对话不存在返回空数组
    */
   getMessages(conversationId: string): ChatMessage[];
+
+  /**
+   * 加载持久化实现里保存的"上一次未结束的对话"。
+   * 内存实现没有跨进程状态，永远返回 undefined。
+   */
+  loadActiveConversation(): ConversationContext | undefined;
+
+  /**
+   * 清空"当前活跃对话"，供"新对话"入口调用。
+   * 内存实现没有单活跃对话的概念，是安全的空操作。
+   */
+  clearActiveConversation(): void;
 };
 
 /**
@@ -90,6 +102,14 @@ export function createConversationStore(): ConversationStore {
     getMessages(conversationId: string): ChatMessage[] {
       const context = conversations.get(conversationId);
       return context?.messages ?? [];
+    },
+
+    loadActiveConversation(): ConversationContext | undefined {
+      return undefined;
+    },
+
+    clearActiveConversation(): void {
+      // no-op：内存实现没有持久化的"活跃对话"可清
     },
   };
 }
