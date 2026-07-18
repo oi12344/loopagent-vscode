@@ -1,3 +1,5 @@
+import type { ChatMessage } from "./chatTypes";
+
 /** AI 模型提供商标识 */
 export type ModelProviderId = "fake" | "deepseek";
 
@@ -30,6 +32,14 @@ export type WebviewToHostMessage =
       userMessage: string;
       mode?: TaskMode;
       model?: RunModelSelection;
+    }
+  | {
+      /** Webview 挂载完成，可以安全接收恢复消息了 */
+      type: "webviewReady";
+    }
+  | {
+      /** 用户点击"新对话"，清空当前活跃对话 */
+      type: "newConversation";
     };
 
 export type HostToWebviewMessage =
@@ -91,4 +101,10 @@ export type HostToWebviewMessage =
       conversationId: string;
       runId: string;
       userMessage: string;
+    }
+  | {
+      /** 收到 webviewReady 后，把上一次未结束的对话推给 webview */
+      type: "conversationRestored";
+      conversationId: string;
+      messages: ChatMessage[];
     };
