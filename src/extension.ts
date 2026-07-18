@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { join } from "node:path";
 
 import { createApplyEditTool } from "./extension/agent/applyEditTool";
 import { createEditPreviewService } from "./extension/agent/editPreviewService";
@@ -10,6 +11,8 @@ import { clearModelApiKey, getConfiguredProviderId, setModelApiKey } from "./ext
 import { createConfiguredAgentRunner } from "./extension/model/providerRegistry";
 import { createWebviewHtml } from "./extension/webviewHtml";
 import { createConversationStore } from "./extension/conversation/conversationStore";
+import type { ConversationStore } from "./extension/conversation/conversationStore";
+import { createPersistentConversationStore } from "./extension/conversation/persistentConversationStore";
 import { createConversationManager, type ConversationManager } from "./extension/conversation/conversationManager";
 import type { WebviewToHostMessage, HostToWebviewMessage, TaskMode, RunModelSelection } from "./shared/messages";
 import type { ChatMessage } from "./shared/chatTypes";
@@ -66,6 +69,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private readonly editPreviewService;
   private readonly readFileTool;
   private readonly applyEditTool;
+  private readonly conversationStore: ConversationStore & { close?(): void };
   private readonly conversationManager: ConversationManager;
   private currentConversationId: string | undefined;
 
@@ -77,13 +81,19 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.editPreviewService = createEditPreviewService(vscode);
     this.readFileTool = createReadFileTool(vscode);
     this.applyEditTool = createApplyEditTool(this.editPreviewService);
-    this.conversationManager = createConversationManager(createConversationStore());
+
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    this.conversationStore = workspaceRoot
+      ? createPersistentConversationStore(join(workspaceRoot, ".loopagent", "conversation.sqlite"))
+      : createConversationStore();
+    this.conversationManager = createConversationManager(this.conversationStore);
   }
 
   async dispose(): Promise<void> {
     this.activeRun?.cancel();
     this.editPreviewService.dispose();
     await this.workspaceIntelligence.dispose();
+    this.conversationStore.close?.();
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -112,6 +122,10 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
         this.handleStartTask(message, webviewView.webview);
       } else if (message.type === "continueConversation") {
         this.handleContinueConversation(message, webviewView.webview);
+      } else if (message.type === "newConversation") {
+        this.handleNewConversation();
+      } else if (message.type === "webviewReady") {
+        this.handleWebviewReady(webviewView.webview);
       }
     });
 
@@ -119,6 +133,26 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       this.activeRun?.cancel();
       messageSubscription.dispose();
     });
+  }
+
+  private handleWebviewReady(webview: vscode.Webview): void {
+    const restored = this.conversationManager.loadActiveConversation();
+    if (!restored) {
+      return;
+    }
+
+    this.currentConversationId = restored.conversationId;
+    webview.postMessage({
+      type: "conversationRestored",
+      conversationId: restored.conversationId,
+      messages: restored.messages,
+    } satisfies HostToWebviewMessage);
+  }
+
+  private handleNewConversation(): void {
+    this.activeRun?.cancel();
+    this.currentConversationId = undefined;
+    this.conversationManager.clearActiveConversation();
   }
 
   private handleStartTask(
