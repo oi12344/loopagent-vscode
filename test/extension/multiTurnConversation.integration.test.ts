@@ -13,13 +13,7 @@ describe("Multi-turn conversation integration", () => {
   const openStores: Array<{ close(): void }> = [];
 
   afterEach(() => {
-    for (const store of openStores.splice(0)) {
-      try {
-        store.close();
-      } catch {
-        // already closed by the test (e.g. simulating a restart)
-      }
-    }
+    for (const store of openStores.splice(0)) store.close();
     for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
   });
 
@@ -137,6 +131,7 @@ describe("Multi-turn conversation integration", () => {
 
     // 模拟 VS Code 重启：关闭旧连接，用同一个数据库文件重新打开一个新实例
     firstSessionStore.close();
+    openStores.splice(openStores.indexOf(firstSessionStore), 1);
 
     const secondSessionStore = createPersistentConversationStore(databasePath);
     openStores.push(secondSessionStore);
