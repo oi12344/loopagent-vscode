@@ -289,6 +289,14 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
     };
   }, [openMenu]);
 
+  function handleNewConversation() {
+    setIsRunning(false);
+    setOpenMenu(null);
+    setTurns([]);
+    setConversationId(undefined);
+    vscodeApi.postMessage({ type: "newConversation" });
+  }
+
   function submitTask(task: string, mode: TaskMode = taskMode) {
     const trimmedMessage = task.trim();
 
@@ -350,6 +358,9 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
             {isRunning ? "Running" : "Ready"}
           </span>
           <span className="active-model">{selectedModel.label}</span>
+          <button type="button" className="chip-button" onClick={handleNewConversation}>
+            New chat
+          </button>
         </div>
       </header>
 

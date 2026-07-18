@@ -46,6 +46,20 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByText("Explain the active file")).toBeInTheDocument();
   });
 
+  it("clears the conversation locally and notifies the host when starting a new chat", async () => {
+    const user = userEvent.setup();
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    render(<App vscodeApi={{ postMessage }} />);
+
+    await user.click(screen.getByRole("button", { name: "Explain the active file" }));
+    expect(screen.getByText("Explain the active file")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "New chat" }));
+
+    expect(screen.getByText("Start a conversation with LoopAgent.")).toBeInTheDocument();
+    expect(postMessage).toHaveBeenCalledWith({ type: "newConversation" });
+  });
+
   it("sends the selected model and thinking mode with the task", async () => {
     const user = userEvent.setup();
     const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
