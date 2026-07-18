@@ -122,6 +122,22 @@ describe("projectMemory", () => {
     expect(memory.list()).toEqual([]);
   });
 
+  it.each([
+    ["labeled prose credential", "the password is hunter2secret"],
+    ["bare unlabeled token", "just paste this somewhere: aB3xQ9mK2pL7vN4rT8wZ1yU6"],
+    ["known vendor token prefix", "use ghp_1234567890abcdefghijklmnopqrstuvwxyz for auth"],
+  ])("rejects sensitive content without keyword[:=]value syntax (%s)", (_label, content) => {
+    const fixture = createMemoryFixture();
+    const memory = open(fixture.databasePath, fixture.workspaceKey, fixture.readRange);
+    const generation = memory.getGeneration();
+
+    expect(memory.remember({ expectedGeneration: generation, kind: "fact", subject: "note", content })).toEqual({
+      ok: false,
+      reason: "sensitive_content",
+    });
+    expect(memory.list()).toEqual([]);
+  });
+
   it("clears both the main table and the FTS index synchronously on forget", () => {
     const fixture = createMemoryFixture();
     const memory = open(fixture.databasePath, fixture.workspaceKey, fixture.readRange);

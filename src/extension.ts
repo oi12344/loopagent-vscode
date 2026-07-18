@@ -125,12 +125,16 @@ async function runRememberProjectMemory(projectMemory: ProjectMemory | undefined
   const content = await vscode.window.showInputBox({ prompt: "内容", ignoreFocusOut: true });
   if (!content) return;
 
-  const result = projectMemory.remember({ expectedGeneration, kind: picked.memoryKind, subject, content });
-  if (!result.ok) {
-    vscode.window.showWarningMessage(`记忆未保存：${result.reason}`);
-    return;
+  try {
+    const result = projectMemory.remember({ expectedGeneration, kind: picked.memoryKind, subject, content });
+    if (!result.ok) {
+      vscode.window.showWarningMessage(`记忆未保存：${result.reason}`);
+      return;
+    }
+    vscode.window.showInformationMessage("已记住。");
+  } catch {
+    vscode.window.showWarningMessage("记忆操作失败。");
   }
-  vscode.window.showInformationMessage("已记住。");
 }
 
 async function runShowProjectMemory(projectMemory: ProjectMemory | undefined): Promise<void> {
@@ -163,12 +167,16 @@ async function runForgetProjectMemory(projectMemory: ProjectMemory | undefined):
   );
   if (confirmed !== "清空") return;
 
-  const result = projectMemory.forget(projectMemory.getGeneration());
-  if (!result.ok) {
-    vscode.window.showWarningMessage("未删除。");
-    return;
+  try {
+    const result = projectMemory.forget(projectMemory.getGeneration());
+    if (!result.ok) {
+      vscode.window.showWarningMessage("未删除。");
+      return;
+    }
+    vscode.window.showInformationMessage("项目记忆已清空。");
+  } catch {
+    vscode.window.showWarningMessage("记忆操作失败。");
   }
-  vscode.window.showInformationMessage("项目记忆已清空。");
 }
 
 export async function deactivate(): Promise<void> {
