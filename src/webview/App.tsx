@@ -223,6 +223,30 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           return;
         }
 
+        case "conversationRestored": {
+          setConversationId(hostMessage.conversationId);
+          setTurns(
+            hostMessage.messages.map((chatMessage, index) =>
+              chatMessage.role === "user"
+                ? {
+                    id: `restored-user-${index}`,
+                    role: "user",
+                    content: chatMessage.content,
+                  }
+                : {
+                    id: `restored-assistant-${index}`,
+                    role: "assistant",
+                    runId: `restored-${index}`,
+                    provider: defaultProviderName,
+                    reasoning: chatMessage.reasoning ?? "",
+                    content: chatMessage.content,
+                    status: "done",
+                  },
+            ),
+          );
+          return;
+        }
+
         default: {
           const _exhaustive: never = hostMessage;
           void _exhaustive;
@@ -232,11 +256,12 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
     }
 
     window.addEventListener("message", handleHostMessage);
+    vscodeApi.postMessage({ type: "webviewReady" });
 
     return () => {
       window.removeEventListener("message", handleHostMessage);
     };
-  }, []);
+  }, [vscodeApi]);
 
   React.useEffect(() => {
     if (openMenu === null) {

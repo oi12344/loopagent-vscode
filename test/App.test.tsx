@@ -232,4 +232,28 @@ describe("LoopAgent webview app", () => {
     expect(screen.queryByText("Building context")).not.toBeInTheDocument();
     expect(screen.queryByText("思考过程")).not.toBeInTheDocument();
   });
+
+  it("announces readiness to the host on mount", () => {
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    render(<App vscodeApi={{ postMessage }} />);
+
+    expect(postMessage).toHaveBeenCalledWith({ type: "webviewReady" });
+  });
+
+  it("renders a restored conversation pushed by the host", () => {
+    render(<App />);
+
+    postHostMessage({
+      type: "conversationRestored",
+      conversationId: "conv-restored-1",
+      messages: [
+        { role: "user", content: "What is TypeScript?" },
+        { role: "assistant", content: "A typed superset of JavaScript.", reasoning: "recalling definition" },
+      ],
+    });
+
+    expect(screen.getByText("What is TypeScript?")).toBeInTheDocument();
+    expect(screen.getByText("A typed superset of JavaScript.")).toBeInTheDocument();
+    expect(screen.queryByText("Start a conversation with LoopAgent.")).not.toBeInTheDocument();
+  });
 });
