@@ -1,6 +1,7 @@
 export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
+  reasoning?: string;
 };
 
 export type ConversationContext = {
@@ -23,7 +24,7 @@ export type ConversationTurn =
       userMessage: string;
       status: "processing";
     }
-  | {
+  | {·
       id: string;
       conversationId: string;
       userMessage: string;

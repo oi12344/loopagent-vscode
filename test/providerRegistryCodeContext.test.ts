@@ -221,13 +221,14 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(systemPrompt).toContain("Do not claim an edit succeeded until applyEdit reports that it was applied.");
     expect(readFileTool.invoke).toHaveBeenCalledTimes(1);
     expect(applyEditTool.invoke).toHaveBeenCalledTimes(1);
-    expect(capturedMessages[2]!.slice(-2)).toEqual([
-      { role: "user", content: "Rename the constant." },
-      {
-        role: "user",
-        content: "编辑审阅结果：Changes were applied.\n请用中文思考，并用与原始任务相同的语言简洁汇报最终结果。",
-      },
-    ]);
+    const allMessages = capturedMessages.flat();
+    expect(allMessages.some((m) => m.role === "user" && m.content === "Rename the constant.")).toBe(true);
+    expect(
+      allMessages.some((m) => m.role === "assistant" && (m as any)?.toolCalls?.some((c: any) => c.function.name === "readFile")),
+    ).toBe(true);
+    expect(
+      allMessages.some((m) => m.role === "assistant" && (m as any)?.toolCalls?.some((c: any) => c.function.name === "applyEdit")),
+    ).toBe(true);
   });
 
   it("wires tree-sitter parser runtime into VS Code workspace intelligence", async () => {

@@ -87,6 +87,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [thinkingMode, setThinkingMode] = React.useState<ModelThinkingMode>("enabled");
   const [taskMode, setTaskMode] = React.useState<TaskMode>("edit");
   const [openMenu, setOpenMenu] = React.useState<"model" | "thinking" | null>(null);
+  const [conversationId, setConversationId] = React.useState<string | undefined>(undefined);
   const nextTurnId = React.useRef(0);
   const composerToolsRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -217,6 +218,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
 
         case "conversationStarted": {
           setIsRunning(true);
+          setConversationId(hostMessage.conversationId);
           setTurns((currentTurns) => attachRunToUserTurn(currentTurns, hostMessage.runId, hostMessage.userMessage, createTurnId));
           return;
         }
@@ -286,7 +288,18 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       },
     ]);
     setMessage("");
-    vscodeApi.postMessage({ type: "startTask", task: trimmedMessage, mode, model: runModel });
+
+    if (conversationId) {
+      vscodeApi.postMessage({
+        type: "continueConversation",
+        conversationId,
+        userMessage: trimmedMessage,
+        mode,
+        model: runModel,
+      });
+    } else {
+      vscodeApi.postMessage({ type: "startTask", task: trimmedMessage, mode, model: runModel });
+    }
   }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {

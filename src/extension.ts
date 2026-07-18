@@ -9,7 +9,10 @@ import { createVsCodeWorkspaceIntelligence } from "./extension/intelligence/vsco
 import { clearModelApiKey, getConfiguredProviderId, setModelApiKey } from "./extension/model/modelConfig";
 import { createConfiguredAgentRunner } from "./extension/model/providerRegistry";
 import { createWebviewHtml } from "./extension/webviewHtml";
-import type { WebviewToHostMessage } from "./shared/messages";
+import { createConversationStore } from "./extension/conversation/conversationStore";
+import { createConversationManager, type ConversationManager } from "./extension/conversation/conversationManager";
+import type { WebviewToHostMessage, HostToWebviewMessage } from "./shared/messages";
+import type { ChatMessage } from "./shared/chatTypes";
 
 const chatViewId = "loopagent.chat";
 const viewContainerId = "workbench.view.extension.loopagent";
@@ -63,6 +66,8 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private readonly editPreviewService;
   private readonly readFileTool;
   private readonly applyEditTool;
+  private readonly conversationManager: ConversationManager;
+  private currentConversationId: string | undefined;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.workspaceIntelligence = createVsCodeWorkspaceIntelligence(vscode, {
@@ -72,6 +77,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.editPreviewService = createEditPreviewService(vscode);
     this.readFileTool = createReadFileTool(vscode);
     this.applyEditTool = createApplyEditTool(this.editPreviewService);
+    this.conversationManager = createConversationManager(createConversationStore());
   }
 
   async dispose(): Promise<void> {
@@ -103,7 +109,9 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
 
     const messageSubscription = webviewView.webview.onDidReceiveMessage((message: WebviewToHostMessage) => {
       if (message.type === "startTask") {
-        this.startRun(message, webviewView.webview);
+        this.handleStartTask(message, webviewView.webview);
+      } else if (message.type === "continueConversation") {
+        this.handleContinueConversation(message, webviewView.webview);
       }
     });
 
@@ -113,19 +121,71 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private startRun(message: Extract<WebviewToHostMessage, { type: "startTask" }>, webview: vscode.Webview): void {
+  private handleStartTask(
+    message: Extract<WebviewToHostMessage, { type: "startTask" }>,
+    webview: vscode.Webview,
+  ): void {
+    const conversation = this.conversationManager.startConversation();
+    this.currentConversationId = conversation.conversationId;
+    this.conversationManager.addUserMessage(conversation.conversationId, message.task);
+    const conversationHistory = this.conversationManager.getConversationHistory(conversation.conversationId);
+
+    this.executeRun(message.task, message.mode, message.model, conversationHistory, conversation.conversationId, webview);
+  }
+
+  private handleContinueConversation(
+    message: Extract<WebviewToHostMessage, { type: "continueConversation" }>,
+    webview: vscode.Webview,
+  ): void {
+    this.currentConversationId = message.conversationId;
+    this.conversationManager.addUserMessage(message.conversationId, message.userMessage);
+    const conversationHistory = this.conversationManager.getConversationHistory(message.conversationId);
+
+    this.executeRun(message.userMessage, message.mode, message.model, conversationHistory, message.conversationId, webview);
+  }
+
+  private executeRun(
+    task: string,
+    mode: WebviewToHostMessage["mode"],
+    model: WebviewToHostMessage["model"],
+    conversationHistory: ChatMessage[],
+    conversationId: string,
+    webview: vscode.Webview,
+  ): void {
     this.activeRun?.cancel();
 
-    void createConfiguredAgentRunner(this.context, message.model, {
+    const assistantMessages = new Map<string, { content: string; reasoning: string }>();
+
+    void createConfiguredAgentRunner(this.context, model, {
       workspaceIntelligence: this.workspaceIntelligence,
       readFileTool: this.readFileTool,
       applyEditTool: this.applyEditTool,
     }).then((runner) => {
       const run = startAgentRun({
-        task: message.task,
-        mode: message.mode ?? "edit",
+        task,
+        mode: mode ?? "edit",
         runner,
-        postMessage: (hostMessage) => webview.postMessage(hostMessage),
+        postMessage: (hostMessage: HostToWebviewMessage) => {
+          // Capture assistant content and reasoning
+          if (hostMessage.type === "assistantDelta") {
+            const current = assistantMessages.get(hostMessage.runId) ?? { content: "", reasoning: "" };
+            current.content += hostMessage.content;
+            assistantMessages.set(hostMessage.runId, current);
+          } else if (hostMessage.type === "assistantReasoningDelta") {
+            const current = assistantMessages.get(hostMessage.runId) ?? { content: "", reasoning: "" };
+            current.reasoning += hostMessage.content;
+            assistantMessages.set(hostMessage.runId, current);
+          } else if (hostMessage.type === "assistantFinished") {
+            const message = assistantMessages.get(hostMessage.runId);
+            if (message && conversationId) {
+              this.conversationManager.addAssistantMessage(conversationId, message.content, message.reasoning);
+            }
+          }
+
+          webview.postMessage(hostMessage);
+        },
+        conversationHistory,
+        conversationId,
       });
 
       this.activeRun = run;

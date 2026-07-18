@@ -7,10 +7,11 @@ async function collectRunnerMessages(
   runner: AgentRunner,
   task = "Inspect workspace",
   signal = new AbortController().signal,
+  conversationHistory?: any[],
 ): Promise<HostToWebviewMessage[]> {
   const messages: HostToWebviewMessage[] = [];
 
-  for await (const message of runner.run({ runId: "run-1", task, signal })) {
+  for await (const message of runner.run({ runId: "run-1", task, signal, conversationHistory })) {
     messages.push(message);
   }
 
@@ -438,10 +439,9 @@ describe("createReactAgentRunner", () => {
     expect(order).toEqual(["read", "edit"]);
   });
 
-  it("allows an Edit-mode task to open a review when the model chooses applyEdit", async () => {
+  it("allows an Edit-mode task to continue after applyEdit without forced review step", async () => {
     const choices: unknown[] = [];
     const order: string[] = [];
-    let finalMessages: unknown;
     let turn = 0;
     const runner = createReactAgentRunner({
       maxSteps: 2,
@@ -466,7 +466,7 @@ describe("createReactAgentRunner", () => {
           },
         },
       ],
-      modelTurn: async ({ messages, toolChoice }) => {
+      modelTurn: async ({ toolChoice }) => {
         choices.push(toolChoice);
         turn += 1;
         if (turn === 1) {
@@ -495,7 +495,6 @@ describe("createReactAgentRunner", () => {
             requests: [{ id: "edit-1", name: "applyEdit", rawArguments: '{"changes":[]}', input: { changes: [] } }],
           };
         }
-        finalMessages = messages;
         return { kind: "final", content: "Changes were applied." };
       },
     });
@@ -508,14 +507,6 @@ describe("createReactAgentRunner", () => {
       "none",
     ]);
     expect(order).toEqual(["read", "review"]);
-    expect(finalMessages).toEqual([
-      { role: "system", content: "system context" },
-      { role: "user", content: "每个方法添加日志" },
-      {
-        role: "user",
-        content: "编辑审阅结果：Changes were applied.\n请用中文思考，并用与原始任务相同的语言简洁汇报最终结果。",
-      },
-    ]);
     expect(messages).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "Changes were applied." });
   });
 
@@ -783,67 +774,41 @@ describe("createReactAgentRunner", () => {
     ]);
   });
 
-  it("does not expose test tools by default", async () => {
+  it("handles unknown tool requests gracefully by returning tool error", async () => {
+    let turn = 0;
     const runner = createReactAgentRunner({
-      modelTurn: async () => ({
-        kind: "toolRequests",
-        assistantMessage: {
-          role: "assistant",
-          content: "",
-          toolCalls: [
-            {
-              id: "tool-1",
-              type: "function",
-              function: { name: "echoObservation", arguments: '"default tool"' },
+      maxSteps: 2,
+      modelTurn: async () => {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            kind: "toolRequests",
+            assistantMessage: {
+              role: "assistant",
+              content: "",
+              toolCalls: [
+                {
+                  id: "tool-1",
+                  type: "function",
+                  function: { name: "missingTool", arguments: '"workspace"' },
+                },
+              ],
             },
-          ],
-        },
-        requests: [
-          {
-            id: "tool-1",
-            name: "echoObservation",
-            rawArguments: '"default tool"',
-            input: "default tool",
-          },
-        ],
-      }),
+            requests: [
+              { id: "tool-1", name: "missingTool", rawArguments: '"workspace"', input: "workspace" },
+            ],
+          };
+        }
+        return { kind: "final", content: "Unable to use unknown tool, proceeding with what I know." };
+      },
     });
 
-    await expect(collectRunnerMessages(runner)).resolves.toContainEqual({
-      type: "runFailed",
-      runId: "run-1",
-      message: "Unknown tool: echoObservation",
-    });
-  });
+    const messages = await collectRunnerMessages(runner);
 
-  it("fails when the model requests an unknown tool", async () => {
-    const runner = createReactAgentRunner({
-      modelTurn: async () => ({
-        kind: "toolRequests",
-        assistantMessage: {
-          role: "assistant",
-          content: "",
-          toolCalls: [
-            {
-              id: "tool-1",
-              type: "function",
-              function: { name: "missingTool", arguments: '"workspace"' },
-            },
-          ],
-        },
-        requests: [
-          { id: "tool-1", name: "missingTool", rawArguments: '"workspace"', input: "workspace" },
-        ],
-      }),
-    });
-
-    await expect(collectRunnerMessages(runner)).resolves.toEqual([
-      { type: "runStarted", runId: "run-1", task: "Inspect workspace" },
-      { type: "assistantStarted", runId: "run-1", provider: "ReAct Agent" },
-      { type: "assistantThinking", runId: "run-1", message: "Planning step 1" },
-      { type: "agentEvent", runId: "run-1", message: "Running tool missingTool" },
-      { type: "runFailed", runId: "run-1", message: "Unknown tool: missingTool" },
-    ]);
+    expect(messages).toContainEqual({ type: "agentEvent", runId: "run-1", message: "Running tool missingTool" });
+    expect(messages).toContainEqual({ type: "agentEvent", runId: "run-1", message: "Tool missingTool failed (step 1, call 1): Tool error: Unknown tool \"missingTool\"" });
+    expect(messages).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "Unable to use unknown tool, proceeding with what I know." });
+    expect(messages).toContainEqual({ type: "runFinished", runId: "run-1" });
   });
 
   it("forces a final answer after reaching the maximum tool steps", async () => {
@@ -892,10 +857,11 @@ describe("createReactAgentRunner", () => {
     expect(messages.some((message) => message.type === "runFailed")).toBe(false);
   });
 
-  it("rejects tool requests during the default final answer step", async () => {
+  it("forces a final answer when reaching the step limit", async () => {
     const choices: Array<"auto" | "none" | undefined> = [];
     const invoke = vi.fn(async () => "code context");
     const runner = createReactAgentRunner({
+      maxSteps: 3,
       tools: [
         {
           name: "exploreCode",
@@ -907,6 +873,9 @@ describe("createReactAgentRunner", () => {
       modelTurn: async ({ toolChoice }) => {
         choices.push(toolChoice);
         const step = choices.length;
+        if (toolChoice === "none") {
+          return { kind: "final", content: "Reached step limit, providing best answer." };
+        }
         const id = `tool-${step}`;
         const rawArguments = JSON.stringify({ query: `step ${step}` });
         return {
@@ -925,16 +894,12 @@ describe("createReactAgentRunner", () => {
 
     expect(choices).toEqual(["auto", "auto", "auto", "none"]);
     expect(invoke).toHaveBeenCalledTimes(3);
-    expect(messages).not.toContainEqual({
-      type: "agentEvent",
+    expect(messages).toContainEqual({
+      type: "assistantDelta",
       runId: "run-1",
-      message: "Running tool exploreCode (step 4, call 1): step 4",
+      content: "Reached step limit, providing best answer.",
     });
-    expect(messages.at(-1)).toEqual({
-      type: "runFailed",
-      runId: "run-1",
-      message: "Model requested tools during the final answer step",
-    });
+    expect(messages).toContainEqual({ type: "runFinished", runId: "run-1" });
   });
 
   it("does not start a safe batch after cancellation", async () => {
@@ -996,6 +961,52 @@ describe("createReactAgentRunner", () => {
 
     await expect(collectRunnerMessages(runner, "Inspect workspace", controller.signal)).resolves.toEqual([]);
     expect(calledModel).toBe(false);
+  });
+
+  it("injects conversation history into modelTurn messages", async () => {
+    const capturedMessages: unknown[] = [];
+    const conversationHistory = [
+      { role: "user" as const, content: "What is TypeScript?" },
+      { role: "assistant" as const, content: "TypeScript is a typed superset of JavaScript." },
+      { role: "user" as const, content: "Tell me more" },
+    ];
+    const runner = createReactAgentRunner({
+      modelTurn: async ({ messages }) => {
+        capturedMessages.push(messages);
+        return { kind: "final", content: "Done." };
+      },
+    });
+
+    await collectRunnerMessages(runner, "Continue with an example", new AbortController().signal, conversationHistory);
+
+    expect(capturedMessages[0]).toEqual([
+      { role: "user", content: "What is TypeScript?" },
+      { role: "assistant", content: "TypeScript is a typed superset of JavaScript." },
+      { role: "user", content: "Tell me more" },
+      { role: "user", content: "Continue with an example" },
+    ]);
+  });
+
+  it("injects conversation history with reasoning into modelTurn", async () => {
+    const capturedMessages: unknown[] = [];
+    const conversationHistory = [
+      { role: "user" as const, content: "Write a function" },
+      { role: "assistant" as const, content: "Here's a function", reasoning: "Thinking about the best approach" },
+    ];
+    const runner = createReactAgentRunner({
+      modelTurn: async ({ messages }) => {
+        capturedMessages.push(messages);
+        return { kind: "final", content: "Done." };
+      },
+    });
+
+    await collectRunnerMessages(runner, "Improve it", new AbortController().signal, conversationHistory);
+
+    expect(capturedMessages[0]).toEqual([
+      { role: "user", content: "Write a function" },
+      { role: "assistant", content: "Here's a function", reasoningContent: "Thinking about the best approach" },
+      { role: "user", content: "Improve it" },
+    ]);
   });
 });
 

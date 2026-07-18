@@ -27,9 +27,10 @@ export type ConversationManager = {
    *
    * @param conversationId - 对话ID
    * @param assistantMessage - 助手消息内容
+   * @param reasoning - 可选的思考过程内容
    * @remarks 如果对话不存在，该操作会被忽略（不会抛出异常）
    */
-  addAssistantMessage(conversationId: string, assistantMessage: string): void;
+  addAssistantMessage(conversationId: string, assistantMessage: string, reasoning?: string): void;
 
   /**
    * 获取对话的消息历史
@@ -63,10 +64,11 @@ export function createConversationManager(store: ConversationStore): Conversatio
       });
     },
 
-    addAssistantMessage(conversationId: string, assistantMessage: string): void {
+    addAssistantMessage(conversationId: string, assistantMessage: string, reasoning?: string): void {
       store.addMessage(conversationId, {
         role: "assistant",
         content: assistantMessage,
+        reasoning,
       });
     },
 

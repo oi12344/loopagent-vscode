@@ -21,6 +21,8 @@ export type StartAgentRunOptions = {
   runner: AgentRunner;
   postMessage: PostHostMessage;
   runId?: string;
+  conversationHistory?: ChatMessage[];
+  conversationId?: string;
 };
 
 export type AgentRunHandle = {
@@ -29,13 +31,22 @@ export type AgentRunHandle = {
   done: Promise<void>;
 };
 
-export function startAgentRun({ task, mode = "ask", runner, postMessage, runId = createRunId() }: StartAgentRunOptions): AgentRunHandle {
+export function startAgentRun({
+  task,
+  mode = "ask",
+  runner,
+  postMessage,
+  runId = createRunId(),
+  conversationHistory,
+  conversationId,
+}: StartAgentRunOptions): AgentRunHandle {
   const abortController = new AbortController();
   const request: AgentRunRequest = {
     runId,
     task,
     mode,
     signal: abortController.signal,
+    conversationHistory,
   };
 
   const done = pumpRunMessages(runner, request, postMessage);

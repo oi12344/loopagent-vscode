@@ -17,7 +17,7 @@ export function createReactAgentRunner({
   modelTurn,
   providerName = "ReAct Agent",
   tools = createDefaultReactTools(),
-  maxSteps = 3,
+  maxSteps = 20,
   maxToolRequestsPerStep = 10,
   systemPromptProvider,
 }: CreateReactAgentRunnerOptions): AgentRunner {
@@ -26,7 +26,7 @@ export function createReactAgentRunner({
 
   return {
     async *run(request) {
-      const { runId, task, signal } = request;
+      const { runId, task, signal, conversationHistory = [] } = request;
       if (signal.aborted) {
         return;
       }
@@ -42,10 +42,15 @@ export function createReactAgentRunner({
           messages.push({ role: "system", content: systemPrompt });
         }
 
+        for (const historyMsg of conversationHistory) {
+          messages.push({
+            role: historyMsg.role,
+            content: historyMsg.content,
+            ...(historyMsg.reasoning ? { reasoningContent: historyMsg.reasoning } : {}),
+          });
+        }
+
         messages.push({ role: "user", content: task });
-        const initialMessages = [...messages];
-        let editReviewRequested = false;
-        let lastEditObservation = "";
 
         for (let step = 1; step <= maxSteps + 1; step++) {
           const isFinalAnswerStep = step > maxSteps;
@@ -55,18 +60,9 @@ export function createReactAgentRunner({
 
           yield { type: "assistantThinking", runId, message: `Planning step ${step}` } satisfies HostToWebviewMessage;
 
-          const toolChoice = isFinalAnswerStep || editReviewRequested ? "none" : "auto";
-          const turnMessages = editReviewRequested
-            ? [
-                ...initialMessages,
-                {
-                  role: "user" as const,
-                  content: `编辑审阅结果：${lastEditObservation}\n请用中文思考，并用与原始任务相同的语言简洁汇报最终结果。`,
-                },
-              ]
-            : messages;
+          const toolChoice = isFinalAnswerStep ? "none" : "auto";
           const result = await modelTurn({
-            messages: turnMessages,
+            messages,
             signal,
             toolChoice,
           });
@@ -86,7 +82,12 @@ export function createReactAgentRunner({
           }
 
           if (isFinalAnswerStep) {
-            throw new Error("Model requested tools during the final answer step");
+            if (result.reasoning) {
+              yield { type: "assistantReasoningDelta", runId, content: result.reasoning } satisfies HostToWebviewMessage;
+            }
+            yield { type: "assistantDelta", runId, content: result.assistantMessage.content } satisfies HostToWebviewMessage;
+            yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
+            return;
           }
 
           if (result.requests.length > maxToolRequestsPerStep) {
@@ -113,7 +114,7 @@ export function createReactAgentRunner({
 
             const invoke = async (toolRequest: ReactAgentToolRequest) => {
               if (!toolsByName.has(toolRequest.name)) {
-                throw new Error(`Unknown tool: ${toolRequest.name}`);
+                return { content: `Tool error: Unknown tool "${toolRequest.name}"`, succeeded: false };
               }
               if (toolRequest.parseError) {
                 return { content: `Tool error: ${toolRequest.parseError}`, succeeded: false };
@@ -143,15 +144,11 @@ export function createReactAgentRunner({
                 } satisfies HostToWebviewMessage;
               }
               if (!outcome.succeeded) {
-                if (request.name === "applyEdit") lastEditObservation = content;
                 yield {
                   type: "agentEvent",
                   runId,
                   message: `Tool ${request.name} failed (step ${step}, call ${call}): ${content}`,
                 } satisfies HostToWebviewMessage;
-              } else if (request.name === "applyEdit") {
-                editReviewRequested = true;
-                lastEditObservation = content;
               }
 
               messages.push({
