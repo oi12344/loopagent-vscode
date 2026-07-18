@@ -111,8 +111,16 @@ function toMemoryEntry(item: MemoryItem): { kind: MemoryKind; subject: string; c
   };
 }
 
+/** Escapes "<" so a memory item's content can never contain a literal
+ * "</project-memory-data>" (or any other tag-like text) that reads as real markup once
+ * embedded in the prompt -- escaping must hold regardless of where this block sits in the
+ * final prompt, not rely on it happening to be appended last. */
+function escapeMemoryJson(json: string): string {
+  return json.replace(/</g, "\\u003c");
+}
+
 function renderMemoryPrompt(payload: ReturnType<typeof toMemoryEntry>[]): string {
-  return `${MEMORY_BLOCK_OPEN}${JSON.stringify(payload)}${MEMORY_BLOCK_CLOSE}`;
+  return `${MEMORY_BLOCK_OPEN}${escapeMemoryJson(JSON.stringify(payload))}${MEMORY_BLOCK_CLOSE}`;
 }
 
 /**
@@ -170,8 +178,10 @@ export function openProjectMemory(
     forget: (expectedGeneration: number) => store.forget(workspaceKey, ownerId, expectedGeneration),
 
     async loadContext(task: string): Promise<MemoryContext> {
-      const generation = store.getGeneration(workspaceKey);
+      // Any exception anywhere in this method -- including reading the generation itself --
+      // degrades to an empty-prompt context; a broken store must never block a run.
       try {
+        const generation = store.getGeneration(workspaceKey);
         const matchQuery = buildFtsMatchQuery(task);
         if (!matchQuery) return { generation, prompt: "", trace: EMPTY_CONTEXT_TRACE };
 
@@ -216,7 +226,9 @@ export function openProjectMemory(
           trace: { candidateCount: candidates.length, includedIds: included.map((item) => item.id), excluded },
         };
       } catch {
-        return { generation, prompt: "", trace: EMPTY_CONTEXT_TRACE };
+        // Generation is unknown if the store itself failed; 0 matches the documented
+        // fallback for a workspace with no meta row yet.
+        return { generation: 0, prompt: "", trace: EMPTY_CONTEXT_TRACE };
       }
     },
 

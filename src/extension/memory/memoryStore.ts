@@ -206,6 +206,11 @@ export class MemoryStore {
    */
   search(workspaceKey: string, matchQuery: string, limit: number): MemoryItem[] {
     const now = this.now();
+    // ponytail: bm25 + recency is a deliberate v1 stand-in for the design doc's full
+    // "exact-term hits, evidence tier, source-hash freshness, recency" ranking -- evidence
+    // tier and hash-freshness only affect the caller's pass/fail exclusion pass, not order.
+    // Upgrade path if this proves too coarse: add a secondary ORDER BY key computed from
+    // evidence count/kind (e.g. `json_array_length(evidence_json) DESC`) before updated_at.
     const rows = this.database
       .prepare(`
         SELECT mi.* FROM memory_fts f
