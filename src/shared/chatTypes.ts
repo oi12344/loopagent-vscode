@@ -24,7 +24,7 @@ export type ConversationTurn =
       userMessage: string;
       status: "processing";
     }
-  | {·
+  | {
       id: string;
       conversationId: string;
       userMessage: string;

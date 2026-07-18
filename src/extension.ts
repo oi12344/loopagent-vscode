@@ -11,7 +11,7 @@ import { createConfiguredAgentRunner } from "./extension/model/providerRegistry"
 import { createWebviewHtml } from "./extension/webviewHtml";
 import { createConversationStore } from "./extension/conversation/conversationStore";
 import { createConversationManager, type ConversationManager } from "./extension/conversation/conversationManager";
-import type { WebviewToHostMessage, HostToWebviewMessage } from "./shared/messages";
+import type { WebviewToHostMessage, HostToWebviewMessage, TaskMode, RunModelSelection } from "./shared/messages";
 import type { ChatMessage } from "./shared/chatTypes";
 
 const chatViewId = "loopagent.chat";
@@ -146,8 +146,8 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
 
   private executeRun(
     task: string,
-    mode: WebviewToHostMessage["mode"],
-    model: WebviewToHostMessage["model"],
+    mode: TaskMode | undefined,
+    model: RunModelSelection | undefined,
     conversationHistory: ChatMessage[],
     conversationId: string,
     webview: vscode.Webview,
