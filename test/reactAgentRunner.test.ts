@@ -40,15 +40,129 @@ describe("createReactAgentRunner", () => {
     ]);
   });
 
+  it("reports a completed outcome exactly once when the model finishes with no tool calls", async () => {
+    const recordMemoryRunOutcome = vi.fn();
+    const runner = createReactAgentRunner({
+      recordMemoryRunOutcome,
+      modelTurn: async () => ({ kind: "final", content: "Used observation." }),
+    });
+
+    await collectRunnerMessages(runner);
+
+    expect(recordMemoryRunOutcome).toHaveBeenCalledTimes(1);
+    expect(recordMemoryRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "run-1",
+        status: "completed",
+        finalContent: "Used observation.",
+        evidence: [],
+      }),
+    );
+  });
+
+  it("reports a failed outcome exactly once when the model requests an unknown tool", async () => {
+    const recordMemoryRunOutcome = vi.fn();
+    const runner = createReactAgentRunner({
+      recordMemoryRunOutcome,
+      modelTurn: async () => ({
+        kind: "toolRequests",
+        assistantMessage: {
+          role: "assistant",
+          content: "",
+          toolCalls: [{ id: "tool-1", type: "function", function: { name: "missingTool", arguments: '"workspace"' } }],
+        },
+        requests: [{ id: "tool-1", name: "missingTool", rawArguments: '"workspace"', input: "workspace" }],
+      }),
+    });
+
+    await collectRunnerMessages(runner);
+
+    expect(recordMemoryRunOutcome).toHaveBeenCalledTimes(1);
+    expect(recordMemoryRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-1", status: "failed", finalContent: undefined, evidence: [] }),
+    );
+  });
+
+  it("reports a cancelled outcome exactly once when the run is already cancelled before starting", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const recordMemoryRunOutcome = vi.fn();
+    const runner = createReactAgentRunner({
+      recordMemoryRunOutcome,
+      modelTurn: async () => ({ kind: "final", content: "Should not run." }),
+    });
+
+    await collectRunnerMessages(runner, "Inspect workspace", controller.signal);
+
+    expect(recordMemoryRunOutcome).toHaveBeenCalledTimes(1);
+    expect(recordMemoryRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-1", status: "cancelled", finalContent: undefined, evidence: [] }),
+    );
+  });
+
+  it("reports a cancelled outcome exactly once when the run is cancelled mid-execution", async () => {
+    const controller = new AbortController();
+    const recordMemoryRunOutcome = vi.fn();
+    const invoke = vi.fn(async () => "unused");
+    const runner = createReactAgentRunner({
+      recordMemoryRunOutcome,
+      tools: [
+        {
+          name: "exploreCode",
+          description: "Search code.",
+          inputSchema: { type: "object" },
+          isConcurrencySafe: () => true,
+          invoke,
+        },
+      ],
+      modelTurn: async () => ({
+        kind: "toolRequests",
+        assistantMessage: {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            { id: "tool-1", type: "function", function: { name: "exploreCode", arguments: '{"query":"first"}' } },
+            { id: "tool-2", type: "function", function: { name: "exploreCode", arguments: '{"query":"second"}' } },
+          ],
+        },
+        requests: [
+          { id: "tool-1", name: "exploreCode", rawArguments: '{"query":"first"}', input: { query: "first" } },
+          { id: "tool-2", name: "exploreCode", rawArguments: '{"query":"second"}', input: { query: "second" } },
+        ],
+      }),
+    });
+    const iterator = runner.run({ runId: "run-1", task: "Inspect workspace", signal: controller.signal })[
+      Symbol.asyncIterator
+    ]();
+
+    await iterator.next();
+    await iterator.next();
+    await iterator.next();
+    await iterator.next();
+    controller.abort();
+    await iterator.next();
+
+    expect(recordMemoryRunOutcome).toHaveBeenCalledTimes(1);
+    expect(recordMemoryRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-1", status: "cancelled", finalContent: undefined, evidence: [] }),
+    );
+  });
+
   it("runs a requested tool and sends its observation to the next model turn", async () => {
     let turn = 0;
+    const recordMemoryRunOutcome = vi.fn();
+    const fileEvidence = { filePath: "src/example.ts", startLine: 1, endLine: 2, sha256: "abc123", required: true };
     const runner = createReactAgentRunner({
+      recordMemoryRunOutcome,
       tools: [
         {
           name: "echoObservation",
           description: "Echo a test observation.",
           inputSchema: { type: "string" },
-          invoke: async ({ input }: { input: unknown }) => `observed ${String(input)}`,
+          invoke: async ({ input }: { input: unknown }) => ({
+            content: `observed ${String(input)}`,
+            evidence: [fileEvidence],
+          }),
         },
       ],
       modelTurn: async ({ messages }) => {
@@ -94,6 +208,15 @@ describe("createReactAgentRunner", () => {
       { type: "assistantDelta", runId: "run-1", content: "Used observation." },
       { type: "runFinished", runId: "run-1" },
     ]);
+
+    expect(recordMemoryRunOutcome).toHaveBeenCalledTimes(1);
+    expect(recordMemoryRunOutcome).toHaveBeenCalledWith({
+      runId: "run-1",
+      task: "Inspect workspace",
+      status: "completed",
+      finalContent: "Used observation.",
+      evidence: [fileEvidence],
+    });
   });
 
   it("runs each exploreCode request and pairs its real observation", async () => {

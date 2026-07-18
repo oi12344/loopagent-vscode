@@ -329,6 +329,112 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(fakeProjectMemory.loadContext).toHaveBeenCalledWith("how do I build this project");
   });
 
+  it("records the run outcome with the generation captured when memory context was loaded", async () => {
+    const workspaceIntelligence = {
+      buildCodeIntelligencePrompt: vi.fn(async () => "unused"),
+    };
+    const fakeProjectMemory = {
+      loadContext: vi.fn(async () => ({
+        generation: 7,
+        prompt: "",
+        trace: { candidateCount: 0, includedIds: [], excluded: [] },
+      })),
+      recordOutcome: vi.fn(async () => undefined),
+    };
+
+    vi.resetModules();
+    vi.doMock("../src/extension/model/modelConfig", () => ({
+      getModelRuntimeConfig: async () => ({
+        provider: "deepseek",
+        model: "test-model",
+        baseUrl: "",
+        apiKey: "test-key",
+        thinking: "disabled",
+      }),
+    }));
+    vi.doMock("../src/extension/runtime/vscodeRuntimeContext", () => ({
+      collectVsCodeRuntimeContext: async () => ({}),
+    }));
+    vi.doMock("../src/extension/runtime/contextPrompt", () => ({
+      renderCodeRuntimeContextPrompt: () => "",
+    }));
+    vi.doMock("../src/extension/model/providers/deepseekProvider", () => ({
+      createDeepSeekProvider: (): ModelProvider => ({
+        id: "mock",
+        displayName: "Mock model",
+        stream: async function* () {
+          yield { type: "contentDelta", content: "ok" };
+          yield { type: "finishReason", reason: "stop" };
+        },
+      }),
+    }));
+
+    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
+    const runner = await createConfiguredAgentRunner(
+      {} as never,
+      { provider: "deepseek" },
+      { workspaceIntelligence, projectMemory: fakeProjectMemory as never },
+    );
+
+    await collectHostMessages(runner, "task");
+
+    expect(fakeProjectMemory.recordOutcome).toHaveBeenCalledTimes(1);
+    expect(fakeProjectMemory.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "run-1", status: "completed", finalContent: "ok" }),
+      7,
+    );
+  });
+
+  it("skips recordOutcome when no memory context generation was captured for the run", async () => {
+    const workspaceIntelligence = {
+      buildCodeIntelligencePrompt: vi.fn(async () => "unused"),
+    };
+    const fakeProjectMemory = {
+      loadContext: vi.fn(async () => {
+        throw new Error("memory unavailable");
+      }),
+      recordOutcome: vi.fn(async () => undefined),
+    };
+
+    vi.resetModules();
+    vi.doMock("../src/extension/model/modelConfig", () => ({
+      getModelRuntimeConfig: async () => ({
+        provider: "deepseek",
+        model: "test-model",
+        baseUrl: "",
+        apiKey: "test-key",
+        thinking: "disabled",
+      }),
+    }));
+    vi.doMock("../src/extension/runtime/vscodeRuntimeContext", () => ({
+      collectVsCodeRuntimeContext: async () => ({}),
+    }));
+    vi.doMock("../src/extension/runtime/contextPrompt", () => ({
+      renderCodeRuntimeContextPrompt: () => "",
+    }));
+    vi.doMock("../src/extension/model/providers/deepseekProvider", () => ({
+      createDeepSeekProvider: (): ModelProvider => ({
+        id: "mock",
+        displayName: "Mock model",
+        stream: async function* () {
+          yield { type: "contentDelta", content: "ok" };
+          yield { type: "finishReason", reason: "stop" };
+        },
+      }),
+    }));
+
+    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
+    const runner = await createConfiguredAgentRunner(
+      {} as never,
+      { provider: "deepseek" },
+      { workspaceIntelligence, projectMemory: fakeProjectMemory as never },
+    );
+
+    await collectHostMessages(runner, "task");
+
+    expect(fakeProjectMemory.recordOutcome).not.toHaveBeenCalled();
+  });
+
   it("does not block a run when project memory loadContext fails", async () => {
     const workspaceIntelligence = {
       buildCodeIntelligencePrompt: vi.fn(async () => "unused"),

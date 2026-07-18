@@ -152,6 +152,56 @@ export class MemoryStore {
   }
 
   /**
+   * Records one ReAct run's terminal outcome: a `task_runs` row plus, when the caller
+   * supplies one, a single new `memory_items` row (a `lesson`, `active` for verified
+   * evidence or `candidate` otherwise) -- all inside one lease+generation-CAS guarded
+   * transaction, reusing `guardedWrite`/`writeItemInternal` rather than re-deriving them.
+   */
+  recordRunOutcome(
+    workspaceKey: string,
+    ownerId: string,
+    expectedGeneration: number,
+    input: {
+      taskSummary: string;
+      outcome: string;
+      summary: string;
+      verified: boolean;
+      evidence: MemoryEvidence[];
+      memoryItem?: {
+        kind: MemoryKind;
+        subject: string;
+        content: string;
+        confidence: string;
+        evidence: MemoryEvidence[];
+        status: string;
+        expiresAt?: number;
+      };
+    },
+  ): WriteResult {
+    return this.guardedWrite(workspaceKey, ownerId, expectedGeneration, (now) => {
+      this.database
+        .prepare(`
+          INSERT INTO task_runs(workspace_key, task_summary, outcome, summary, verified, evidence_json, created_at, completed_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          workspaceKey,
+          input.taskSummary,
+          input.outcome,
+          input.summary,
+          input.verified ? 1 : 0,
+          JSON.stringify(input.evidence),
+          now,
+          now,
+        );
+      if (input.memoryItem) {
+        this.writeItemInternal(workspaceKey, input.memoryItem, now);
+        this.cleanupExpiredAndOverCap(workspaceKey, now);
+      }
+    });
+  }
+
+  /**
    * Low-level insert primitive: creates an item (default status 'active') without a lease
    * or generation check. `remember()` is built on top of this inside a guarded transaction;
    * it is also exposed directly so callers that already hold their own transaction/lease

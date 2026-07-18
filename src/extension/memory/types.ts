@@ -57,3 +57,14 @@ export type MemoryContext = {
   prompt: string;
   trace: MemoryLoadTrace;
 };
+
+/** Structured, extension-host-only record of one ReAct run's terminal state, handed to
+ * `recordMemoryRunOutcome` and then to `ProjectMemory.recordOutcome`. Not a generic event
+ * bus and never becomes part of `HostToWebviewMessage`. */
+export type ReactAgentRunOutcome = {
+  runId: string;
+  task: string;
+  status: "completed" | "failed" | "cancelled";
+  finalContent?: string;
+  evidence: MemoryEvidence[];
+};

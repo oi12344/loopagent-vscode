@@ -424,6 +424,181 @@ describe("projectMemory", () => {
     });
   });
 
+  describe("recordOutcome", () => {
+    function readTaskRuns(databasePath: string): { outcome: string; task_summary: string; summary: string; verified: number }[] {
+      const raw = new DatabaseSync(databasePath);
+      try {
+        return raw.prepare("SELECT outcome, task_summary, summary, verified FROM task_runs").all() as {
+          outcome: string;
+          task_summary: string;
+          summary: string;
+          verified: number;
+        }[];
+      } finally {
+        raw.close();
+      }
+    }
+
+    function readMemoryItems(databasePath: string): { kind: string; status: string; confidence: string; content: string }[] {
+      const raw = new DatabaseSync(databasePath);
+      try {
+        return raw.prepare("SELECT kind, status, confidence, content FROM memory_items").all() as {
+          kind: string;
+          status: string;
+          confidence: string;
+          content: string;
+        }[];
+      } finally {
+        raw.close();
+      }
+    }
+
+    it("promotes an active lesson for a completed run with verifiable file evidence", async () => {
+      const fixture = createRetrievalFixture();
+      fixture.sources.set("src/a.ts:1:2", "original content");
+      const generation = fixture.memory.getGeneration();
+
+      await fixture.memory.recordOutcome(
+        {
+          runId: "run-1",
+          task: "wire up the provider registry",
+          status: "completed",
+          finalContent: "Wired providerRegistry.ts into the ReAct runner.",
+          evidence: [fixture.fileEvidence("src/a.ts", 1, 2)],
+        },
+        generation,
+      );
+
+      const items = fixture.memory.list();
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({ kind: "lesson", status: "active", confidence: "verified" });
+
+      const runs = readTaskRuns(fixture.databasePath);
+      expect(runs).toEqual([
+        expect.objectContaining({ outcome: "completed", verified: 1 }),
+      ]);
+
+      const context = await fixture.memory.loadContext("wire up the provider registry");
+      expect(context.prompt).toContain("Wired providerRegistry.ts");
+    });
+
+    it("only leaves a candidate (not retrievable) for a completed run with no evidence", async () => {
+      const fixture = createMemoryFixture();
+      const memory = open(fixture.databasePath, fixture.workspaceKey, fixture.readRange);
+      const generation = memory.getGeneration();
+
+      await memory.recordOutcome(
+        {
+          runId: "run-1",
+          task: "summarize the repo layout",
+          status: "completed",
+          finalContent: "This repo has a src and test directory.",
+          evidence: [],
+        },
+        generation,
+      );
+
+      // Candidates are never surfaced by list() (active/stale only) or loadContext (active
+      // only) -- assert directly against the row so this test still catches a regression
+      // that silently promotes an unverified summary straight to active.
+      const items = readMemoryItems(fixture.databasePath);
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({ kind: "lesson", status: "candidate", confidence: "stated" });
+      expect(memory.list()).toEqual([]);
+
+      const context = await memory.loadContext("summarize the repo layout");
+      expect(context.prompt).toBe("");
+
+      const runs = readTaskRuns(fixture.databasePath);
+      expect(runs[0]).toMatchObject({ outcome: "completed", verified: 0 });
+    });
+
+    it.each(["failed", "cancelled"] as const)(
+      "leaves only a task_run and no memory item for a %s run",
+      async (status) => {
+        const fixture = createMemoryFixture();
+        const memory = open(fixture.databasePath, fixture.workspaceKey, fixture.readRange);
+        const generation = memory.getGeneration();
+
+        await memory.recordOutcome(
+          {
+            runId: "run-1",
+            task: "attempt a risky refactor",
+            status,
+            finalContent: status === "failed" ? "Tool error: oldText must match exactly once" : undefined,
+            evidence: [{ filePath: "src/a.ts", startLine: 1, endLine: 2, sha256: "abc", required: true }],
+          },
+          generation,
+        );
+
+        expect(memory.list()).toEqual([]);
+        const runs = readTaskRuns(fixture.databasePath);
+        expect(runs).toEqual([expect.objectContaining({ outcome: status })]);
+      },
+    );
+
+    it("discards an in-flight outcome whose generation was captured before a Forget", async () => {
+      const fixture = createMemoryFixture();
+      const memory = open(fixture.databasePath, fixture.workspaceKey, fixture.readRange);
+      // Simulate a run that loaded memory context (and captured this generation) before a
+      // concurrent "Forget current project" bumped the generation.
+      const staleGeneration = memory.getGeneration();
+      expect(memory.forget(memory.getGeneration())).toEqual({ ok: true });
+
+      await memory.recordOutcome(
+        {
+          runId: "run-1",
+          task: "in-flight task started before forget",
+          status: "completed",
+          finalContent: "Should never be written back.",
+          evidence: [{ filePath: "src/a.ts", startLine: 1, endLine: 2, sha256: "abc", required: true }],
+        },
+        staleGeneration,
+      );
+
+      expect(memory.list()).toEqual([]);
+      expect(readTaskRuns(fixture.databasePath)).toEqual([]);
+    });
+
+    it("sanitizes and caps the persisted summary at 1,000 characters, without an extra model call", async () => {
+      const fixture = createMemoryFixture();
+      const memory = open(fixture.databasePath, fixture.workspaceKey, fixture.readRange);
+      const generation = memory.getGeneration();
+
+      await memory.recordOutcome(
+        {
+          runId: "run-1",
+          task: "long task",
+          status: "completed",
+          finalContent: `${"x".repeat(1_500)} api_key: sk-abcdefgh12345678`,
+          evidence: [{ filePath: "src/a.ts", startLine: 1, endLine: 2, sha256: "abc", required: true }],
+        },
+        generation,
+      );
+
+      const runs = readTaskRuns(fixture.databasePath);
+      expect(runs[0]!.summary.length).toBeLessThanOrEqual(1_000);
+      expect(runs[0]!.summary).not.toContain("sk-abcdefgh12345678");
+      const items = memory.list();
+      expect(items[0]!.content.length).toBeLessThanOrEqual(1_000);
+      expect(items[0]!.content).not.toContain("sk-abcdefgh12345678");
+    });
+
+    it("never throws when the underlying store is unavailable", async () => {
+      const fixture = createMemoryFixture();
+      const memory = open(fixture.databasePath, fixture.workspaceKey, fixture.readRange);
+      memory.dispose();
+      openedMemories.pop();
+
+      await expect(
+        memory.recordOutcome(
+          { runId: "run-1", task: "task", status: "completed", finalContent: "done", evidence: [] },
+          0,
+        ),
+      ).resolves.toBeUndefined();
+    });
+  });
+
   describe("loadContext error handling", () => {
     it("returns an empty-prompt context (not a throw) when the underlying store fails", async () => {
       const fixture = createMemoryFixture();

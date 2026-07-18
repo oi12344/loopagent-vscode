@@ -75,6 +75,12 @@ export async function createConfiguredAgentRunner(
     ...(deps.applyEditTool ? [deps.applyEditTool] : []),
   ];
 
+  // ponytail: a plain Map keyed by runId is enough here -- one entry per in-flight run,
+  // removed by recordMemoryRunOutcome as soon as that run finishes. Captures the memory
+  // generation that was in effect when this run's context was loaded, so its outcome write
+  // is CAS-checked against that same generation (protects against a Forget mid-run).
+  const memoryGenerationByRunId = new Map<string, number>();
+
   return createReactAgentRunner({
     providerName: provider.displayName,
     tools,
@@ -92,12 +98,22 @@ export async function createConfiguredAgentRunner(
         const context = await deps.projectMemory?.loadContext(request.task);
         if (context) {
           memoryPrompt = context.prompt;
+          memoryGenerationByRunId.set(request.runId, context.generation);
         }
       } catch {
         // Project memory is best-effort context and must not block the model/tool loop.
       }
 
       return [REACT_SYSTEM_PROMPT, runtimePrompt, memoryPrompt].filter(Boolean).join("\n\n");
+    },
+    recordMemoryRunOutcome: async (outcome) => {
+      const expectedGeneration = memoryGenerationByRunId.get(outcome.runId);
+      memoryGenerationByRunId.delete(outcome.runId);
+      if (expectedGeneration === undefined || !deps.projectMemory) {
+        return;
+      }
+
+      await deps.projectMemory.recordOutcome(outcome, expectedGeneration);
     },
   });
 }

@@ -1,9 +1,13 @@
+import { createHash } from "node:crypto";
+
 import type { WorkspaceIntelligence } from "../intelligence/workspaceIntelligence";
-import type { ReactAgentTool } from "./reactTypes";
+import type { MemoryEvidence } from "../memory/types";
+import type { ReactAgentTool, ReactAgentToolResult } from "./reactTypes";
 
 export const MAX_EXPLORE_CODE_QUERY_LENGTH = 1_000;
 const EMPTY_OBSERVATION = "未命中代码上下文。";
 const FAILED_OBSERVATION = "代码搜索失败，请调整查询后重试。";
+const MAX_EVIDENCE_SNIPPETS = 4;
 
 export function createExploreCodeTool(workspaceIntelligence: WorkspaceIntelligence): ReactAgentTool {
   return {
@@ -22,22 +26,45 @@ export function createExploreCodeTool(workspaceIntelligence: WorkspaceIntelligen
       required: ["query"],
       additionalProperties: false,
     },
-    async invoke({ input, signal }) {
+    async invoke({ input, signal }): Promise<ReactAgentToolResult> {
       const query = parseQuery(input);
       signal.throwIfAborted();
 
-      let prompt: string;
+      let content: string;
+      let evidence: MemoryEvidence[] = [];
       try {
-        prompt = await workspaceIntelligence.buildCodeIntelligencePrompt(query);
+        if (workspaceIntelligence.buildCodeIntelligenceResult) {
+          const result = await workspaceIntelligence.buildCodeIntelligenceResult(query);
+          content = result.prompt.length > 0 ? result.prompt : EMPTY_OBSERVATION;
+          evidence = buildSnippetEvidence(result.snippets);
+        } else {
+          const prompt = await workspaceIntelligence.buildCodeIntelligencePrompt(query);
+          content = prompt.length > 0 ? prompt : EMPTY_OBSERVATION;
+        }
       } catch {
         signal.throwIfAborted();
-        return FAILED_OBSERVATION;
+        return { content: FAILED_OBSERVATION, evidence: [] };
       }
 
       signal.throwIfAborted();
-      return prompt.length > 0 ? prompt : EMPTY_OBSERVATION;
+      return { content, evidence };
     },
   };
+}
+
+/** Turns at most the first four retrieved snippets into file evidence: workspace-relative
+ * path, line range, and a SHA-256 of the exact snippet content -- never the source text
+ * itself, so evidence stays small and never re-carries source into memory storage. */
+function buildSnippetEvidence(
+  snippets: readonly { filePath: string; startLine: number; endLine: number; text: string }[],
+): MemoryEvidence[] {
+  return snippets.slice(0, MAX_EVIDENCE_SNIPPETS).map((snippet) => ({
+    filePath: snippet.filePath,
+    startLine: snippet.startLine,
+    endLine: snippet.endLine,
+    sha256: createHash("sha256").update(snippet.text).digest("hex"),
+    required: true,
+  }));
 }
 
 function parseQuery(input: unknown): string {

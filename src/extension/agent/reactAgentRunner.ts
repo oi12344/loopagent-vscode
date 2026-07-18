@@ -1,6 +1,13 @@
 import type { HostToWebviewMessage } from "../../shared/messages";
+import type { MemoryEvidence } from "../memory/types";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
-import type { ReactAgentMessage, ReactAgentTool, ReactAgentToolRequest, ReactModelTurn } from "./reactTypes";
+import type {
+  ReactAgentMessage,
+  ReactAgentRunOutcome,
+  ReactAgentTool,
+  ReactAgentToolRequest,
+  ReactModelTurn,
+} from "./reactTypes";
 import { createToolRegistry } from "./toolRegistry";
 import { createDefaultReactTools } from "./tools";
 
@@ -14,6 +21,10 @@ export type CreateReactAgentRunnerOptions = {
   maxSteps?: number;
   maxToolRequestsPerStep?: number;
   systemPromptProvider?: (request: AgentRunRequest) => string | Promise<string>;
+  /** Optional side-channel invoked exactly once per run, after this run's terminal
+   * HostToWebviewMessage would already have been yielded (or the run was cancelled before
+   * any was yielded). Never part of the yielded message sequence. */
+  recordMemoryRunOutcome?: (outcome: ReactAgentRunOutcome) => void | Promise<void>;
 };
 
 export function createReactAgentRunner({
@@ -23,6 +34,7 @@ export function createReactAgentRunner({
   maxSteps = 3,
   maxToolRequestsPerStep = 10,
   systemPromptProvider,
+  recordMemoryRunOutcome,
 }: CreateReactAgentRunnerOptions): AgentRunner {
   const toolRegistry = createToolRegistry(tools);
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
@@ -32,11 +44,18 @@ export function createReactAgentRunner({
   return {
     async *run(request) {
       const { runId, task, mode, signal } = request;
-      if (signal.aborted) {
-        return;
-      }
+      // Defaults to "cancelled": every early return below (pre-run abort, mid-loop abort
+      // checks) leaves this untouched, so the finally block classifies them correctly
+      // without each call site having to set it explicitly.
+      let status: ReactAgentRunOutcome["status"] = "cancelled";
+      let finalContent: string | undefined;
+      const evidence: MemoryEvidence[] = [];
 
       try {
+        if (signal.aborted) {
+          return;
+        }
+
         yield { type: "runStarted", runId, task } satisfies HostToWebviewMessage;
         yield { type: "assistantStarted", runId, provider: providerName } satisfies HostToWebviewMessage;
 
@@ -101,6 +120,8 @@ export function createReactAgentRunner({
             }
             yield { type: "assistantDelta", runId, content: result.content } satisfies HostToWebviewMessage;
             yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
+            status = "completed";
+            finalContent = result.content;
             return;
           }
 
@@ -135,12 +156,13 @@ export function createReactAgentRunner({
                 throw new Error(`Unknown tool: ${toolRequest.name}`);
               }
               if (toolRequest.parseError) {
-                return { content: `Tool error: ${toolRequest.parseError}`, succeeded: false };
+                return { content: `Tool error: ${toolRequest.parseError}`, succeeded: false, evidence: [] as MemoryEvidence[] };
               }
               try {
-                return { content: await toolRegistry.invoke(toolRequest, signal), succeeded: true };
+                const result = await toolRegistry.invoke(toolRequest, signal);
+                return { content: result.content, succeeded: true, evidence: result.evidence };
               } catch (error) {
-                return { content: `Tool error: ${formatRunError(error)}`, succeeded: false };
+                return { content: `Tool error: ${formatRunError(error)}`, succeeded: false, evidence: [] as MemoryEvidence[] };
               }
             };
             const outcomes = batch.concurrent
@@ -168,11 +190,14 @@ export function createReactAgentRunner({
                   runId,
                   message: `Tool ${request.name} failed (step ${step}, call ${call}): ${content}`,
                 } satisfies HostToWebviewMessage;
-              } else if (request.name === "applyEdit") {
-                editReviewRequested = true;
-                lastEditObservation = content;
-              } else if (request.name === "readFile") {
-                fileReadForEdit = true;
+              } else {
+                evidence.push(...outcome.evidence);
+                if (request.name === "applyEdit") {
+                  editReviewRequested = true;
+                  lastEditObservation = content;
+                } else if (request.name === "readFile") {
+                  fileReadForEdit = true;
+                }
               }
 
               messages.push({
@@ -188,6 +213,8 @@ export function createReactAgentRunner({
         if (editMode && editReviewRequested) {
           yield { type: "assistantDelta", runId, content: lastEditObservation } satisfies HostToWebviewMessage;
           yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
+          status = "completed";
+          finalContent = lastEditObservation;
           return;
         }
 
@@ -198,7 +225,17 @@ export function createReactAgentRunner({
           return;
         }
 
+        status = "failed";
         yield { type: "runFailed", runId, message: formatRunError(error) } satisfies HostToWebviewMessage;
+      } finally {
+        if (recordMemoryRunOutcome) {
+          try {
+            await recordMemoryRunOutcome({ runId, task, status, finalContent, evidence });
+          } catch {
+            // Best-effort persistence side-channel: a failure here must never surface as a
+            // run failure or change the already-yielded HostToWebviewMessage sequence.
+          }
+        }
       }
     },
   };

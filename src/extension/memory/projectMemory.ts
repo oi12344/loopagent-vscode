@@ -8,6 +8,7 @@ import type {
   MemoryExclusionReason,
   MemoryItem,
   MemoryKind,
+  ReactAgentRunOutcome,
   ReadRange,
   RememberInput,
   WriteResult,
@@ -56,6 +57,24 @@ function containsSensitiveContent(text: string): boolean {
 
 const MEMORY_KINDS: readonly MemoryKind[] = ["fact", "decision"];
 
+// 容量与保留 (design doc): every persisted task_summary/summary is capped at 1,000 chars and
+// sanitized before it ever reaches SQLite -- no extra model call is used to summarize.
+const MAX_SUMMARY_CHARS = 1_000;
+const REDACTED_SUMMARY = "[redacted: sensitive content omitted]";
+// 容量与保留: an unverified auto-captured candidate expires after 30 days, distinct from an
+// active lesson's default 180-day TTL (memoryStore.ts only branches the default by `kind`,
+// not `status`, so this call site must set the shorter TTL explicitly).
+const CANDIDATE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Caps length and swaps in a fixed redaction placeholder for anything that looks like a
+ * secret, rather than trying to surgically remove just the sensitive substring -- a summary
+ * is not reviewable before it is written, so a coarse whole-field redaction is the only safe
+ * default. */
+function sanitizeSummary(text: string): string {
+  const capped = text.slice(0, MAX_SUMMARY_CHARS);
+  return containsSensitiveContent(capped) ? REDACTED_SUMMARY : capped;
+}
+
 export type ProjectMemoryOptions = {
   now?: () => number;
   ownerId?: string;
@@ -69,6 +88,15 @@ export type ProjectMemory = {
   list(): MemoryItem[];
   forget(expectedGeneration: number): WriteResult;
   loadContext(task: string): Promise<MemoryContext>;
+  /**
+   * Best-effort auto-capture of one ReAct run's outcome, gated by `expectedGeneration`
+   * captured at the same run's `loadContext` call: a Forget between then and now makes this
+   * a no-op (generation mismatch), never a write against a since-deleted workspace.
+   * `completed` with verifiable evidence promotes an active `lesson`; `completed` with no
+   * evidence only leaves a `candidate` (never retrieved); `failed`/`cancelled` leave only a
+   * `task_runs` row. Never throws -- persistence failures must not surface to the run.
+   */
+  recordOutcome(outcome: ReactAgentRunOutcome, expectedGeneration: number): Promise<void>;
   dispose(): void;
 };
 
@@ -137,8 +165,9 @@ export function openProjectMemory(
   readRange: ReadRange,
   options: ProjectMemoryOptions = {},
 ): ProjectMemory {
+  const now = options.now ?? Date.now;
   const database: DatabaseSync = openMemoryDatabase(databasePath);
-  const store = new MemoryStore(database, options.now ?? Date.now);
+  const store = new MemoryStore(database, now);
   const ownerId = options.ownerId ?? randomUUID();
   const leaseTtlMs = options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
   const renewIntervalMs = options.renewIntervalMs ?? DEFAULT_RENEW_INTERVAL_MS;
@@ -229,6 +258,51 @@ export function openProjectMemory(
         // Generation is unknown if the store itself failed; 0 matches the documented
         // fallback for a workspace with no meta row yet.
         return { generation: 0, prompt: "", trace: EMPTY_CONTEXT_TRACE };
+      }
+    },
+
+    async recordOutcome(outcome: ReactAgentRunOutcome, expectedGeneration: number): Promise<void> {
+      try {
+        const taskSummary = sanitizeSummary(outcome.task);
+        const summary = sanitizeSummary(outcome.finalContent ?? "");
+        const verified = outcome.status === "completed" && outcome.evidence.length > 0;
+
+        let memoryItem:
+          | { kind: MemoryKind; subject: string; content: string; confidence: string; evidence: MemoryEvidence[]; status: string; expiresAt?: number }
+          | undefined;
+        if (outcome.status === "completed") {
+          const subject = taskSummary.length > 0 ? taskSummary : "task";
+          memoryItem = verified
+            ? {
+                kind: "lesson",
+                subject,
+                content: summary.length > 0 ? summary : "Completed with verified evidence.",
+                confidence: "verified",
+                evidence: outcome.evidence,
+                status: "active",
+              }
+            : {
+                kind: "lesson",
+                subject,
+                content: summary.length > 0 ? summary : "Completed without verified evidence.",
+                confidence: "stated",
+                evidence: [],
+                status: "candidate",
+                expiresAt: now() + CANDIDATE_TTL_MS,
+              };
+        }
+
+        store.recordRunOutcome(workspaceKey, ownerId, expectedGeneration, {
+          taskSummary,
+          outcome: outcome.status,
+          summary,
+          verified,
+          evidence: outcome.evidence,
+          memoryItem,
+        });
+      } catch {
+        // Persistence is best-effort: never let a memory write failure surface as a run
+        // failure or block the ReAct loop's finally block.
       }
     },
 

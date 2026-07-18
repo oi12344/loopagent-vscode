@@ -1,4 +1,4 @@
-import { createCodeIntelligenceContext } from "./context/codeIntelligenceContext";
+import { createCodeIntelligenceContext, type CodeIntelligenceSnippet } from "./context/codeIntelligenceContext";
 import { renderCodeIntelligencePrompt } from "./context/codeIntelligencePrompt";
 import type { CodeEdge, ImportBinding, IndexDiagnostic, UnresolvedReference } from "./graph/graphTypes";
 import { createSearchIndex } from "./graph/searchIndex";
@@ -34,8 +34,18 @@ export type WorkspaceIntelligenceDeps = {
   parserRuntime?: ParserRuntime;
 };
 
+export type CodeIntelligenceResult = {
+  prompt: string;
+  snippets: CodeIntelligenceSnippet[];
+};
+
 export type WorkspaceIntelligence = {
   buildCodeIntelligencePrompt(query: string): Promise<string>;
+  /** Compatible superset of `buildCodeIntelligencePrompt`: the same rendered prompt plus the
+   * retrieved snippets, computed by the same internal search/index pass (no duplicate
+   * indexing work). Optional so existing mocks that only implement the prompt method keep
+   * working; callers that want structured evidence check for its presence. */
+  buildCodeIntelligenceResult?(query: string): Promise<CodeIntelligenceResult>;
   getStatus(): CodeIndexStatus;
   getDiagnostics(): IndexDiagnostic[];
 };
@@ -71,7 +81,21 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
 
   return {
     async buildCodeIntelligencePrompt(query) {
-      const graph = createSemanticGraph();
+      return (await buildResult(query)).prompt;
+    },
+    async buildCodeIntelligenceResult(query) {
+      return buildResult(query);
+    },
+    getStatus() {
+      return status;
+    },
+    getDiagnostics() {
+      return diagnostics.map((diagnostic) => ({ ...diagnostic }));
+    },
+  };
+
+  async function buildResult(query: string): Promise<CodeIntelligenceResult> {
+    const graph = createSemanticGraph();
       const searchIndex = createSearchIndex();
       const importBindings: ImportBinding[] = [];
       const unresolvedReferences: UnresolvedReference[] = [];
@@ -181,7 +205,7 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
         if (status === "indexing") {
           status = "ready";
         }
-        return renderCodeIntelligencePrompt(result);
+        return { prompt: renderCodeIntelligencePrompt(result), snippets: result.snippets };
       } catch (error) {
         status = "failed";
         diagnostics.push({
@@ -189,30 +213,23 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
           severity: "error",
           message: error instanceof Error ? error.message : String(error),
         });
-        return "";
+        return { prompt: "", snippets: [] };
       }
 
-      function addEdgeWithinBudget(edge: CodeEdge, filePath: string): boolean {
-        if (edgeBudgetExceeded) {
-          return false;
-        }
-        if (edgeCount >= budgets.maxEdges) {
-          markPartial(filePath, `达到边数上限 ${budgets.maxEdges}，停止新增边。`);
-          edgeBudgetExceeded = true;
-          return false;
-        }
-        graph.upsertEdge(edge);
-        edgeCount += 1;
-        return true;
+    function addEdgeWithinBudget(edge: CodeEdge, filePath: string): boolean {
+      if (edgeBudgetExceeded) {
+        return false;
       }
-    },
-    getStatus() {
-      return status;
-    },
-    getDiagnostics() {
-      return diagnostics.map((diagnostic) => ({ ...diagnostic }));
-    },
-  };
+      if (edgeCount >= budgets.maxEdges) {
+        markPartial(filePath, `达到边数上限 ${budgets.maxEdges}，停止新增边。`);
+        edgeBudgetExceeded = true;
+        return false;
+      }
+      graph.upsertEdge(edge);
+      edgeCount += 1;
+      return true;
+    }
+  }
 
   async function extractWorkspaceFile(file: WorkspaceSourceFile, adapter: LanguageAdapter): Promise<ExtractionResult> {
     const contentHash = createContentHash(file.text);
@@ -260,6 +277,9 @@ export function createEmptyWorkspaceIntelligence(): WorkspaceIntelligence {
   return {
     async buildCodeIntelligencePrompt() {
       return "";
+    },
+    async buildCodeIntelligenceResult() {
+      return { prompt: "", snippets: [] };
     },
     getStatus() {
       return "ready";
