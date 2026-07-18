@@ -1,10 +1,12 @@
 import type { HostToWebviewMessage, TaskMode } from "../shared/messages";
+import type { ChatMessage } from "../shared/chatTypes";
 
 export type AgentRunRequest = {
   runId: string;
   task: string;
   mode?: TaskMode;
   signal: AbortSignal;
+  conversationHistory?: ChatMessage[];
 };
 
 export type AgentRunner = {

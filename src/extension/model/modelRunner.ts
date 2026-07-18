@@ -1,6 +1,8 @@
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import type { HostToWebviewMessage } from "../../shared/messages";
 import type { ModelMessage, ModelProvider } from "./types";
+import { formatConversationContext } from "./conversationContextFormatter";
+import type { FormattedContext } from "./conversationContextFormatter";
 
 export type CreateModelRunnerOptions = {
   provider: ModelProvider;
@@ -11,7 +13,7 @@ export type CreateModelRunnerOptions = {
 export function createModelRunner({ provider, systemPrompt, systemPromptProvider }: CreateModelRunnerOptions): AgentRunner {
   return {
     run: async function* (request) {
-      const { runId, task, signal } = request;
+      const { runId, task, signal, conversationHistory = [] } = request;
       yield { type: "runStarted", runId, task } satisfies HostToWebviewMessage;
       yield { type: "assistantStarted", runId, provider: provider.displayName } satisfies HostToWebviewMessage;
 
@@ -40,7 +42,9 @@ export function createModelRunner({ provider, systemPrompt, systemPromptProvider
         message: `Calling ${provider.displayName}`,
       } satisfies HostToWebviewMessage;
 
-      const messages = createMessages(task, systemPrompts);
+      // 使用 formatConversationContext 处理对话历史和当前任务
+      const formattedContext = formatConversationContext(conversationHistory, task);
+      const messages = createMessages(formattedContext, systemPrompts);
 
       for await (const event of provider.stream({ messages, signal })) {
         if (signal.aborted) {
@@ -70,7 +74,10 @@ export function createModelRunner({ provider, systemPrompt, systemPromptProvider
   };
 }
 
-function createMessages(task: string, systemPrompts: Array<string | undefined>): ModelMessage[] {
+function createMessages(
+  formattedContext: FormattedContext,
+  systemPrompts: Array<string | undefined>,
+): ModelMessage[] {
   const messages: ModelMessage[] = [];
 
   for (const systemPrompt of systemPrompts) {
@@ -81,7 +88,14 @@ function createMessages(task: string, systemPrompts: Array<string | undefined>):
     }
   }
 
-  messages.push({ role: "user", content: task });
+  // 添加格式化的上下文 systemPrompt
+  const trimmedContextPrompt = formattedContext.systemPrompt?.trim();
+  if (trimmedContextPrompt) {
+    messages.push({ role: "system", content: trimmedContextPrompt });
+  }
+
+  // 添加消息历史
+  messages.push(...formattedContext.messageHistory);
 
   return messages;
 }

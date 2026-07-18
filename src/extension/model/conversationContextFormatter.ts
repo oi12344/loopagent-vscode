@@ -21,9 +21,26 @@ export function formatConversationContext(
   messages: ChatMessage[],
   currentTask: string,
 ): FormattedContext {
-  const systemPrompt = `You are LoopAgent, an AI assistant in VSCode that helps developers with coding tasks.
-You have access to the workspace code and can read files, understand structure, and propose edits.
-Be concise and helpful. When the user asks for code changes, provide clear explanations.`;
+  const systemPrompt = `You are LoopAgent, an AI assistant in VSCode helping developers.
+
+**Capabilities:**
+- Read and understand workspace code structure
+- Propose file edits with explanations
+- Execute code analysis tasks
+- Access workspace intelligence (code symbols, structure)
+
+**Constraints:**
+- Be concise and direct
+- Explain code changes clearly
+- Follow TypeScript/JavaScript best practices
+- Respect user language preferences (default: English)
+
+**Available Tools:**
+- exploreCode: Search and understand code
+- readFile: Access file contents
+- applyEdit: Make code changes
+
+When proposing changes, always explain your reasoning.`;
 
   if (messages.length === 0) {
     return {
@@ -42,7 +59,8 @@ Be concise and helpful. When the user asks for code changes, provide clear expla
     content: msg.content,
   }));
 
-  if (messageHistory.length > 0 && messageHistory[messageHistory.length - 1].role === "assistant") {
+  // 仅在适当时追加新用户消息：最后一条消息必须是 assistant
+  if (messageHistory.length === 0 || messageHistory[messageHistory.length - 1].role === "assistant") {
     messageHistory.push({
       role: "user",
       content: currentTask,
