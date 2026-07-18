@@ -10,11 +10,24 @@ export type ConversationContext = {
   updatedAt: number;
 };
 
-export type ConversationTurn = {
-  id: string;
-  conversationId: string;
-  userMessage: string;
-  assistantMessage?: string;
-  status: "pending" | "processing" | "completed" | "error";
-  error?: string;
-};
+export type ConversationTurn =
+  | {
+      id: string;
+      conversationId: string;
+      userMessage: string;
+      status: "pending" | "processing";
+    }
+  | {
+      id: string;
+      conversationId: string;
+      userMessage: string;
+      assistantMessage: string;
+      status: "completed";
+    }
+  | {
+      id: string;
+      conversationId: string;
+      userMessage: string;
+      status: "error";
+      error: string;
+    };
