@@ -26,6 +26,22 @@ describe("ConversationManager", () => {
     expect(history[1]).toEqual({ role: "assistant", content: "Hi there" });
   });
 
+  it("assistant messages with reasoning are stored correctly", () => {
+    const store = createConversationStore();
+    const manager = createConversationManager(store);
+    const context = manager.startConversation();
+
+    manager.addAssistantMessage(context.conversationId, "Response", "Thought process here");
+
+    const history = manager.getConversationHistory(context.conversationId);
+    expect(history).toHaveLength(1);
+    expect(history[0]).toEqual({
+      role: "assistant",
+      content: "Response",
+      reasoning: "Thought process here"
+    });
+  });
+
   it("maintains separate conversations", () => {
     const store = createConversationStore();
     const manager = createConversationManager(store);
@@ -66,6 +82,8 @@ describe("ConversationManager", () => {
   });
 
   it("timestamps are updated when adding messages", () => {
+    vi.useFakeTimers();
+
     const store = createConversationStore();
     const manager = createConversationManager(store);
 
@@ -76,11 +94,8 @@ describe("ConversationManager", () => {
     const contextAfter = store.getConversation(context.conversationId);
     expect(contextAfter?.updatedAt).toBe(initialUpdatedAt);
 
-    // 延迟添加消息以确保时间戳不同
-    const beforeAddMessage = Date.now();
-    // 使用 Date.now() 可能在同一毫秒内，所以我们手动设置一个稍后的时间
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(Date.now() + 10));
+    // 使用初始时间戳作为参考，设置10ms后的时间
+    vi.setSystemTime(new Date(initialUpdatedAt + 10));
 
     manager.addUserMessage(context.conversationId, "Hello");
 
