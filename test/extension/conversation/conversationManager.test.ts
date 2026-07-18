@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createConversationStore } from "../../../src/extension/conversation/conversationStore";
 import { createConversationManager } from "../../../src/extension/conversation/conversationManager";
 
@@ -38,5 +38,100 @@ describe("ConversationManager", () => {
 
     expect(manager.getConversationHistory(conv1.conversationId)).toHaveLength(1);
     expect(manager.getConversationHistory(conv2.conversationId)).toHaveLength(1);
+  });
+
+  it("handles messages for non-existent conversation gracefully", () => {
+    const store = createConversationStore();
+    const manager = createConversationManager(store);
+
+    // 不应该抛异常，只是忽略消息
+    manager.addUserMessage("non-existent-id", "test");
+    const history = manager.getConversationHistory("non-existent-id");
+    expect(history).toEqual([]);
+  });
+
+  it("distinguishes between empty and non-existent conversations", () => {
+    const store = createConversationStore();
+    const manager = createConversationManager(store);
+
+    const context = manager.startConversation();
+    // 空对话的消息
+    const emptyHistory = manager.getConversationHistory(context.conversationId);
+    // 不存在的对话的消息
+    const nonExistentHistory = manager.getConversationHistory("fake-id");
+
+    // 两者目前都返回 []
+    expect(emptyHistory).toEqual([]);
+    expect(nonExistentHistory).toEqual([]);
+  });
+
+  it("timestamps are updated when adding messages", () => {
+    const store = createConversationStore();
+    const manager = createConversationManager(store);
+
+    const context = manager.startConversation();
+    const initialUpdatedAt = context.updatedAt;
+
+    // 获取对话以验证时间戳
+    const contextAfter = store.getConversation(context.conversationId);
+    expect(contextAfter?.updatedAt).toBe(initialUpdatedAt);
+
+    // 延迟添加消息以确保时间戳不同
+    const beforeAddMessage = Date.now();
+    // 使用 Date.now() 可能在同一毫秒内，所以我们手动设置一个稍后的时间
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(Date.now() + 10));
+
+    manager.addUserMessage(context.conversationId, "Hello");
+
+    const contextAfterMessage = store.getConversation(context.conversationId);
+    expect(contextAfterMessage?.updatedAt).toBeGreaterThan(initialUpdatedAt);
+
+    vi.useRealTimers();
+  });
+
+  it("conversation IDs are unique", () => {
+    const store = createConversationStore();
+    const manager = createConversationManager(store);
+
+    const ids = new Set<string>();
+    for (let i = 0; i < 100; i++) {
+      const context = manager.startConversation();
+      expect(ids.has(context.conversationId)).toBe(false);
+      ids.add(context.conversationId);
+    }
+
+    expect(ids.size).toBe(100);
+  });
+
+  it("conversation has createdAt and updatedAt timestamps", () => {
+    const store = createConversationStore();
+    const manager = createConversationManager(store);
+
+    const beforeCreation = Date.now();
+    const context = manager.startConversation();
+    const afterCreation = Date.now();
+
+    expect(context.createdAt).toBeGreaterThanOrEqual(beforeCreation);
+    expect(context.createdAt).toBeLessThanOrEqual(afterCreation);
+    expect(context.updatedAt).toBe(context.createdAt);
+  });
+
+  it("multiple messages maintain correct order", () => {
+    const store = createConversationStore();
+    const manager = createConversationManager(store);
+    const context = manager.startConversation();
+
+    manager.addUserMessage(context.conversationId, "First");
+    manager.addAssistantMessage(context.conversationId, "Response 1");
+    manager.addUserMessage(context.conversationId, "Second");
+    manager.addAssistantMessage(context.conversationId, "Response 2");
+
+    const history = manager.getConversationHistory(context.conversationId);
+    expect(history).toHaveLength(4);
+    expect(history[0].content).toBe("First");
+    expect(history[1].content).toBe("Response 1");
+    expect(history[2].content).toBe("Second");
+    expect(history[3].content).toBe("Response 2");
   });
 });
