@@ -238,7 +238,7 @@ describe("createVsCodeWorkspaceIntelligence", () => {
 
     await vi.waitFor(() => {
       expect(client.initialize).toHaveBeenCalledWith(
-        join(workspaceRoot, ".codegraph", "code-index.sqlite"),
+        join(workspaceRoot, ".loopagent", "code-index.sqlite"),
         expect.any(String),
       );
     });
@@ -252,7 +252,7 @@ describe("createVsCodeWorkspaceIntelligence", () => {
     expect(client.dispose).toHaveBeenCalledTimes(1);
   });
 
-  it("writes a .gitignore into the .codegraph index directory", async () => {
+  it("writes a .gitignore into the .loopagent index directory", async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), "loopagent-vscode-workspace-"));
     temporaryDirectories.push(workspaceRoot);
     const files = new Map<string, string>();
@@ -264,7 +264,7 @@ describe("createVsCodeWorkspaceIntelligence", () => {
 
     await vi.waitFor(() => expect(client.initialize).toHaveBeenCalled());
 
-    const gitignoreContent = readFileSync(join(workspaceRoot, ".codegraph", ".gitignore"), "utf8");
+    const gitignoreContent = readFileSync(join(workspaceRoot, ".loopagent", ".gitignore"), "utf8");
     expect(gitignoreContent).toContain("*.sqlite");
 
     await intelligence.dispose();

@@ -1,17 +1,17 @@
 # LoopAgent VSCode Extension — Development Guidelines
 
-## 代码搜索索引（`.codegraph/` 目录）
+## 代码搜索索引（`.loopagent/` 目录）
 
 ### 目录结构与内容
 
-`.codegraph/` 是项目级的本地数据目录，**不提交到 git**。包含：
+`.loopagent/` 是项目级的本地数据目录，**不提交到 git**。包含：
 
 - `code-index.sqlite` — SQLite 数据库，存储 FTS5 全文搜索索引和代码元数据
 - `daemon.pid` — 索引守护进程的进程号（内部使用）
 - `daemon.log` — 索引构建日志
 - `.gitignore` — 自动生成，忽略目录内所有文件（除了此 `.gitignore` 本身）
 
-### 为何忽略 `.codegraph/`
+### 为何忽略 `.loopagent/`
 
 1. **机器特有性**：SQLite 数据库是针对本机工作区的快照，多机共享会导致数据不一致
 2. **大小**：大型工作区的索引数据库可达数百 MB，不适合版本控制
@@ -19,10 +19,10 @@
 
 ### 索引重建
 
-`.codegraph/` 目录损坏或过期时，直接删除：
+`.loopagent/` 目录损坏或过期时，直接删除：
 
 ```bash
-rm -rf .codegraph/
+rm -rf .loopagent/
 ```
 
 扩展重启或下次 `buildCodeIntelligencePrompt` 调用时会自动重建。无需手动操作。

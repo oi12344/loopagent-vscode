@@ -234,11 +234,11 @@ export function createVsCodeWorkspaceIntelligence(
       throw new Error("No workspace folders found");
     }
 
-    const indexDirectory = join(workspaceRoots[0], ".codegraph");
+    const indexDirectory = join(workspaceRoots[0], ".loopagent");
     await mkdir(indexDirectory, { recursive: true });
 
-    // Ensure .gitignore exists in .codegraph to exclude from git
-    await initCodeGraphDirectory(indexDirectory);
+    // Ensure .gitignore exists in .loopagent to exclude from git
+    await initLoopAgentDirectory(indexDirectory);
 
     persistentClient = createIndexClient?.() ?? createDefaultIndexClient();
     const ownerId = randomUUID();
@@ -264,9 +264,9 @@ export function createVsCodeWorkspaceIntelligence(
     persistentIndexStart = persistentIndexer.start().catch(recordPersistentError);
   }
 
-  async function initCodeGraphDirectory(indexDirectory: string): Promise<void> {
+  async function initLoopAgentDirectory(indexDirectory: string): Promise<void> {
     const gitignorePath = join(indexDirectory, ".gitignore");
-    const gitignoreContent = `# Code graph index - auto-generated
+    const gitignoreContent = `# LoopAgent persistent index - auto-generated
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

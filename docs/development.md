@@ -26,6 +26,8 @@
 - `docs/superpowers/specs/YYYY-MM-DD-short-topic-design.md`
 - `docs/superpowers/plans/YYYY-MM-DD-short-topic-plan.md`
 
+新增或重命名文档后，同步更新 [docs/superpowers/INDEX.md](superpowers/INDEX.md)（规划新功能前的检索入口，CodeGraph 不索引 markdown，靠这份清单代替全目录 grep）。
+
 功能文档至少应包含：
 
 - 目标
