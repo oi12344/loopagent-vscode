@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createPersistentConversationStore } from "../../../src/extension/conversation/persistentConversationStore";
@@ -84,6 +85,31 @@ describe("createPersistentConversationStore", () => {
     const directory = mkdtempSync(join(tmpdir(), "loopagent-conversation-"));
     directories.push(directory);
     const databasePath = join(directory, "nested", ".loopagent", "conversation.sqlite");
+
+    const store = createPersistentConversationStore(databasePath);
+    openStores.push(store);
+
+    expect(store.loadActiveConversation()).toBeUndefined();
+  });
+
+  it("fails safe when the persisted messages_json is corrupted", () => {
+    const directory = mkdtempSync(join(tmpdir(), "loopagent-conversation-"));
+    directories.push(directory);
+    const databasePath = join(directory, "conversation.sqlite");
+
+    const raw = new DatabaseSync(databasePath);
+    raw.exec(`
+      CREATE TABLE conversation (
+        conversation_id TEXT PRIMARY KEY,
+        messages_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
+    raw.prepare(
+      "INSERT INTO conversation (conversation_id, messages_json, created_at, updated_at) VALUES (?, ?, ?, ?)",
+    ).run("corrupt-conv", "{not valid json", Date.now(), Date.now());
+    raw.close();
 
     const store = createPersistentConversationStore(databasePath);
     openStores.push(store);

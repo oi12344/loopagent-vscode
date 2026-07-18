@@ -43,12 +43,16 @@ export function createPersistentConversationStore(
       .prepare("SELECT conversation_id, messages_json, created_at, updated_at FROM conversation LIMIT 1")
       .get() as ConversationRow | undefined;
     if (!row) return undefined;
-    return {
-      conversationId: row.conversation_id,
-      messages: JSON.parse(row.messages_json) as ChatMessage[],
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
+    try {
+      return {
+        conversationId: row.conversation_id,
+        messages: JSON.parse(row.messages_json) as ChatMessage[],
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
+    } catch {
+      return undefined;
+    }
   }
 
   function generateConversationId(): string {
