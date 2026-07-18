@@ -50,6 +50,10 @@ export type SearchNodeResult = {
   nodeName: string;
   filePath: string;
   score: number;
+  qualifiedName: string;
+  kind: string;
+  startLine: number;
+  endLine: number;
 };
 
 type JobRow = {
@@ -362,7 +366,7 @@ export class SqliteIndexStore {
     });
   }
 
-  searchNodes(query: string, limit: number = 12): Array<{ nodeId: string; nodeName: string; filePath: string; score: number }> {
+  searchNodes(query: string, limit: number = 12): SearchNodeResult[] {
     if (!Number.isInteger(limit) || limit <= 0) {
       throw new Error("Search limit must be a positive integer");
     }
@@ -373,14 +377,19 @@ export class SqliteIndexStore {
     // Build FTS MATCH expression: "token1" OR "token2" OR ...
     const matchExpr = tokens.map((token) => `"${token}"`).join(" OR ");
 
-    // Query with BM25 scoring using the FTS table directly
+    // Query with BM25 scoring using the FTS table, joined with nodes for jump-to-definition detail
     const rows = this.database.prepare(`
       SELECT
-        node_id,
-        node_name,
-        file_path,
+        search_index_fts.node_id,
+        search_index_fts.node_name,
+        search_index_fts.file_path,
+        nodes.qualified_name,
+        nodes.kind,
+        nodes.start_line,
+        nodes.end_line,
         bm25(search_index_fts) * -1 as score
       FROM search_index_fts
+      JOIN nodes ON nodes.id = search_index_fts.node_id
       WHERE search_index_fts MATCH ?
       ORDER BY bm25(search_index_fts)
       LIMIT ?
@@ -388,6 +397,10 @@ export class SqliteIndexStore {
       node_id: string;
       node_name: string;
       file_path: string;
+      qualified_name: string;
+      kind: string;
+      start_line: number;
+      end_line: number;
       score: number;
     }>;
 
@@ -396,6 +409,10 @@ export class SqliteIndexStore {
       nodeName: row.node_name,
       filePath: row.file_path,
       score: row.score,
+      qualifiedName: row.qualified_name,
+      kind: row.kind,
+      startLine: row.start_line,
+      endLine: row.end_line,
     }));
   }
 

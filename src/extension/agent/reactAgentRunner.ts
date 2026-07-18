@@ -4,9 +4,6 @@ import type { ReactAgentMessage, ReactAgentTool, ReactAgentToolRequest, ReactMod
 import { createToolRegistry } from "./toolRegistry";
 import { createDefaultReactTools } from "./tools";
 
-const APPLY_EDIT_TOOL_CHOICE = { type: "function", function: { name: "applyEdit" } } as const;
-const READ_FILE_TOOL_CHOICE = { type: "function", function: { name: "readFile" } } as const;
-
 export type CreateReactAgentRunnerOptions = {
   modelTurn: ReactModelTurn;
   providerName?: string;
@@ -26,12 +23,10 @@ export function createReactAgentRunner({
 }: CreateReactAgentRunnerOptions): AgentRunner {
   const toolRegistry = createToolRegistry(tools);
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
-  const canApplyEdits = toolsByName.has("applyEdit");
-  const canReadFiles = toolsByName.has("readFile");
 
   return {
     async *run(request) {
-      const { runId, task, mode, signal } = request;
+      const { runId, task, signal } = request;
       if (signal.aborted) {
         return;
       }
@@ -49,8 +44,6 @@ export function createReactAgentRunner({
 
         messages.push({ role: "user", content: task });
         const initialMessages = [...messages];
-        const editMode = mode === "edit" && canApplyEdits;
-        let fileReadForEdit = !canReadFiles;
         let editReviewRequested = false;
         let lastEditObservation = "";
 
@@ -62,16 +55,7 @@ export function createReactAgentRunner({
 
           yield { type: "assistantThinking", runId, message: `Planning step ${step}` } satisfies HostToWebviewMessage;
 
-          const toolChoice =
-            editMode && !editReviewRequested
-              ? !fileReadForEdit && step < maxSteps
-                ? READ_FILE_TOOL_CHOICE
-                : step >= maxSteps
-                ? APPLY_EDIT_TOOL_CHOICE
-                : "required"
-              : isFinalAnswerStep || editReviewRequested
-                ? "none"
-                : "auto";
+          const toolChoice = isFinalAnswerStep || editReviewRequested ? "none" : "auto";
           const turnMessages = editReviewRequested
             ? [
                 ...initialMessages,
@@ -96,15 +80,12 @@ export function createReactAgentRunner({
           }
 
           if (result.kind === "final") {
-            if (editMode && !editReviewRequested) {
-              throw new Error("Edit mode cannot finish before applyEdit opens the review interface");
-            }
             yield { type: "assistantDelta", runId, content: result.content } satisfies HostToWebviewMessage;
             yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
             return;
           }
 
-          if (isFinalAnswerStep && !(editMode && !editReviewRequested)) {
+          if (isFinalAnswerStep) {
             throw new Error("Model requested tools during the final answer step");
           }
 
@@ -171,8 +152,6 @@ export function createReactAgentRunner({
               } else if (request.name === "applyEdit") {
                 editReviewRequested = true;
                 lastEditObservation = content;
-              } else if (request.name === "readFile") {
-                fileReadForEdit = true;
               }
 
               messages.push({
@@ -185,13 +164,7 @@ export function createReactAgentRunner({
           }
         }
 
-        if (editMode && editReviewRequested) {
-          yield { type: "assistantDelta", runId, content: lastEditObservation } satisfies HostToWebviewMessage;
-          yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
-          return;
-        }
-
-        throw new Error(editMode ? lastEditObservation || "Edit review was not opened" : "Model did not produce a final answer");
+        throw new Error("Model did not produce a final answer");
 
       } catch (error) {
         if (signal.aborted) {

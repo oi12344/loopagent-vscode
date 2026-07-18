@@ -1,6 +1,8 @@
 # 项目事实与任务经验记忆设计
 
-> 状态：设计方向已确认；本规格经用户审阅后才进入实施计划。
+> 状态：规格已审阅确认；实施计划已编写，待执行。
+>
+> 实施计划：`docs/superpowers/plans/2026-07-15-agent-memory-plan.md`
 >
 > 关联模块：`src/extension/model/providerRegistry.ts`、`src/extension/agent/reactAgentRunner.ts`、
 > `src/extension/intelligence/storage/`

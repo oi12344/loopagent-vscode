@@ -74,21 +74,27 @@ function parseChanges(input: unknown): EditOperation[] {
 }
 
 function parseChange(value: unknown): EditOperation {
+  console.log(`[applyEditTool] parseChange: value=${JSON.stringify(value)}`);
   if (!isRecord(value) || typeof value.kind !== "string") {
     throw new Error("Invalid applyEdit operation");
   }
   if (value.kind === "replace" && hasOnlyStrings(value, ["kind", "path", "oldText", "newText"])) {
+    console.log(`[applyEditTool] parseChange: parsed replace operation, path=${value.path}`);
     return { kind: "replace", path: value.path, oldText: value.oldText, newText: value.newText };
   }
   if (value.kind === "create" && hasOnlyStrings(value, ["kind", "path", "content"])) {
+    console.log(`[applyEditTool] parseChange: parsed create operation, path=${value.path}`);
     return { kind: "create", path: value.path, content: value.content };
   }
   if (value.kind === "rename" && hasOnlyStrings(value, ["kind", "from", "to"])) {
+    console.log(`[applyEditTool] parseChange: parsed rename operation, from=${value.from}, to=${value.to}`);
     return { kind: "rename", from: value.from, to: value.to };
   }
   if (value.kind === "delete" && hasOnlyStrings(value, ["kind", "path"])) {
+    console.log(`[applyEditTool] parseChange: parsed delete operation, path=${value.path}`);
     return { kind: "delete", path: value.path };
   }
+  console.log(`[applyEditTool] parseChange: invalid operation, kind=${value.kind}`);
   throw new Error("Invalid applyEdit operation");
 }
 

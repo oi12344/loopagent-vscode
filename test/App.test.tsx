@@ -112,6 +112,26 @@ describe("LoopAgent webview app", () => {
     );
   });
 
+  it("keeps Edit selected after completing an Edit-mode run", async () => {
+    const user = userEvent.setup();
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    render(<App vscodeApi={{ postMessage }} />);
+
+    await user.type(screen.getByLabelText("Message"), "Add logging");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    postHostMessage({ type: "runStarted", runId: "run-1", task: "Add logging" });
+    postHostMessage({ type: "runFinished", runId: "run-1" });
+
+    expect(screen.getByRole("button", { name: "Edit" })).toHaveAttribute("aria-pressed", "true");
+
+    await user.type(screen.getByLabelText("Message"), "What does this method do?");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "startTask", task: "What does this method do?", mode: "edit" }),
+    );
+  });
+
   it("renders assistant process and streamed answer", async () => {
     const user = userEvent.setup();
     const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();

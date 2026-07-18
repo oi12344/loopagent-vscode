@@ -82,10 +82,12 @@ npx vitest run test/App.test.tsx
 
 更新 `package.json` 脚本：
 
-- `compile`: `node esbuild.js`
-- `watch`: `node esbuild.js --watch`
-- `test`: `vitest run`
-- `typecheck`: `tsc --noEmit -p ./`
+| 脚本        | 命令                    |
+| ----------- | ----------------------- |
+| `compile`   | `node esbuild.js`       |
+| `watch`     | `node esbuild.js --watch` |
+| `test`      | `vitest run`            |
+| `typecheck` | `tsc --noEmit -p ./`    |
 
 ### 6. 验证
 
@@ -99,9 +101,11 @@ npm run compile
 
 验证结果：
 
-- `test/App.test.tsx` 通过，1 个测试通过。
-- `npm run typecheck` 通过。
-- `npm run compile` 通过。
+| 命令                            | 结果              |
+| ------------------------------- | ----------------- |
+| `npm test -- test/App.test.tsx` | 通过（1 个测试）  |
+| `npm run typecheck`             | 通过              |
+| `npm run compile`               | 通过              |
 
 ## 清理记录
 

@@ -26,7 +26,9 @@
 - test/App.test.tsx：建议任务提交和完成后步骤折叠回归测试。
 - docs/superpowers/plans/2026-07-17-code-first-workbench-plan.md：记录实际验证结果。
 
-### Task 1：锁定并实现任务建议与执行状态
+---
+
+## Task 1：锁定并实现任务建议与执行状态
 
 **Files：**
 
@@ -187,7 +189,9 @@ git commit -m "feat(ui): add code-first task flow"
 
 预期：test/App.test.tsx 全部通过，建议任务使用既有消息契约发送，步骤在完成后折叠，流式回答和失败显示未回归。
 
-### Task 2：完成紧凑的主题感知布局
+---
+
+## Task 2：完成紧凑的主题感知布局
 
 **Files：**
 
@@ -266,7 +270,9 @@ git commit -m "style(ui): refine agent workbench"
 
 在启动的唯一 Extension Development Host 中打开 Activity Bar 的 LoopAgent 视图，检查两项建议可点击、提交后控件禁用、完成后步骤折叠、缩窄侧栏时顶部和输入区不重叠。检查完成后关闭调试窗口，再执行提交。
 
-### Task 3：集中验证、清理与交付记录
+---
+
+## Task 3：集中验证、清理与交付记录
 
 **Files：**
 
@@ -297,6 +303,8 @@ rg -n -i "console\.log|TODO|TBD" src/webview test/App.test.tsx
 git add -- docs/superpowers/plans/2026-07-17-code-first-workbench-plan.md
 git commit -m "docs(ui): record workbench verification"
 ~~~
+
+---
 
 ## 实施结果
 

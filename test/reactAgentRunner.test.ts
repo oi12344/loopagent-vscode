@@ -438,7 +438,7 @@ describe("createReactAgentRunner", () => {
     expect(order).toEqual(["read", "edit"]);
   });
 
-  it("requires readFile and applyEdit before finishing an Edit-mode task", async () => {
+  it("allows an Edit-mode task to open a review when the model chooses applyEdit", async () => {
     const choices: unknown[] = [];
     const order: string[] = [];
     let finalMessages: unknown;
@@ -503,8 +503,8 @@ describe("createReactAgentRunner", () => {
     const messages = await collectRunnerMessagesInMode(runner, "edit", "每个方法添加日志");
 
     expect(choices).toEqual([
-      { type: "function", function: { name: "readFile" } },
-      { type: "function", function: { name: "applyEdit" } },
+      "auto",
+      "auto",
       "none",
     ]);
     expect(order).toEqual(["read", "review"]);
@@ -517,6 +517,30 @@ describe("createReactAgentRunner", () => {
       },
     ]);
     expect(messages).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "Changes were applied." });
+  });
+
+  it("returns a direct answer in Edit mode without opening a review", async () => {
+    const choices: unknown[] = [];
+    const runner = createReactAgentRunner({
+      tools: [
+        { name: "readFile", description: "Read a file.", inputSchema: {}, invoke: async () => "unused" },
+        { name: "applyEdit", description: "Preview an edit.", inputSchema: {}, invoke: async () => "unused" },
+      ],
+      modelTurn: async ({ toolChoice }) => {
+        choices.push(toolChoice);
+        return { kind: "final", content: "ensure_admin_user ensures an administrator account exists." };
+      },
+    });
+
+    const messages = await collectRunnerMessagesInMode(runner, "edit", "What does ensure_admin_user do?");
+
+    expect(choices).toEqual(["auto"]);
+    expect(messages).toContainEqual({
+      type: "assistantDelta",
+      runId: "run-1",
+      content: "ensure_admin_user ensures an administrator account exists.",
+    });
+    expect(messages).toContainEqual({ type: "runFinished", runId: "run-1" });
   });
 
   it("returns known tool errors to the model and retries applyEdit", async () => {
@@ -574,17 +598,17 @@ describe("createReactAgentRunner", () => {
     const messages = await collectRunnerMessagesInMode(runner, "edit", "修改文件");
 
     expect(choices).toEqual([
-      { type: "function", function: { name: "readFile" } },
-      "required",
-      "required",
-      { type: "function", function: { name: "applyEdit" } },
+      "auto",
+      "auto",
+      "auto",
+      "auto",
       "none",
     ]);
     expect(applyAttempts).toBe(2);
     expect(messages.some((message) => message.type === "runFailed")).toBe(false);
   });
 
-  it("reports the last applyEdit error when review retries are exhausted", async () => {
+  it("returns a direct answer after an unsuccessful edit attempt", async () => {
     let turn = 0;
     const runner = createReactAgentRunner({
       maxSteps: 2,
@@ -597,15 +621,15 @@ describe("createReactAgentRunner", () => {
       modelTurn: async () => {
         turn += 1;
         return turn === 1
-          ? toolRequest("read-1", "readFile", { path: "src/example.ts" })
-          : toolRequest(`edit-${turn}`, "applyEdit", { changes: [] });
+          ? toolRequest("edit-1", "applyEdit", { changes: [] })
+          : { kind: "final", content: "The edit could not be applied because the target text no longer matches." };
       },
     });
 
     await expect(collectRunnerMessagesInMode(runner, "edit", "修改文件")).resolves.toContainEqual({
-      type: "runFailed",
+      type: "assistantDelta",
       runId: "run-1",
-      message: "Tool error: oldText must match exactly once",
+      content: "The edit could not be applied because the target text no longer matches.",
     });
   });
 

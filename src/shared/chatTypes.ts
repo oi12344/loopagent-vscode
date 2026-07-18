@@ -15,7 +15,13 @@ export type ConversationTurn =
       id: string;
       conversationId: string;
       userMessage: string;
-      status: "pending" | "processing";
+      status: "pending";
+    }
+  | {
+      id: string;
+      conversationId: string;
+      userMessage: string;
+      status: "processing";
     }
   | {
       id: string;

@@ -300,7 +300,27 @@ describe("SqliteIndexStore FTS Search Indexing", () => {
         expect(results[0]).toHaveProperty("nodeName");
         expect(results[0]).toHaveProperty("filePath");
         expect(results[0]).toHaveProperty("score");
+        expect(results[0]).toHaveProperty("qualifiedName");
+        expect(results[0]).toHaveProperty("kind");
+        expect(results[0]).toHaveProperty("startLine");
+        expect(results[0]).toHaveProperty("endLine");
       }
+    });
+
+    it("includes qualified name, kind, and line range for jump-to-definition", () => {
+      const { store } = createFixture();
+      const snap = createTestSnapshot("src/jump.ts", 1);
+
+      store.applyFileSnapshot("owner-a", snap);
+      store.indexNodeSearchTokens("owner-a", snap);
+
+      const results = store.searchNodes("function0", 10);
+
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0].qualifiedName).toBe("src/jump.ts::function0");
+      expect(results[0].kind).toBe("function");
+      expect(results[0].startLine).toBe(2);
+      expect(results[0].endLine).toBe(5);
     });
   });
 

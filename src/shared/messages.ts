@@ -1,15 +1,22 @@
+/** AI 模型提供商标识 */
 export type ModelProviderId = "fake" | "deepseek";
 
+/** 模型思维模式 */
 export type ModelThinkingMode = "disabled" | "enabled";
 
+/** 任务执行模式 */
 export type TaskMode = "ask" | "edit";
 
+/** 模型运行配置 */
 export type RunModelSelection = {
   provider: ModelProviderId;
   model: string;
   thinking: ModelThinkingMode;
 };
 
+/**
+ * WebView 发送给主程序的消息
+ */
 export type WebviewToHostMessage =
   | {
       type: "startTask";

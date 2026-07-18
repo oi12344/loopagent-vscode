@@ -11,6 +11,7 @@ import {
 } from "../../src/extension/intelligence/indexing/workspaceIndexer";
 import { openIndexDatabase, type OpenIndexDatabaseResult } from "../../src/extension/intelligence/storage/indexDatabase";
 import { SqliteIndexStore } from "../../src/extension/intelligence/storage/sqliteIndexStore";
+import { createAsyncSqliteStore } from "./testSupport/asyncSqliteStore";
 
 const OWNER_ID = "owner-a";
 const FILE_URI = "file:///workspace/src/sample.ts";
@@ -30,7 +31,7 @@ describe("WorkspaceIndexer", () => {
     databases.push(opened);
     const sqliteStore = new SqliteIndexStore(opened.database, { now: () => 1_000 });
     sqliteStore.acquireWriterLease(OWNER_ID, 1_000_000);
-    const store = createAsyncStore(sqliteStore);
+    const store = createAsyncSqliteStore(sqliteStore, OWNER_ID);
     const file = source('export function run() { return "ready"; }', 1_000);
     const parserRuntime = {
       parse: vi.fn(async (filePath: string, languageId: string, text: string) => ({
@@ -86,7 +87,7 @@ describe("WorkspaceIndexer", () => {
     databases.push(opened);
     const sqliteStore = new SqliteIndexStore(opened.database, { now: () => 1_000 });
     sqliteStore.acquireWriterLease(OWNER_ID, 1_000_000);
-    const store = createAsyncStore(sqliteStore);
+    const store = createAsyncSqliteStore(sqliteStore, OWNER_ID);
     const files = new Map([[FILE_URI, source("export function run() {}", 1_000)]]);
     const parserRuntime = {
       parse: vi.fn(async (filePath: string, languageId: string, text: string) => ({
@@ -154,36 +155,6 @@ function source(text: string, mtime: number): { ref: WorkspaceFileRef; text: str
   };
 }
 
-function createAsyncStore(store: SqliteIndexStore) {
-  return {
-    getStatus: async () => ({
-      state: "ready" as const,
-      role: "writer" as const,
-      schemaVersion: 1,
-      capabilities: { sqlite: true, wal: true, foreignKeys: true, fts5: true },
-    }),
-    listIndexedFiles: async () => store.listIndexedFiles(),
-    enqueueChanges: async (changes: Parameters<SqliteIndexStore["enqueueChanges"]>[1]) => {
-      store.enqueueChanges(OWNER_ID, changes);
-    },
-    claimNextJob: async (ownerId: string) => store.claimNextJob(ownerId),
-    applyFileSnapshot: async (snapshot: Parameters<SqliteIndexStore["applyFileSnapshot"]>[1]) => {
-      store.applyFileSnapshot(OWNER_ID, snapshot);
-    },
-    updateFileMetadata: async (update: Parameters<SqliteIndexStore["updateFileMetadata"]>[1]) => {
-      store.updateFileMetadata(OWNER_ID, update);
-    },
-    removeFile: async (fileUri: string) => {
-      store.removeFile(OWNER_ID, fileUri);
-    },
-    completeJob: async (claim: Parameters<SqliteIndexStore["completeJob"]>[1]) => {
-      store.completeJob(OWNER_ID, claim);
-    },
-    failJob: async (claim: Parameters<SqliteIndexStore["failJob"]>[1], error: string) => {
-      store.failJob(OWNER_ID, claim, error);
-    },
-  };
-}
 
 function cardText(opened: OpenIndexDatabaseResult): string {
   return (opened.database.prepare("SELECT source_text FROM chunks ORDER BY id").all() as Array<{ source_text: string }>)

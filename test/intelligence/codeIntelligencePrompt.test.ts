@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { CodeIntelligenceResult } from "../../src/extension/intelligence/context/codeIntelligenceContext";
+import type { SearchNodeResult } from "../../src/extension/intelligence/storage/sqliteIndexStore";
 import {
   renderCodeIntelligencePrompt,
   renderPersistedCodeIntelligencePrompt,
@@ -94,7 +95,7 @@ describe("renderCodeIntelligencePrompt", () => {
   });
 
   it("caps persisted chunk text at the existing context budget", () => {
-    const prompt = renderPersistedCodeIntelligencePrompt("large", [
+    const prompt = renderPersistedCodeIntelligencePrompt("large", [], [
       { filePath: "src/large.ts", startLine: 1, endLine: 1, sourceText: "x".repeat(8_001) },
     ]);
 
@@ -102,12 +103,36 @@ describe("renderCodeIntelligencePrompt", () => {
   });
 
   it("counts escaped fence characters against the persisted context budget", () => {
-    const prompt = renderPersistedCodeIntelligencePrompt("fences", [
+    const prompt = renderPersistedCodeIntelligencePrompt("fences", [], [
       { filePath: "src/fences.ts", startLine: 1, endLine: 1, sourceText: "```".repeat(2_001) },
     ]);
     const bodyStart = prompt.indexOf("```typescript\n") + "```typescript\n".length;
     const bodyEnd = prompt.indexOf("\n```\n", bodyStart);
 
     expect(prompt.slice(bodyStart, bodyEnd)).toHaveLength(6_000);
+  });
+
+  it("renders exact symbol matches ahead of source snippets", () => {
+    const nodes: SearchNodeResult[] = [
+      {
+        nodeId: "n1",
+        nodeName: "createConfiguredAgentRunner",
+        filePath: "src/providerRegistry.ts",
+        score: 3.2,
+        qualifiedName: "providerRegistry::createConfiguredAgentRunner",
+        kind: "function",
+        startLine: 10,
+        endLine: 20,
+      },
+    ];
+
+    const prompt = renderPersistedCodeIntelligencePrompt("configured runner", nodes, []);
+
+    expect(prompt).toContain("### 精确符号匹配");
+    expect(prompt).toContain("function providerRegistry::createConfiguredAgentRunner (src/providerRegistry.ts:10-20)");
+  });
+
+  it("returns an empty prompt when there are no symbol matches or snippets", () => {
+    expect(renderPersistedCodeIntelligencePrompt("nothing", [], [])).toBe("");
   });
 });

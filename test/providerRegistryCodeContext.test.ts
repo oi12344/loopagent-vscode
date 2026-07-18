@@ -206,6 +206,13 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
       .map((message) => message.content)
       .join("\n");
     expect(systemPrompt).toContain("Before editing, read the relevant file content with readFile.");
+    expect(systemPrompt).toContain(
+      "For non-local changes, public behavior changes, or unclear conventions, first use exploreCode to find the closest existing implementation.",
+    );
+    expect(systemPrompt).toContain(
+      "Read that implementation, its direct callers, relevant types or data definitions, and tests before applying changes.",
+    );
+    expect(systemPrompt).toContain("Skip this exploration for clearly scoped single-file changes.");
     expect(systemPrompt).toContain("Propose all workspace changes only through applyEdit.");
     expect(systemPrompt).toContain("After reading the relevant files, call applyEdit immediately with the complete change proposal.");
     expect(systemPrompt).toContain(

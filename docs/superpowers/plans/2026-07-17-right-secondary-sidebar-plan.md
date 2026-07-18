@@ -17,82 +17,86 @@
 
 ---
 
-### Task 1: 将 LoopAgent 注册到右侧副侧边栏
+## Task 1: 将 LoopAgent 注册到右侧副侧边栏
 
 **文件：**
+
 - 修改：`test/packageManifest.test.ts:22-44`
 - 修改：`package.json:39-47`
 - 修改：`docs/superpowers/plans/2026-07-17-right-secondary-sidebar-plan.md`
 
 **接口：**
+
 - 消费：现有 manifest 的 `contributes.viewsContainers`。
 - 产出：`loopagent` 容器在 `secondarySidebar` 注册，`loopagent.chat` 视图和 `loopagent.focusChat` 命令保持不变。
 
+**步骤：**
+
 - [x] **步骤 1：写入失败的 manifest 契约测试**
 
-将 `test/packageManifest.test.ts` 中的断言替换为：
+  将 `test/packageManifest.test.ts` 中的断言替换为：
 
-```ts
-expect(manifest.contributes.viewsContainers.secondarySidebar).toContainEqual({
-  id: "loopagent",
-  title: "LoopAgent",
-  icon: "resources/loopagent.svg",
-});
-expect(manifest.contributes.viewsContainers.activitybar).toBeUndefined();
-```
+  ```ts
+  expect(manifest.contributes.viewsContainers.secondarySidebar).toContainEqual({
+    id: "loopagent",
+    title: "LoopAgent",
+    icon: "resources/loopagent.svg",
+  });
+  expect(manifest.contributes.viewsContainers.activitybar).toBeUndefined();
+  ```
 
 - [x] **步骤 2：运行测试并确认失败**
 
-运行：`npx vitest run test/packageManifest.test.ts`
+  运行：`npx vitest run test/packageManifest.test.ts`
 
-预期：失败，因为当前 manifest 只在 `activitybar` 声明 `loopagent`。
+  预期：失败，因为当前 manifest 只在 `activitybar` 声明 `loopagent`。
 
 - [x] **步骤 3：实施最小 manifest 变更**
 
-将 `package.json` 中的容器键从：
+  将 `package.json` 中的容器键从：
 
-```json
-"activitybar": [
-```
+  ```json
+  "activitybar": [
+  ```
 
-改为：
+  改为：
 
-```json
-"secondarySidebar": [
-```
+  ```json
+  "secondarySidebar": [
+  ```
 
-保留数组内的 `loopagent` 对象和 `contributes.views.loopagent` 不变。
+  保留数组内的 `loopagent` 对象和 `contributes.views.loopagent` 不变。
 
 - [x] **步骤 4：运行受影响验证**
 
-运行：`npx vitest run test/packageManifest.test.ts`
+  运行：`npx vitest run test/packageManifest.test.ts`
 
-预期：所有 manifest 测试通过。
+  预期：所有 manifest 测试通过。
 
 - [x] **步骤 5：集中验证与安装**
 
-依次运行：
+  依次运行：
 
-```powershell
-npm test
-npm run typecheck
-npm run compile
-git diff --check
-npm run package:vsix
-code.cmd --install-extension .artifacts\\loopagent-vscode-0.0.1.vsix --force
-code.cmd --list-extensions --show-versions | Select-String '^local-dev\\.loopagent-vscode@'
-```
+  ```powershell
+  npm test
+  npm run typecheck
+  npm run compile
+  git diff --check
+  npm run package:vsix
+  code.cmd --install-extension .artifacts\loopagent-vscode-0.0.1.vsix --force
+  code.cmd --list-extensions --show-versions | Select-String '^local-dev\.loopagent-vscode@'
+  ```
 
-预期：测试、类型检查、编译和差异检查均成功；CLI 显示 `local-dev.loopagent-vscode@0.0.1`。重载当前 VS Code 窗口后，确认 LoopAgent 位于右侧副侧边栏。
+  预期：测试、类型检查、编译和差异检查均成功；CLI 显示 `local-dev.loopagent-vscode@0.0.1`。重载当前 VS Code 窗口后，确认 LoopAgent 位于右侧副侧边栏。
 
 - [x] **步骤 6：记录结果并提交**
 
-在本计划末尾添加中文实施记录，包含实际命令结果、VSIX 安装结果和视觉验证结果。提交：
+  在本计划末尾添加中文实施记录，包含实际命令结果、VSIX 安装结果和视觉验证结果。提交：
 
-```powershell
-git add package.json test/packageManifest.test.ts docs/superpowers/plans/2026-07-17-right-secondary-sidebar-plan.md
-git commit -m "fix(ui): place chat in right sidebar"
-```
+  ```powershell
+  git add package.json test/packageManifest.test.ts docs/superpowers/plans/2026-07-17-right-secondary-sidebar-plan.md
+  git commit -m "fix(ui): place chat in right sidebar"
+  ```
 
 ## 计划自检
 
