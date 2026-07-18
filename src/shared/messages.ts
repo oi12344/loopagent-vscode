@@ -10,12 +10,20 @@ export type RunModelSelection = {
   thinking: ModelThinkingMode;
 };
 
-export type WebviewToHostMessage = {
-  type: "startTask";
-  task: string;
-  mode?: TaskMode;
-  model?: RunModelSelection;
-};
+export type WebviewToHostMessage =
+  | {
+      type: "startTask";
+      task: string;
+      mode?: TaskMode;
+      model?: RunModelSelection;
+    }
+  | {
+      type: "continueConversation";
+      conversationId: string;
+      userMessage: string;
+      mode?: TaskMode;
+      model?: RunModelSelection;
+    };
 
 export type HostToWebviewMessage =
   | {
@@ -60,4 +68,10 @@ export type HostToWebviewMessage =
       type: "runFailed";
       runId: string;
       message: string;
+    }
+  | {
+      type: "conversationStarted";
+      conversationId: string;
+      runId: string;
+      userMessage: string;
     };

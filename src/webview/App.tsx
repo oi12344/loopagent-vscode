@@ -215,6 +215,12 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           return;
         }
 
+        case "conversationStarted": {
+          setIsRunning(true);
+          setTurns((currentTurns) => attachRunToUserTurn(currentTurns, hostMessage.runId, hostMessage.userMessage, createTurnId));
+          return;
+        }
+
         default: {
           const _exhaustive: never = hostMessage;
           void _exhaustive;
