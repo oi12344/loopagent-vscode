@@ -13,10 +13,7 @@ describe("createConversationStore (in-memory fallback)", () => {
 
     store.clearActiveConversation();
 
-    // 内存实现本来就没有"单活跃对话"的概念（一直支持多个并存的对话，
-    // 见 test/extension/multiTurnConversation.integration.test.ts 的
-    // "maintains separate conversations independently"），clearActiveConversation
-    // 在这里只是满足接口，不做任何删除。
+    // 内存实现支持多个并存对话，clearActiveConversation 是空操作
     expect(store.getConversation(context.conversationId)).toEqual(context);
   });
 });
