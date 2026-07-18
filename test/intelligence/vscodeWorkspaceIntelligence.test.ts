@@ -145,6 +145,50 @@ describe("createVsCodeWorkspaceIntelligence", () => {
     await intelligence.dispose();
   });
 
+  it("builds structured snippets with path and line range from persisted SQLite chunks", async () => {
+    const workspaceRoot = "E:\\work\\repo";
+    const files = new Map([[`${workspaceRoot}\\src\\memoryOnly.ts`, "export function memoryOnly() {}"]]);
+    const client = createFakeIndexClient({
+      chunks: [{ filePath: "src/persisted.ts", startLine: 3, endLine: 3, sourceText: "export function persistedHit() {}" }],
+    });
+    const storagePath = mkdtempSync(join(tmpdir(), "loopagent-vscode-index-"));
+    temporaryDirectories.push(storagePath);
+    const intelligence = createVsCodeWorkspaceIntelligence(
+      createFakeVsCodeWorkspaceApi(workspaceRoot, files),
+      { storageUri: { fsPath: storagePath }, createIndexClient: () => client },
+    );
+
+    await vi.waitFor(() => expect(client.initialize).toHaveBeenCalled());
+    const result = await intelligence.buildCodeIntelligenceResult!("persistedHit");
+
+    expect(client.searchCodeChunks).toHaveBeenCalledWith("persistedHit", 6);
+    expect(result.prompt).toContain("src/persisted.ts");
+    expect(result.snippets).toEqual([
+      { filePath: "src/persisted.ts", startLine: 3, endLine: 3, text: "export function persistedHit() {}" },
+    ]);
+    await intelligence.dispose();
+  });
+
+  it("falls back to memory snippets when the persistent search rejects", async () => {
+    const workspaceRoot = "E:\\work\\repo";
+    const files = new Map([[`${workspaceRoot}\\src\\memoryOnly.ts`, "export function memoryOnly() {}"]]);
+    const client = createFakeIndexClient({ searchError: new Error("search failed") });
+    const storagePath = mkdtempSync(join(tmpdir(), "loopagent-vscode-index-"));
+    temporaryDirectories.push(storagePath);
+    const intelligence = createVsCodeWorkspaceIntelligence(
+      createFakeVsCodeWorkspaceApi(workspaceRoot, files),
+      { storageUri: { fsPath: storagePath }, createIndexClient: () => client },
+    );
+
+    await vi.waitFor(() => expect(client.initialize).toHaveBeenCalled());
+    const result = await intelligence.buildCodeIntelligenceResult!("memoryOnly");
+
+    expect(result.prompt).toContain("memoryOnly");
+    expect(result.snippets.length).toBeGreaterThan(0);
+    expect(result.snippets[0]).toMatchObject({ filePath: "src/memoryOnly.ts" });
+    await intelligence.dispose();
+  });
+
   it("starts persistent indexing on the existing watcher and disposes it once", async () => {
     const workspaceRoot = "E:\\work\\repo";
     const watcher = createFakeWatcher();

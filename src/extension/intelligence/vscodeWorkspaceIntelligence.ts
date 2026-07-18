@@ -1,12 +1,15 @@
 import {
   createWorkspaceIntelligence,
+  type CodeIntelligenceResult,
   type WorkspaceIntelligence,
   type WorkspaceIntelligenceBudgets,
   type WorkspaceSourceFile,
 } from "./workspaceIntelligence";
+import type { CodeIntelligenceSnippet } from "./context/codeIntelligenceContext";
 import { renderPersistedCodeIntelligencePrompt } from "./context/codeIntelligencePrompt";
 import { createWorkspaceIndexer, type WorkspaceFileRef, type WorkspaceIndexer } from "./indexing/workspaceIndexer";
 import type { ParserRuntime } from "./parser/parserRuntime";
+import type { StoredCodeChunk } from "./storage/sqliteIndexStore";
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -173,17 +176,9 @@ export function createVsCodeWorkspaceIntelligence(
 
   return {
     async buildCodeIntelligencePrompt(query) {
-      await persistenceReady;
-      if (persistentClient) {
-        try {
-          const prompt = renderPersistedCodeIntelligencePrompt(query, await persistentClient.searchCodeChunks(query, 6));
-          if (prompt) return prompt;
-        } catch (error) {
-          recordPersistentError(error);
-        }
-      }
-      return memoryIntelligence.buildCodeIntelligencePrompt(query);
+      return (await buildResult(query)).prompt;
     },
+    buildCodeIntelligenceResult: buildResult,
     getStatus: () => memoryIntelligence.getStatus(),
     getDiagnostics: () => [
       ...memoryIntelligence.getDiagnostics(),
@@ -204,6 +199,24 @@ export function createVsCodeWorkspaceIntelligence(
       return disposePromise;
     },
   };
+
+  async function buildResult(query: string): Promise<CodeIntelligenceResult> {
+    await persistenceReady;
+    if (persistentClient) {
+      try {
+        const chunks = await persistentClient.searchCodeChunks(query, 6);
+        const prompt = renderPersistedCodeIntelligencePrompt(query, chunks);
+        if (prompt) {
+          return { prompt, snippets: chunksToSnippets(chunks) };
+        }
+      } catch (error) {
+        recordPersistentError(error);
+      }
+    }
+    return memoryIntelligence.buildCodeIntelligenceResult
+      ? memoryIntelligence.buildCodeIntelligenceResult(query)
+      : { prompt: await memoryIntelligence.buildCodeIntelligencePrompt(query), snippets: [] };
+  }
 
   async function startPersistentIndex(): Promise<void> {
     if (!vscodeApi.Uri || !vscodeApi.workspace.fs.stat) {
@@ -319,6 +332,20 @@ daemon.pid
       getWorkspaceRelativePath(vscodeApi, uri, getWorkspaceRoots(vscodeApi.workspace.workspaceFolders)),
     );
   }
+}
+
+/** Chunks with no recorded line range (`startLine === undefined`) can't become file evidence
+ * (nothing for exploreCodeTool to hash a stable range against) and are dropped rather than
+ * guessed at with a fake 1-1 range. */
+function chunksToSnippets(chunks: readonly StoredCodeChunk[]): CodeIntelligenceSnippet[] {
+  return chunks
+    .filter((chunk): chunk is StoredCodeChunk & { startLine: number } => chunk.startLine !== undefined)
+    .map((chunk) => ({
+      filePath: chunk.filePath,
+      startLine: chunk.startLine,
+      endLine: chunk.endLine ?? chunk.startLine,
+      text: chunk.sourceText,
+    }));
 }
 
 function createDefaultIndexClient(): SqliteIndexWorkerClient {
