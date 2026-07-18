@@ -60,6 +60,28 @@ describe("LoopAgent webview app", () => {
     expect(postMessage).toHaveBeenCalledWith({ type: "newConversation" });
   });
 
+  it("ignores stale streaming messages from a run that was in flight when New chat was clicked", async () => {
+    const user = userEvent.setup();
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    render(<App vscodeApi={{ postMessage }} />);
+
+    await user.type(screen.getByRole("textbox"), "Old task");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    postHostMessage({ type: "runStarted", runId: "run-1", task: "Old task" });
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "deepseek" });
+    postHostMessage({ type: "assistantDelta", runId: "run-1", content: "stale content" });
+    expect(screen.getByText("stale content")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "New chat" }));
+    expect(screen.getByText("Start a conversation with LoopAgent.")).toBeInTheDocument();
+
+    postHostMessage({ type: "assistantDelta", runId: "run-1", content: "more stale content" });
+
+    expect(screen.queryByText("stale content", { exact: false })).not.toBeInTheDocument();
+    expect(screen.getByText("Start a conversation with LoopAgent.")).toBeInTheDocument();
+  });
+
   it("sends the selected model and thinking mode with the task", async () => {
     const user = userEvent.setup();
     const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();

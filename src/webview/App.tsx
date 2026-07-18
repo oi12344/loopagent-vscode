@@ -90,6 +90,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [conversationId, setConversationId] = React.useState<string | undefined>(undefined);
   const nextTurnId = React.useRef(0);
   const composerToolsRef = React.useRef<HTMLDivElement | null>(null);
+  const ignoredRunIdsRef = React.useRef<Set<string>>(new Set());
 
   const selectedModel = modelOptions.find((option) => option.id === selectedModelId) ?? modelOptions[0];
   const effectiveThinkingMode = selectedModel.supportsThinking ? thinkingMode : "disabled";
@@ -135,6 +136,13 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       const hostMessage = event.data;
 
       if (!hostMessage || typeof hostMessage.type !== "string") {
+        return;
+      }
+
+      if ("runId" in hostMessage && ignoredRunIdsRef.current.has(hostMessage.runId)) {
+        if (hostMessage.type === "runFinished" || hostMessage.type === "runFailed") {
+          ignoredRunIdsRef.current.delete(hostMessage.runId);
+        }
         return;
       }
 
@@ -290,6 +298,11 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   }, [openMenu]);
 
   function handleNewConversation() {
+    for (const turn of turns) {
+      if (turn.role === "assistant" && (turn.status === "thinking" || turn.status === "streaming")) {
+        ignoredRunIdsRef.current.add(turn.runId);
+      }
+    }
     setIsRunning(false);
     setOpenMenu(null);
     setTurns([]);
