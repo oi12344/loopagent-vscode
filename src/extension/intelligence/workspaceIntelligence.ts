@@ -187,7 +187,22 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
         if (status === "indexing") {
           status = "ready";
         }
-        return renderCodeIntelligencePrompt(result);
+        const rendered = renderCodeIntelligencePrompt(result);
+        // 输出日志到 VSCode Output Channel（不被 minify 移除）
+        if (typeof process !== "undefined" && process.env.LOOPAGENT_DEBUG) {
+          try {
+            const vscode = require("vscode");
+            const channel =
+              vscode.window.outputChannels?.find?.((ch: any) => ch.name === "LoopAgent Debug") ||
+              vscode.window.createOutputChannel("LoopAgent Debug");
+            channel.appendLine(
+              `[buildCodeIntelligencePrompt] 查询="${query}" 返回长度=${rendered.length} 节点数=${result.entryNodes.length + result.relatedNodes.length} 片段数=${result.snippets.length}`,
+            );
+          } catch {
+            // Ignore if vscode not available
+          }
+        }
+        return rendered;
       } catch (error) {
         status = "failed";
         diagnostics.push({

@@ -18,7 +18,7 @@ export type PostHostMessage = (message: HostToWebviewMessage) => boolean | void 
 export type StartAgentRunOptions = {
   task: string;
   mode?: TaskMode;
-  runner: AgentRunner;
+  runner: AgentRunner | PromiseLike<AgentRunner>;
   postMessage: PostHostMessage;
   runId?: string;
   conversationHistory?: ChatMessage[];
@@ -61,12 +61,17 @@ export function startAgentRun({
 }
 
 async function pumpRunMessages(
-  runner: AgentRunner,
+  runner: AgentRunner | PromiseLike<AgentRunner>,
   request: AgentRunRequest,
   postMessage: PostHostMessage,
 ): Promise<void> {
   try {
-    for await (const message of runner.run(request)) {
+    const resolvedRunner = "then" in runner ? await runner : runner;
+    if (request.signal.aborted) {
+      return;
+    }
+
+    for await (const message of resolvedRunner.run(request)) {
       if (request.signal.aborted) {
         return;
       }

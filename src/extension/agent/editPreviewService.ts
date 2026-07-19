@@ -14,15 +14,11 @@ export type EditPreviewService = {
 
 export type VsCodeEditApi = {
   Uri: Pick<typeof vscode.Uri, "joinPath" | "parse">;
-  CodeLens: typeof vscode.CodeLens;
-  EventEmitter: typeof vscode.EventEmitter;
   FileType: Pick<typeof vscode.FileType, "Directory" | "SymbolicLink">;
   WorkspaceEdit: typeof vscode.WorkspaceEdit;
   Position: typeof vscode.Position;
   Range: typeof vscode.Range;
-  commands: Pick<typeof vscode.commands, "executeCommand" | "registerCommand">;
-  languages: Pick<typeof vscode.languages, "registerCodeLensProvider">;
-  window: Pick<typeof vscode.window, "activeTextEditor">;
+  commands: Pick<typeof vscode.commands, "executeCommand">;
   workspace: Pick<
     typeof vscode.workspace,
     "workspaceFolders" | "textDocuments" | "fs" | "applyEdit" | "getConfiguration" | "registerTextDocumentContentProvider"
@@ -42,40 +38,14 @@ type PlannedChange =
   | { kind: "delete"; source: Snapshot };
 
 const PREVIEW_SCHEME = "loopagent-edit-preview";
-const ACCEPT_REVIEW_COMMAND = "loopagent.acceptEditReview";
-const DISCARD_REVIEW_COMMAND = "loopagent.discardEditReview";
-
-type ReviewChoice = "accept" | "discard";
 
 export function createEditPreviewService(vscodeApi: VsCodeEditApi): EditPreviewService {
   const previewContents = new Map<string, string>();
-  const pendingChoices = new Map<string, (choice: ReviewChoice) => void>();
-  const codeLensChangeEmitter = new vscodeApi.EventEmitter<void>();
-  const reviewRange = new vscodeApi.Range(new vscodeApi.Position(0, 0), new vscodeApi.Position(0, 0));
   const registrations = [
     vscodeApi.workspace.registerTextDocumentContentProvider(PREVIEW_SCHEME, {
       provideTextDocumentContent(uri) {
         return previewContents.get(uri.toString()) ?? "";
       },
-    }),
-    vscodeApi.languages.registerCodeLensProvider({ scheme: PREVIEW_SCHEME }, {
-      onDidChangeCodeLenses: codeLensChangeEmitter.event,
-      provideCodeLenses(document) {
-        const proposalId = getTargetProposalId(document.uri);
-        if (!proposalId || !pendingChoices.has(proposalId)) return [];
-        return [
-          new vscodeApi.CodeLens(reviewRange, { title: "接受全部", command: ACCEPT_REVIEW_COMMAND, arguments: [proposalId] }),
-          new vscodeApi.CodeLens(reviewRange, { title: "放弃", command: DISCARD_REVIEW_COMMAND, arguments: [proposalId] }),
-        ];
-      },
-    }),
-    vscodeApi.commands.registerCommand(ACCEPT_REVIEW_COMMAND, (proposalId: unknown) => {
-      const id = typeof proposalId === "string" ? proposalId : getTargetProposalId(vscodeApi.window.activeTextEditor?.document.uri);
-      if (id) pendingChoices.get(id)?.("accept");
-    }),
-    vscodeApi.commands.registerCommand(DISCARD_REVIEW_COMMAND, (proposalId: unknown) => {
-      const id = typeof proposalId === "string" ? proposalId : getTargetProposalId(vscodeApi.window.activeTextEditor?.document.uri);
-      if (id) pendingChoices.get(id)?.("discard");
     }),
   ];
   let proposalNumber = 0;
@@ -95,15 +65,8 @@ export function createEditPreviewService(vscodeApi: VsCodeEditApi): EditPreviewS
       }
 
       const proposalId = `${++proposalNumber}`;
-      const choicePromise = waitForReviewChoice(pendingChoices, codeLensChangeEmitter, proposalId, signal);
-      try {
-        await openPreviews(vscodeApi, previewContents, proposalId, proposal);
-      } catch (error) {
-        pendingChoices.get(proposalId)?.("discard");
-        throw error;
-      }
-      const choice = await choicePromise;
-      if (choice !== "accept" || signal.aborted) {
+      await openPreviews(vscodeApi, previewContents, proposalId, proposal);
+      if (signal.aborted) {
         return "Changes were cancelled.";
       }
 
@@ -115,39 +78,10 @@ export function createEditPreviewService(vscodeApi: VsCodeEditApi): EditPreviewS
       return (await vscodeApi.workspace.applyEdit(edit)) ? "Changes were applied." : "Changes could not be applied.";
     },
     dispose() {
-      for (const resolve of [...pendingChoices.values()]) resolve("discard");
       previewContents.clear();
       for (const registration of registrations) registration.dispose();
-      codeLensChangeEmitter.dispose();
     },
   };
-}
-
-function waitForReviewChoice(
-  pendingChoices: Map<string, (choice: ReviewChoice) => void>,
-  codeLensChangeEmitter: vscode.EventEmitter<void>,
-  proposalId: string,
-  signal: AbortSignal,
-): Promise<ReviewChoice> {
-  return new Promise((resolve) => {
-    function finish(choice: ReviewChoice) {
-      if (!pendingChoices.delete(proposalId)) return;
-      signal.removeEventListener("abort", abort);
-      codeLensChangeEmitter.fire();
-      resolve(choice);
-    }
-    function abort() {
-      finish("discard");
-    }
-
-    pendingChoices.set(proposalId, finish);
-    if (signal.aborted) abort();
-    else signal.addEventListener("abort", abort, { once: true });
-  });
-}
-
-function getTargetProposalId(uri: vscode.Uri | undefined): string | undefined {
-  return uri ? /^\/([^/]+)\/target(?:\/|$)/.exec(uri.path)?.[1] : undefined;
 }
 
 export async function resolveWorkspaceFileUri(vscodeApi: VsCodeEditApi, rawPath: unknown): Promise<vscode.Uri> {

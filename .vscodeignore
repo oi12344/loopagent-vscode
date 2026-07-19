@@ -1,4 +1,7 @@
 .artifacts/**
+.claude/**
+.codegraph/**
+.loopagent/**
 .git/**
 .github/**
 .local-vscode-*/**
@@ -15,3 +18,6 @@ package-lock.json
 tsconfig.json
 vitest.config.ts
 esbuild.js
+debug.log
+test-tool-output.ts
+benchmark/**

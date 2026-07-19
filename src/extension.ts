@@ -132,6 +132,10 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
         this.handleContinueConversation(message, webviewView.webview);
       } else if (message.type === "newConversation") {
         this.handleNewConversation();
+      } else if (message.type === "switchConversation") {
+        this.handleSwitchConversation(message, webviewView.webview);
+      } else if (message.type === "stopRun") {
+        this.activeRun?.cancel();
       } else if (message.type === "webviewReady") {
         this.handleWebviewReady(webviewView.webview);
       }
@@ -145,22 +149,47 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
 
   private handleWebviewReady(webview: vscode.Webview): void {
     const restored = this.conversationManager.loadActiveConversation();
-    if (!restored) {
-      return;
+    if (restored) {
+      this.currentConversationId = restored.conversationId;
+      webview.postMessage({
+        type: "conversationRestored",
+        conversationId: restored.conversationId,
+        messages: restored.messages,
+      } satisfies HostToWebviewMessage);
     }
 
-    this.currentConversationId = restored.conversationId;
-    webview.postMessage({
-      type: "conversationRestored",
-      conversationId: restored.conversationId,
-      messages: restored.messages,
-    } satisfies HostToWebviewMessage);
+    this.sendConversationList(webview);
   }
 
   private handleNewConversation(): void {
     this.activeRun?.cancel();
     this.currentConversationId = undefined;
     this.conversationManager.clearActiveConversation();
+  }
+
+  private handleSwitchConversation(
+    message: Extract<WebviewToHostMessage, { type: "switchConversation" }>,
+    webview: vscode.Webview,
+  ): void {
+    const conversation = this.conversationManager.setActiveConversation(message.conversationId);
+    if (!conversation) {
+      return;
+    }
+
+    this.activeRun?.cancel();
+    this.currentConversationId = conversation.conversationId;
+    webview.postMessage({
+      type: "conversationRestored",
+      conversationId: conversation.conversationId,
+      messages: conversation.messages,
+    } satisfies HostToWebviewMessage);
+  }
+
+  private sendConversationList(webview: vscode.Webview): void {
+    webview.postMessage({
+      type: "conversationList",
+      conversations: this.conversationManager.listConversations(),
+    } satisfies HostToWebviewMessage);
   }
 
   private handleStartTask(
@@ -172,7 +201,17 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.conversationManager.addUserMessage(conversation.conversationId, message.task);
     const conversationHistory = this.conversationManager.getConversationHistory(conversation.conversationId);
 
-    this.executeRun(message.task, message.mode, message.model, conversationHistory, conversation.conversationId, webview);
+    // 告诉 WebView 对话已开始，以便后续提问能使用 continueConversation
+    webview.postMessage({
+      type: "conversationStarted",
+      conversationId: conversation.conversationId,
+      runId: message.runId,
+      userMessage: message.task,
+    } satisfies HostToWebviewMessage);
+
+    this.sendConversationList(webview);
+
+    this.executeRun(message.runId, message.task, message.mode, message.model, conversationHistory, conversation.conversationId, webview);
   }
 
   private handleContinueConversation(
@@ -182,11 +221,17 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.currentConversationId = message.conversationId;
     this.conversationManager.addUserMessage(message.conversationId, message.userMessage);
     const conversationHistory = this.conversationManager.getConversationHistory(message.conversationId);
+    console.log(`[handleContinueConversation] conversationId=${message.conversationId}, history.length=${conversationHistory.length}`);
+    if (conversationHistory.length > 0) {
+      console.log(`[handleContinueConversation] Messages:`, conversationHistory.map(m => ({ role: m.role, contentLength: m.content.length })));
+    }
+    this.sendConversationList(webview);
 
-    this.executeRun(message.userMessage, message.mode, message.model, conversationHistory, message.conversationId, webview);
+    this.executeRun(message.runId, message.userMessage, message.mode, message.model, conversationHistory, message.conversationId, webview);
   }
 
   private executeRun(
+    runId: string,
     task: string,
     mode: TaskMode | undefined,
     model: RunModelSelection | undefined,
@@ -198,44 +243,43 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
 
     const assistantMessages = new Map<string, { content: string; reasoning: string }>();
 
-    void createConfiguredAgentRunner(this.context, model, {
-      workspaceIntelligence: this.workspaceIntelligence,
-      readFileTool: this.readFileTool,
-      applyEditTool: this.applyEditTool,
-    }).then((runner) => {
-      const run = startAgentRun({
-        task,
-        mode: mode ?? "edit",
-        runner,
-        postMessage: (hostMessage: HostToWebviewMessage) => {
-          // Capture assistant content and reasoning
-          if (hostMessage.type === "assistantDelta") {
-            const current = assistantMessages.get(hostMessage.runId) ?? { content: "", reasoning: "" };
-            current.content += hostMessage.content;
-            assistantMessages.set(hostMessage.runId, current);
-          } else if (hostMessage.type === "assistantReasoningDelta") {
-            const current = assistantMessages.get(hostMessage.runId) ?? { content: "", reasoning: "" };
-            current.reasoning += hostMessage.content;
-            assistantMessages.set(hostMessage.runId, current);
-          } else if (hostMessage.type === "assistantFinished") {
-            const message = assistantMessages.get(hostMessage.runId);
-            if (message && conversationId) {
-              this.conversationManager.addAssistantMessage(conversationId, message.content, message.reasoning);
-            }
+    const run = startAgentRun({
+      runId,
+      task,
+      mode: mode ?? "edit",
+      runner: createConfiguredAgentRunner(this.context, model, {
+        workspaceIntelligence: this.workspaceIntelligence,
+        readFileTool: this.readFileTool,
+        applyEditTool: this.applyEditTool,
+      }),
+      postMessage: (hostMessage: HostToWebviewMessage) => {
+        // Capture assistant content and reasoning
+        if (hostMessage.type === "assistantDelta") {
+          const current = assistantMessages.get(hostMessage.runId) ?? { content: "", reasoning: "" };
+          current.content += hostMessage.content;
+          assistantMessages.set(hostMessage.runId, current);
+        } else if (hostMessage.type === "assistantReasoningDelta") {
+          const current = assistantMessages.get(hostMessage.runId) ?? { content: "", reasoning: "" };
+          current.reasoning += hostMessage.content;
+          assistantMessages.set(hostMessage.runId, current);
+        } else if (hostMessage.type === "assistantFinished") {
+          const message = assistantMessages.get(hostMessage.runId);
+          if (message && conversationId) {
+            this.conversationManager.addAssistantMessage(conversationId, message.content, message.reasoning);
           }
-
-          webview.postMessage(hostMessage);
-        },
-        conversationHistory,
-        conversationId,
-      });
-
-      this.activeRun = run;
-      void run.done.finally(() => {
-        if (this.activeRun === run) {
-          this.activeRun = undefined;
         }
-      });
+
+        webview.postMessage(hostMessage);
+      },
+      conversationHistory,
+      conversationId,
+    });
+
+    this.activeRun = run;
+    void run.done.finally(() => {
+      if (this.activeRun === run) {
+        this.activeRun = undefined;
+      }
     });
   }
 }

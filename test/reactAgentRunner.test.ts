@@ -37,6 +37,7 @@ describe("createReactAgentRunner", () => {
       { type: "assistantStarted", runId: "run-1", provider: "ReAct Agent" },
       { type: "assistantThinking", runId: "run-1", message: "Planning step 1" },
       { type: "assistantDelta", runId: "run-1", content: "Workspace is ready." },
+      { type: "assistantFinished", runId: "run-1" },
       { type: "runFinished", runId: "run-1" },
     ]);
   });

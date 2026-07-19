@@ -1,4 +1,4 @@
-import type { ConversationContext, ChatMessage } from "../../shared/chatTypes";
+import type { ConversationContext, ChatMessage, ConversationSummary } from "../../shared/chatTypes";
 import type { ConversationStore } from "./conversationStore";
 
 /**
@@ -45,6 +45,15 @@ export type ConversationManager = {
 
   /** 透传 ConversationStore.clearActiveConversation */
   clearActiveConversation(): void;
+
+  /** 透传 ConversationStore.listConversations */
+  listConversations(): ConversationSummary[];
+
+  /** 透传 ConversationStore.getConversation */
+  getConversation(conversationId: string): ConversationContext | undefined;
+
+  /** 透传 ConversationStore.setActiveConversation */
+  setActiveConversation(conversationId: string): ConversationContext | undefined;
 };
 
 /**
@@ -88,6 +97,18 @@ export function createConversationManager(store: ConversationStore): Conversatio
 
     clearActiveConversation(): void {
       store.clearActiveConversation();
+    },
+
+    listConversations(): ConversationSummary[] {
+      return store.listConversations();
+    },
+
+    getConversation(conversationId: string): ConversationContext | undefined {
+      return store.getConversation(conversationId);
+    },
+
+    setActiveConversation(conversationId: string): ConversationContext | undefined {
+      return store.setActiveConversation(conversationId);
     },
   };
 }

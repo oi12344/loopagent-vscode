@@ -39,6 +39,7 @@ describe("LoopAgent webview app", () => {
 
     expect(postMessage).toHaveBeenCalledWith({
       type: "startTask",
+      runId: expect.stringMatching(/^run-/),
       task: "Explain the active file",
       mode: "ask",
       model: { provider: "deepseek", model: "deepseek-v4-flash", thinking: "enabled" },
@@ -82,6 +83,65 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByText("Start a conversation with LoopAgent.")).toBeInTheDocument();
   });
 
+  it("shows a Stop button while a run is active and cancels the run on click", async () => {
+    const user = userEvent.setup();
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    render(<App vscodeApi={{ postMessage }} />);
+
+    await user.type(screen.getByRole("textbox"), "Old task");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    postHostMessage({ type: "runStarted", runId: "run-1", task: "Old task" });
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "deepseek" });
+    postHostMessage({ type: "assistantDelta", runId: "run-1", content: "partial content" });
+
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+
+    expect(postMessage).toHaveBeenCalledWith({ type: "stopRun" });
+
+    postHostMessage({ type: "assistantDelta", runId: "run-1", content: "more content" });
+
+    expect(screen.getByText("partial content")).toBeInTheDocument();
+    expect(screen.queryByText("more content", { exact: false })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+  });
+
+  it("removes an empty assistant placeholder when stopping after assistantFinished", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.type(screen.getByRole("textbox"), "Stop before content");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    postHostMessage({ type: "runStarted", runId: "run-1", task: "Stop before content" });
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "deepseek" });
+    postHostMessage({ type: "assistantFinished", runId: "run-1" });
+
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+
+    expect(container.querySelector(".message-assistant")).toBeNull();
+  });
+
+  it("ignores late run messages when stopped before runStarted arrives", async () => {
+    const user = userEvent.setup();
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    const { container } = render(<App vscodeApi={{ postMessage }} />);
+
+    await user.type(screen.getByRole("textbox"), "Stop immediately");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    const startMessage = postMessage.mock.calls.find(([message]) => message.type === "startTask")?.[0];
+
+    expect(startMessage).toEqual(expect.objectContaining({ runId: expect.stringMatching(/^run-/) }));
+    const runId = (startMessage as WebviewToHostMessage & { runId: string }).runId;
+
+    await user.click(screen.getByRole("button", { name: "Stop" }));
+    postHostMessage({ type: "runStarted", runId, task: "Stop immediately" });
+    postHostMessage({ type: "assistantStarted", runId, provider: "deepseek" });
+    postHostMessage({ type: "assistantFinished", runId });
+    postHostMessage({ type: "runFinished", runId });
+
+    expect(container.querySelector(".message-assistant")).toBeNull();
+  });
+
   it("sends the selected model and thinking mode with the task", async () => {
     const user = userEvent.setup();
     const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
@@ -95,6 +155,7 @@ describe("LoopAgent webview app", () => {
 
     expect(postMessage).toHaveBeenCalledWith({
       type: "startTask",
+      runId: expect.stringMatching(/^run-/),
       task: "hello",
       mode: "edit",
       model: {
@@ -104,7 +165,7 @@ describe("LoopAgent webview app", () => {
       },
     });
     expect(screen.getByText("hello")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sending..." })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
   });
 
   it("disables deep thinking when the selected model does not support it", async () => {
@@ -124,6 +185,7 @@ describe("LoopAgent webview app", () => {
 
     expect(postMessage).toHaveBeenCalledWith({
       type: "startTask",
+      runId: expect.stringMatching(/^run-/),
       task: "hello",
       mode: "edit",
       model: {
@@ -291,5 +353,37 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByText("What is TypeScript?")).toBeInTheDocument();
     expect(screen.getByText("A typed superset of JavaScript.")).toBeInTheDocument();
     expect(screen.queryByText("Start a conversation with LoopAgent.")).not.toBeInTheDocument();
+  });
+
+  it("shows an empty state in the History menu when there are no past conversations", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "History" }));
+
+    expect(screen.getByText("No past conversations yet.")).toBeInTheDocument();
+  });
+
+  it("populates the History menu from a conversationList host message and switches on click", async () => {
+    const user = userEvent.setup();
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    render(<App vscodeApi={{ postMessage }} />);
+
+    postHostMessage({
+      type: "conversationList",
+      conversations: [
+        { conversationId: "conv-1", updatedAt: 2, preview: "And Rust?" },
+        { conversationId: "conv-2", updatedAt: 1, preview: "What is TypeScript?" },
+      ],
+    });
+
+    await user.click(screen.getByRole("button", { name: "History" }));
+
+    expect(screen.getByRole("menuitem", { name: "And Rust?" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "What is TypeScript?" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("menuitem", { name: "And Rust?" }));
+
+    expect(postMessage).toHaveBeenCalledWith({ type: "switchConversation", conversationId: "conv-1" });
   });
 });

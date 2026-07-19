@@ -11,6 +11,13 @@ export type ConversationContext = {
   updatedAt: number;
 };
 
+/** 历史对话列表项：只带预览信息，不带完整消息 */
+export type ConversationSummary = {
+  conversationId: string;
+  updatedAt: number;
+  preview: string;
+};
+
 export type ConversationTurn =
   | {
       id: string;

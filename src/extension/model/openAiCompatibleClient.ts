@@ -62,6 +62,18 @@ async function* streamChatCompletion({
   body: Record<string, unknown>;
   request: ModelRequest;
 }) {
+  const serializedMessages = request.messages.map(serializeMessage);
+
+  logContextToModel({
+    baseUrl: trimTrailingSlash(baseUrl),
+    model,
+    messagesCount: serializedMessages.length,
+    messages: serializedMessages,
+    tools: request.tools,
+    toolChoice: request.toolChoice,
+    customBody: body,
+  });
+
   const response = await fetchImpl(`${trimTrailingSlash(baseUrl)}/chat/completions`, {
     method: "POST",
     headers: {
@@ -70,7 +82,7 @@ async function* streamChatCompletion({
     },
     body: JSON.stringify({
       model,
-      messages: request.messages.map(serializeMessage),
+      messages: serializedMessages,
       stream: true,
       stream_options: { include_usage: true },
       ...(request.tools
@@ -266,4 +278,90 @@ function* mapChunkEvents(chunk: ChatCompletionChunk) {
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function logContextToModel({
+  baseUrl,
+  model,
+  messagesCount,
+  messages,
+  tools,
+  toolChoice,
+  customBody,
+}: {
+  baseUrl: string;
+  model: string;
+  messagesCount: number;
+  messages: Record<string, unknown>[];
+  tools?: unknown[];
+  toolChoice?: unknown;
+  customBody: Record<string, unknown>;
+}): void {
+  try {
+    const vscode = require("vscode");
+    const channel = vscode.window.createOutputChannel("LoopAgent - Model Context");
+
+    channel.appendLine(`\n${"=".repeat(80)}`);
+    channel.appendLine(`[Model Context] 发送给非Claude大模型`);
+    channel.appendLine(`模型提供商URL: ${baseUrl}`);
+    channel.appendLine(`模型: ${model}`);
+    channel.appendLine(`消息总数: ${messagesCount}`);
+
+    messages.forEach((msg, index) => {
+      const role = (msg as Record<string, unknown>).role || "unknown";
+      const content = (msg as Record<string, unknown>).content || "";
+      const contentPreview = typeof content === "string"
+        ? content.slice(0, 120) + (content.length > 120 ? "..." : "")
+        : JSON.stringify(content).slice(0, 120);
+      channel.appendLine(`  消息 ${index + 1}: 角色=${role} 长度=${typeof content === 'string' ? content.length : 'N/A'}`);
+      channel.appendLine(`    预览: ${contentPreview}`);
+
+      const toolCalls = (msg as Record<string, unknown>).tool_calls;
+      if (toolCalls && Array.isArray(toolCalls)) {
+        channel.appendLine(`    工具调用: ${toolCalls.length}`);
+        (toolCalls as unknown[]).forEach((tc: unknown, tcIndex) => {
+          const tcObj = tc as Record<string, Record<string, unknown>>;
+          const toolName = tcObj.function?.name || "unknown";
+          channel.appendLine(`      ${tcIndex + 1}. ${toolName}`);
+        });
+      }
+    });
+
+    if (tools && tools.length > 0) {
+      channel.appendLine(`\n可用工具 (${tools.length} 个):`);
+      tools.forEach((tool, index) => {
+        const toolObj = tool as Record<string, Record<string, unknown>>;
+        const toolName = toolObj.function?.name || `tool_${index}`;
+        const desc = toolObj.function?.description || "无描述";
+        channel.appendLine(`  ${index + 1}. ${toolName}`);
+        channel.appendLine(`     描述: ${String(desc).slice(0, 100)}`);
+      });
+
+      if (toolChoice) {
+        channel.appendLine(`工具选择策略: ${formatToolChoice(toolChoice)}`);
+      }
+    }
+
+    if (Object.keys(customBody).length > 0) {
+      channel.appendLine(`\n自定义请求体参数:`);
+      Object.entries(customBody).forEach(([key, value]) => {
+        channel.appendLine(`  ${key}: ${JSON.stringify(value).slice(0, 100)}`);
+      });
+    }
+
+    channel.appendLine(`${"=".repeat(80)}\n`);
+  } catch {
+    // VSCode 可能不可用（例如在测试环境中）
+  }
+}
+
+function formatToolChoice(toolChoice: unknown): string {
+  if (typeof toolChoice === "string") {
+    return toolChoice;
+  }
+  if (typeof toolChoice === "object" && toolChoice !== null) {
+    const obj = toolChoice as Record<string, Record<string, unknown>>;
+    return `function: ${obj.function?.name || "unknown"}`;
+  }
+  return String(toolChoice);
 }

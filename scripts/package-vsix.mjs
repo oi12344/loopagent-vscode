@@ -10,7 +10,7 @@ const { assertVsixContents } = require("./vsixContents.js");
 const root = resolve(import.meta.dirname, "..");
 const artifactPath = resolve(root, ".artifacts", "loopagent-vscode-0.0.1.vsix");
 const vscePath = resolve(root, "node_modules", ".bin", process.platform === "win32" ? "vsce.cmd" : "vsce");
-const vsceArgs = ["package", "--no-dependencies", "--out", artifactPath];
+const vsceArgs = ["package", "--no-dependencies", "--out", artifactPath, ...process.argv.slice(2)];
 
 await mkdir(resolve(root, ".artifacts"), { recursive: true });
 rmSync(resolve(root, "dist"), { recursive: true, force: true });
@@ -23,7 +23,7 @@ const result = await new Promise((resolveExit, reject) => {
           "/d",
           "/s",
           "/c",
-          `""${vscePath}" package --no-dependencies --out "${artifactPath}""`,
+          `""${vscePath}" package --no-dependencies --out "${artifactPath}" ${process.argv.slice(2).join(" ")}"`,
         ]
       : vsceArgs;
   const child = spawn(command, args, {

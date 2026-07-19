@@ -79,4 +79,33 @@ describe("startAgentRun", () => {
 
     expect(capturedSignal?.aborted).toBe(true);
   });
+
+  it("does not start a promised runner after cancellation", async () => {
+    let resolveRunner!: (runner: AgentRunner) => void;
+    const runnerPromise = new Promise<AgentRunner>((resolve) => {
+      resolveRunner = resolve;
+    });
+    let runCalled = false;
+    const postedMessages: HostToWebviewMessage[] = [];
+
+    const handle = startAgentRun({
+      task: "Cancel while configuring",
+      runner: runnerPromise,
+      postMessage: (message) => {
+        postedMessages.push(message);
+      },
+    });
+
+    handle.cancel();
+    resolveRunner({
+      run: () => {
+        runCalled = true;
+        return (async function* () {})();
+      },
+    });
+    await handle.done;
+
+    expect(runCalled).toBe(false);
+    expect(postedMessages).toEqual([]);
+  });
 });

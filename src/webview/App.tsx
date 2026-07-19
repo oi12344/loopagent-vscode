@@ -1,5 +1,6 @@
 import * as React from "react";
 import type { HostToWebviewMessage, ModelThinkingMode, RunModelSelection, TaskMode } from "../shared/messages";
+import type { ConversationSummary } from "../shared/chatTypes";
 import { createDefaultVsCodeApi, type VsCodeApi } from "./vscodeApi";
 import "./styles.css";
 
@@ -86,10 +87,12 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [selectedModelId, setSelectedModelId] = React.useState(modelOptions[0].id);
   const [thinkingMode, setThinkingMode] = React.useState<ModelThinkingMode>("enabled");
   const [taskMode, setTaskMode] = React.useState<TaskMode>("edit");
-  const [openMenu, setOpenMenu] = React.useState<"model" | "thinking" | null>(null);
+  const [openMenu, setOpenMenu] = React.useState<"model" | "thinking" | "history" | null>(null);
   const [conversationId, setConversationId] = React.useState<string | undefined>(undefined);
+  const [conversations, setConversations] = React.useState<ConversationSummary[]>([]);
   const nextTurnId = React.useRef(0);
   const composerToolsRef = React.useRef<HTMLDivElement | null>(null);
+  const historyMenuRef = React.useRef<HTMLDivElement | null>(null);
   const ignoredRunIdsRef = React.useRef<Set<string>>(new Set());
 
   const selectedModel = modelOptions.find((option) => option.id === selectedModelId) ?? modelOptions[0];
@@ -255,6 +258,11 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           return;
         }
 
+        case "conversationList": {
+          setConversations(hostMessage.conversations);
+          return;
+        }
+
         default: {
           const _exhaustive: never = hostMessage;
           void _exhaustive;
@@ -277,7 +285,10 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
     }
 
     function handlePointerDown(event: MouseEvent) {
-      if (composerToolsRef.current && !composerToolsRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      const insideComposerTools = composerToolsRef.current?.contains(target) ?? false;
+      const insideHistoryMenu = historyMenuRef.current?.contains(target) ?? false;
+      if (!insideComposerTools && !insideHistoryMenu) {
         setOpenMenu(null);
       }
     }
@@ -297,17 +308,56 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
     };
   }, [openMenu]);
 
-  function handleNewConversation() {
-    for (const turn of turns) {
-      if (turn.role === "assistant" && (turn.status === "thinking" || turn.status === "streaming")) {
-        ignoredRunIdsRef.current.add(turn.runId);
+  function interruptActiveRun() {
+    let runId: string | undefined;
+    for (let index = turns.length - 1; index >= 0; index -= 1) {
+      const turn = turns[index];
+      if (turn.role === "user" && turn.runId) {
+        runId = turn.runId;
+        break;
       }
     }
+
+    if (runId) {
+      ignoredRunIdsRef.current.add(runId);
+      setTurns((currentTurns) =>
+        currentTurns
+          .filter(
+            (turn) =>
+              turn.role !== "assistant" ||
+              turn.runId !== runId ||
+              Boolean(turn.content || turn.reasoning || turn.error),
+          )
+          .map((turn) =>
+            turn.role === "assistant" && turn.runId === runId ? { ...turn, status: "done" as const } : turn,
+          ),
+      );
+    }
+
     setIsRunning(false);
+  }
+
+  function handleStop() {
+    interruptActiveRun();
+    vscodeApi.postMessage({ type: "stopRun" });
+  }
+
+  function handleNewConversation() {
+    interruptActiveRun();
     setOpenMenu(null);
     setTurns([]);
     setConversationId(undefined);
     vscodeApi.postMessage({ type: "newConversation" });
+  }
+
+  function handleSwitchConversation(targetConversationId: string) {
+    if (targetConversationId === conversationId) {
+      setOpenMenu(null);
+      return;
+    }
+    interruptActiveRun();
+    setOpenMenu(null);
+    vscodeApi.postMessage({ type: "switchConversation", conversationId: targetConversationId });
   }
 
   function submitTask(task: string, mode: TaskMode = taskMode) {
@@ -321,6 +371,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       ...selectedModel.selection,
       thinking: effectiveThinkingMode,
     };
+    const runId = createTurnId("run");
 
     setIsRunning(true);
     setOpenMenu(null);
@@ -330,6 +381,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         id: createTurnId("user"),
         role: "user",
         content: trimmedMessage,
+        runId,
         pending: true,
       },
     ]);
@@ -338,13 +390,14 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
     if (conversationId) {
       vscodeApi.postMessage({
         type: "continueConversation",
+        runId,
         conversationId,
         userMessage: trimmedMessage,
         mode,
         model: runModel,
       });
     } else {
-      vscodeApi.postMessage({ type: "startTask", task: trimmedMessage, mode, model: runModel });
+      vscodeApi.postMessage({ type: "startTask", runId, task: trimmedMessage, mode, model: runModel });
     }
   }
 
@@ -371,6 +424,14 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
             {isRunning ? "Running" : "Ready"}
           </span>
           <span className="active-model">{selectedModel.label}</span>
+          <div className="tool-menu-anchor" ref={historyMenuRef}>
+            <button type="button" className="chip-button" onClick={() => setOpenMenu(openMenu === "history" ? null : "history")}>
+              History
+            </button>
+            {openMenu === "history" ? (
+              <HistoryMenu conversations={conversations} activeConversationId={conversationId} onSelect={handleSwitchConversation} />
+            ) : null}
+          </div>
           <button type="button" className="chip-button" onClick={handleNewConversation}>
             New chat
           </button>
@@ -437,9 +498,15 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
             </div>
           </div>
 
-          <button type="submit" disabled={!message.trim() || isRunning}>
-            {isRunning ? "Sending..." : "Send"}
-          </button>
+          {isRunning ? (
+            <button type="button" onClick={handleStop}>
+              Stop
+            </button>
+          ) : (
+            <button type="submit" disabled={!message.trim()}>
+              Send
+            </button>
+          )}
         </div>
       </form>
     </main>
@@ -505,6 +572,37 @@ function ThinkingMenu({
         <span>On</span>
         <span>Enables provider reasoning mode</span>
       </button>
+    </div>
+  );
+}
+
+function HistoryMenu({
+  conversations,
+  activeConversationId,
+  onSelect,
+}: {
+  conversations: ConversationSummary[];
+  activeConversationId: string | undefined;
+  onSelect(conversationId: string): void;
+}) {
+  return (
+    <div className="composer-menu" role="menu" aria-label="History">
+      {conversations.length === 0 ? (
+        <p className="menu-empty">No past conversations yet.</p>
+      ) : (
+        conversations.map((conversation) => (
+          <button
+            key={conversation.conversationId}
+            type="button"
+            role="menuitem"
+            className="menu-item"
+            aria-current={conversation.conversationId === activeConversationId ? "true" : undefined}
+            onClick={() => onSelect(conversation.conversationId)}
+          >
+            <span>{conversation.preview || "(empty conversation)"}</span>
+          </button>
+        ))
+      )}
     </div>
   );
 }

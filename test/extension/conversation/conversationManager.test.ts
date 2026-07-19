@@ -159,4 +159,18 @@ describe("ConversationManager", () => {
     manager.startConversation();
     expect(() => manager.clearActiveConversation()).not.toThrow();
   });
+
+  it("delegates listConversations, getConversation and setActiveConversation to the store", () => {
+    const store = createConversationStore();
+    const manager = createConversationManager(store);
+
+    const first = manager.startConversation();
+    manager.addUserMessage(first.conversationId, "Hello");
+    manager.startConversation();
+
+    expect(manager.listConversations()).toHaveLength(2);
+    expect(manager.getConversation(first.conversationId)?.conversationId).toBe(first.conversationId);
+    expect(manager.setActiveConversation(first.conversationId)?.conversationId).toBe(first.conversationId);
+    expect(manager.getConversation("nonexistent")).toBeUndefined();
+  });
 });

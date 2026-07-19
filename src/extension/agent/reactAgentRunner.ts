@@ -38,6 +38,11 @@ export function createReactAgentRunner({
         const messages: ReactAgentMessage[] = [];
         const systemPrompt = await resolveSystemPrompt(systemPromptProvider, request);
 
+        console.log(`[ReactAgentRunner] runId=${runId}, conversationHistory.length=${conversationHistory.length}`);
+        if (conversationHistory.length > 0) {
+          console.log(`[ReactAgentRunner] History messages:`, conversationHistory.map(m => ({ role: m.role, contentLength: m.content.length })));
+        }
+
         if (systemPrompt) {
           messages.push({ role: "system", content: systemPrompt });
         }
@@ -50,7 +55,12 @@ export function createReactAgentRunner({
           });
         }
 
-        messages.push({ role: "user", content: task });
+        // conversationHistory 已包含当前用户消息，不再添加 task（避免重复）
+        // 仅在历史为空时添加（新对话情况下）
+        if (conversationHistory.length === 0) {
+          messages.push({ role: "user", content: task });
+        }
+        console.log(`[ReactAgentRunner] Final messages.length=${messages.length}, conversationHistory.length=${conversationHistory.length}`);
 
         for (let step = 1; step <= maxSteps + 1; step++) {
           const isFinalAnswerStep = step > maxSteps;

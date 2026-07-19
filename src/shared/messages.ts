@@ -1,4 +1,4 @@
-import type { ChatMessage } from "./chatTypes";
+import type { ChatMessage, ConversationSummary } from "./chatTypes";
 
 /** AI 模型提供商标识 */
 export type ModelProviderId = "fake" | "deepseek";
@@ -22,12 +22,14 @@ export type RunModelSelection = {
 export type WebviewToHostMessage =
   | {
       type: "startTask";
+      runId: string;
       task: string;
       mode?: TaskMode;
       model?: RunModelSelection;
     }
   | {
       type: "continueConversation";
+      runId: string;
       conversationId: string;
       userMessage: string;
       mode?: TaskMode;
@@ -40,6 +42,15 @@ export type WebviewToHostMessage =
   | {
       /** 用户点击"新对话"，清空当前活跃对话 */
       type: "newConversation";
+    }
+  | {
+      /** 用户从历史列表点击某个对话，切换过去 */
+      type: "switchConversation";
+      conversationId: string;
+    }
+  | {
+      /** 用户点击"停止"，取消正在运行的对话轮次 */
+      type: "stopRun";
     };
 
 export type HostToWebviewMessage =
@@ -107,4 +118,9 @@ export type HostToWebviewMessage =
       type: "conversationRestored";
       conversationId: string;
       messages: ChatMessage[];
+    }
+  | {
+      /** 推送历史对话列表，供"历史"菜单渲染 */
+      type: "conversationList";
+      conversations: ConversationSummary[];
     };

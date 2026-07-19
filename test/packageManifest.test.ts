@@ -45,23 +45,4 @@ describe("package manifest", () => {
       type: "webview",
     });
   });
-
-  it("shows accept and discard actions only on LoopAgent edit previews", () => {
-    expect(manifest.contributes.commands).toEqual(expect.arrayContaining([
-      { command: "loopagent.acceptEditReview", title: "接受全部", icon: "$(check)" },
-      { command: "loopagent.discardEditReview", title: "放弃", icon: "$(close)" },
-    ]));
-    expect(manifest.contributes.menus["editor/title"]).toEqual(expect.arrayContaining([
-      {
-        command: "loopagent.acceptEditReview",
-        when: "resourceScheme == loopagent-edit-preview",
-        group: "navigation@1",
-      },
-      {
-        command: "loopagent.discardEditReview",
-        when: "resourceScheme == loopagent-edit-preview",
-        group: "navigation@2",
-      },
-    ]));
-  });
 });

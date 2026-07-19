@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { ChatMessage, ConversationContext } from "../../shared/chatTypes";
+import type { ChatMessage, ConversationContext, ConversationSummary } from "../../shared/chatTypes";
 import type { ConversationStore } from "./conversationStore";
 
 type ConversationRow = {
@@ -14,9 +14,10 @@ type ConversationRow = {
 
 /**
  * ConversationStore 的 SQLite 持久化实现。
- * 表里最多一行，代表"当前活跃对话"——见
- * docs/superpowers/specs/2026-07-19-conversation-persistence-design.md
- * 的"单行表，不做消息级关系表"。
+ * `conversation` 表按 conversation_id 保留每个对话的完整历史（多行）；
+ * `active_conversation` 是单行表，只存"当前活跃对话"的指针——见
+ * docs/superpowers/specs/2026-07-19-conversation-persistence-design.md。
+ * 没有内存缓存：每次读写都直接打 SQLite，本地库足够快，省掉缓存失效的坑。
  */
 export function createPersistentConversationStore(
   databasePath: string,
@@ -33,15 +34,17 @@ export function createPersistentConversationStore(
       messages_json TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
-    )
+    );
+    CREATE TABLE IF NOT EXISTS active_conversation (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      conversation_id TEXT NOT NULL
+    );
   `);
 
-  let active: ConversationContext | undefined = loadFromDatabase();
-
-  function loadFromDatabase(): ConversationContext | undefined {
+  function readContext(conversationId: string): ConversationContext | undefined {
     const row = database
-      .prepare("SELECT conversation_id, messages_json, created_at, updated_at FROM conversation LIMIT 1")
-      .get() as ConversationRow | undefined;
+      .prepare("SELECT conversation_id, messages_json, created_at, updated_at FROM conversation WHERE conversation_id = ?")
+      .get(conversationId) as ConversationRow | undefined;
     if (!row) return undefined;
     try {
       return {
@@ -55,17 +58,37 @@ export function createPersistentConversationStore(
     }
   }
 
-  function generateConversationId(): string {
-    return `conv-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  function readActiveConversationId(): string | undefined {
+    const row = database.prepare("SELECT conversation_id FROM active_conversation WHERE id = 1").get() as
+      | { conversation_id: string }
+      | undefined;
+    return row?.conversation_id;
+  }
+
+  function writeActiveConversationId(conversationId: string | undefined): void {
+    if (conversationId === undefined) {
+      database.exec("DELETE FROM active_conversation");
+      return;
+    }
+    database
+      .prepare(
+        "INSERT INTO active_conversation (id, conversation_id) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET conversation_id = excluded.conversation_id",
+      )
+      .run(conversationId);
   }
 
   function persist(context: ConversationContext): void {
-    database.exec("DELETE FROM conversation");
     database
       .prepare(
-        "INSERT INTO conversation (conversation_id, messages_json, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        `INSERT INTO conversation (conversation_id, messages_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(conversation_id) DO UPDATE SET messages_json = excluded.messages_json, updated_at = excluded.updated_at`,
       )
       .run(context.conversationId, JSON.stringify(context.messages), context.createdAt, context.updatedAt);
+  }
+
+  function generateConversationId(): string {
+    return `conv-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   }
 
   return {
@@ -76,33 +99,58 @@ export function createPersistentConversationStore(
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
-      active = context;
       persist(context);
+      writeActiveConversationId(context.conversationId);
       return context;
     },
 
     getConversation(conversationId: string): ConversationContext | undefined {
-      return active?.conversationId === conversationId ? active : undefined;
+      return readContext(conversationId);
     },
 
     addMessage(conversationId: string, message: ChatMessage): void {
-      if (active?.conversationId !== conversationId) return;
-      active.messages.push(message);
-      active.updatedAt = Date.now();
-      persist(active);
+      const context = readContext(conversationId);
+      if (!context) return;
+      context.messages.push(message);
+      context.updatedAt = Date.now();
+      persist(context);
     },
 
     getMessages(conversationId: string): ChatMessage[] {
-      return active?.conversationId === conversationId ? active.messages : [];
+      return readContext(conversationId)?.messages ?? [];
     },
 
     loadActiveConversation(): ConversationContext | undefined {
-      return active;
+      const activeId = readActiveConversationId();
+      return activeId ? readContext(activeId) : undefined;
+    },
+
+    setActiveConversation(conversationId: string): ConversationContext | undefined {
+      const context = readContext(conversationId);
+      if (!context) return undefined;
+      writeActiveConversationId(conversationId);
+      return context;
     },
 
     clearActiveConversation(): void {
-      active = undefined;
-      database.exec("DELETE FROM conversation");
+      writeActiveConversationId(undefined);
+    },
+
+    listConversations(): ConversationSummary[] {
+      const rows = database
+        .prepare("SELECT conversation_id, messages_json, updated_at FROM conversation ORDER BY updated_at DESC, rowid DESC")
+        .all() as Array<{ conversation_id: string; messages_json: string; updated_at: number }>;
+
+      return rows.map((row) => {
+        let preview = "";
+        try {
+          const messages = JSON.parse(row.messages_json) as ChatMessage[];
+          preview = messages.find((message) => message.role === "user")?.content.slice(0, 60) ?? "";
+        } catch {
+          // 单行损坏不影响列表其它项，预览留空即可
+        }
+        return { conversationId: row.conversation_id, updatedAt: row.updated_at, preview };
+      });
     },
 
     close(): void {

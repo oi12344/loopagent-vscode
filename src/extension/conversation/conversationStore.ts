@@ -1,4 +1,4 @@
-import type { ConversationContext, ChatMessage } from "../../shared/chatTypes";
+import type { ConversationContext, ChatMessage, ConversationSummary } from "../../shared/chatTypes";
 
 /**
  * 对话存储服务
@@ -48,7 +48,27 @@ export type ConversationStore = {
    * 内存实现没有单活跃对话的概念，是安全的空操作。
    */
   clearActiveConversation(): void;
+
+  /**
+   * 列出所有已存储的对话，按最后更新时间倒序
+   */
+  listConversations(): ConversationSummary[];
+
+  /**
+   * 把某个已存在的对话标记为"当前活跃对话"，供"切换历史对话"入口调用
+   *
+   * @returns 对应的对话上下文；如果不存在返回 undefined
+   */
+  setActiveConversation(conversationId: string): ConversationContext | undefined;
 };
+
+function summarize(context: ConversationContext): ConversationSummary {
+  return {
+    conversationId: context.conversationId,
+    updatedAt: context.updatedAt,
+    preview: context.messages.find((message) => message.role === "user")?.content.slice(0, 60) ?? "",
+  };
+}
 
 /**
  * 创建一个新的对话存储实例
@@ -110,6 +130,18 @@ export function createConversationStore(): ConversationStore {
 
     clearActiveConversation(): void {
       // no-op：内存实现没有持久化的"活跃对话"可清
+    },
+
+    listConversations(): ConversationSummary[] {
+      // reverse first so a stable sort breaks updatedAt ties by most-recently-inserted
+      return Array.from(conversations.values())
+        .reverse()
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .map(summarize);
+    },
+
+    setActiveConversation(conversationId: string): ConversationContext | undefined {
+      return conversations.get(conversationId);
     },
   };
 }
