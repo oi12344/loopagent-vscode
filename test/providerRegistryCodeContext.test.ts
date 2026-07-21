@@ -122,7 +122,7 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     });
   });
 
-  it("returns readFile and confirmed applyEdit observations to the model", async () => {
+  it("returns read, edit and approved command observations to the model", async () => {
     const capturedMessages: ModelMessage[][] = [];
     const workspaceIntelligence = {
       buildCodeIntelligencePrompt: vi.fn(async () => "unused"),
@@ -139,6 +139,12 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
       description: "Apply an edit.",
       inputSchema: { type: "object" },
       invoke: vi.fn(async () => "Changes were applied."),
+    };
+    const runCommandTool: ReactAgentTool = {
+      name: "runCommand",
+      description: "Run an approved command.",
+      inputSchema: { type: "object" },
+      invoke: vi.fn(async () => "Status: exited\nExit code: 0\nstdout:\ntypecheck passed\nstderr:\n"),
     };
 
     vi.resetModules();
@@ -180,10 +186,18 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
               argumentsDelta:
                 '{"changes":[{"kind":"replace","path":"src/example.ts","oldText":"before","newText":"after"}]}',
             };
+          } else if (capturedMessages.length === 3) {
+            yield {
+              type: "toolCallDelta",
+              index: 0,
+              id: "command-call",
+              name: "runCommand",
+              argumentsDelta: '{"command":"npm run typecheck"}',
+            };
           } else {
-            yield { type: "contentDelta", content: "Edit applied." };
+            yield { type: "contentDelta", content: "Edit applied and verified." };
           }
-          yield { type: "finishReason", reason: capturedMessages.length < 3 ? "tool_calls" : "stop" };
+          yield { type: "finishReason", reason: capturedMessages.length < 4 ? "tool_calls" : "stop" };
         },
       }),
     }));
@@ -192,13 +206,13 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     const runner = await createConfiguredAgentRunner(
       {} as never,
       { provider: "deepseek" },
-      { workspaceIntelligence, readFileTool, applyEditTool },
+      { workspaceIntelligence, readFileTool, applyEditTool, runCommandTool },
     );
 
     await expect(collectHostMessages(runner, "Rename the constant.")).resolves.toContainEqual({
       type: "assistantDelta",
       runId: "run-1",
-      content: "Edit applied.",
+      content: "Edit applied and verified.",
     });
 
     const systemPrompt = capturedMessages[0]!
@@ -219,8 +233,11 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
       "Do not ask the user for textual confirmation before calling applyEdit; applyEdit opens the review interface and handles confirmation.",
     );
     expect(systemPrompt).toContain("Do not claim an edit succeeded until applyEdit reports that it was applied.");
+    expect(systemPrompt).toContain("Use runCommand when tests, type checks, or builds are relevant to verify a change.");
+    expect(systemPrompt).toContain("If the user rejects a command, do not request the same command again.");
     expect(readFileTool.invoke).toHaveBeenCalledTimes(1);
     expect(applyEditTool.invoke).toHaveBeenCalledTimes(1);
+    expect(runCommandTool.invoke).toHaveBeenCalledTimes(1);
     const allMessages = capturedMessages.flat();
     expect(allMessages.some((m) => m.role === "user" && m.content === "Rename the constant.")).toBe(true);
     expect(
@@ -229,6 +246,11 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(
       allMessages.some((m) => m.role === "assistant" && (m as any)?.toolCalls?.some((c: any) => c.function.name === "applyEdit")),
     ).toBe(true);
+    expect(allMessages).toContainEqual(expect.objectContaining({
+      role: "tool",
+      name: "runCommand",
+      content: expect.stringContaining("Exit code: 0"),
+    }));
   });
 
   it("wires tree-sitter parser runtime into VS Code workspace intelligence", async () => {

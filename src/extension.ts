@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { createApplyEditTool } from "./extension/agent/applyEditTool";
 import { createEditPreviewService } from "./extension/agent/editPreviewService";
 import { createReadFileTool } from "./extension/agent/readFileTool";
+import { createRunCommandTool } from "./extension/agent/runCommandTool";
 import { startAgentRun, type AgentRunHandle } from "./extension/agentRunner";
 import { createTreeSitterParserRuntime } from "./extension/intelligence/parser/treeSitterRuntime";
 import { createVsCodeWorkspaceIntelligence } from "./extension/intelligence/vscodeWorkspaceIntelligence";
@@ -77,6 +78,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private readonly editPreviewService;
   private readonly readFileTool;
   private readonly applyEditTool;
+  private readonly runCommandTool;
   private readonly conversationStore: ConversationStore & { close?(): void };
   private readonly conversationManager: ConversationManager;
   private currentConversationId: string | undefined;
@@ -89,6 +91,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.editPreviewService = createEditPreviewService(vscode);
     this.readFileTool = createReadFileTool(vscode);
     this.applyEditTool = createApplyEditTool(this.editPreviewService);
+    this.runCommandTool = createRunCommandTool(vscode);
 
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     this.conversationStore = workspaceRoot
@@ -251,6 +254,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
         workspaceIntelligence: this.workspaceIntelligence,
         readFileTool: this.readFileTool,
         applyEditTool: this.applyEditTool,
+        runCommandTool: this.runCommandTool,
       }),
       postMessage: (hostMessage: HostToWebviewMessage) => {
         // Capture assistant content and reasoning

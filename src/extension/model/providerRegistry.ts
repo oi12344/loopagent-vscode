@@ -37,6 +37,8 @@ const REACT_SYSTEM_PROMPT = [
   "After reading the relevant files, call applyEdit immediately with the complete change proposal.",
   "Do not ask the user for textual confirmation before calling applyEdit; applyEdit opens the review interface and handles confirmation.",
   "Do not claim an edit succeeded until applyEdit reports that it was applied.",
+  "Use runCommand when tests, type checks, or builds are relevant to verify a change.",
+  "If the user rejects a command, do not request the same command again.",
   "Answer only from supported evidence and state any material limitation.",
   "Do not invent repository facts when the tool does not provide enough evidence.",
 ].join("\n");
@@ -47,6 +49,7 @@ export type CreateConfiguredAgentRunnerDeps = {
   parserRuntime?: ParserRuntime;
   readFileTool?: ReactAgentTool;
   applyEditTool?: ReactAgentTool;
+  runCommandTool?: ReactAgentTool;
 };
 
 export async function createConfiguredAgentRunner(
@@ -75,6 +78,7 @@ export async function createConfiguredAgentRunner(
     createExploreCodeTool(workspaceIntelligence),
     ...(deps.readFileTool ? [deps.readFileTool] : []),
     ...(deps.applyEditTool ? [deps.applyEditTool] : []),
+    ...(deps.runCommandTool ? [deps.runCommandTool] : []),
   ];
   return createReactAgentRunner({
     providerName: provider.displayName,
