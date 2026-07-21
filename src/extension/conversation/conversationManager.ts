@@ -1,4 +1,9 @@
-import type { ConversationContext, ChatMessage, ConversationSummary } from "../../shared/chatTypes";
+import type {
+  ConversationContext,
+  ChatMessage,
+  ConversationSummary,
+  InterruptedRunCheckpoint,
+} from "../../shared/chatTypes";
 import type { ConversationStore } from "./conversationStore";
 
 /**
@@ -54,6 +59,12 @@ export type ConversationManager = {
 
   /** 透传 ConversationStore.setActiveConversation */
   setActiveConversation(conversationId: string): ConversationContext | undefined;
+
+  saveInterruptedRun(checkpoint: InterruptedRunCheckpoint): void;
+
+  loadInterruptedRun(conversationId: string): InterruptedRunCheckpoint | undefined;
+
+  clearInterruptedRun(conversationId: string): void;
 };
 
 /**
@@ -109,6 +120,18 @@ export function createConversationManager(store: ConversationStore): Conversatio
 
     setActiveConversation(conversationId: string): ConversationContext | undefined {
       return store.setActiveConversation(conversationId);
+    },
+
+    saveInterruptedRun(checkpoint: InterruptedRunCheckpoint): void {
+      store.saveInterruptedRun(checkpoint);
+    },
+
+    loadInterruptedRun(conversationId: string): InterruptedRunCheckpoint | undefined {
+      return store.loadInterruptedRun(conversationId);
+    },
+
+    clearInterruptedRun(conversationId: string): void {
+      store.clearInterruptedRun(conversationId);
     },
   };
 }

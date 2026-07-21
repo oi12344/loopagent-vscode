@@ -16,7 +16,7 @@ import type { ConversationStore } from "./extension/conversation/conversationSto
 import { createPersistentConversationStore } from "./extension/conversation/persistentConversationStore";
 import { createConversationManager, type ConversationManager } from "./extension/conversation/conversationManager";
 import type { WebviewToHostMessage, HostToWebviewMessage, TaskMode, RunModelSelection } from "./shared/messages";
-import type { ChatMessage } from "./shared/chatTypes";
+import type { ChatMessage, InterruptedRunCheckpoint } from "./shared/chatTypes";
 
 const chatViewId = "loopagent.chat";
 const viewContainerId = "workbench.view.extension.loopagent";
@@ -138,7 +138,9 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       } else if (message.type === "switchConversation") {
         this.handleSwitchConversation(message, webviewView.webview);
       } else if (message.type === "stopRun") {
-        this.activeRun?.cancel();
+        this.handleStopRun(webviewView.webview);
+      } else if (message.type === "resumeRun") {
+        this.handleResumeRun(message, webviewView.webview);
       } else if (message.type === "webviewReady") {
         this.handleWebviewReady(webviewView.webview);
       }
@@ -159,6 +161,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
         conversationId: restored.conversationId,
         messages: restored.messages,
       } satisfies HostToWebviewMessage);
+      this.sendInterruptedRun(webview, restored.conversationId);
     }
 
     this.sendConversationList(webview);
@@ -166,6 +169,9 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
 
   private handleNewConversation(): void {
     this.activeRun?.cancel();
+    if (this.currentConversationId) {
+      this.conversationManager.clearInterruptedRun(this.currentConversationId);
+    }
     this.currentConversationId = undefined;
     this.conversationManager.clearActiveConversation();
   }
@@ -186,6 +192,65 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       conversationId: conversation.conversationId,
       messages: conversation.messages,
     } satisfies HostToWebviewMessage);
+    this.sendInterruptedRun(webview, conversation.conversationId);
+  }
+
+  private sendInterruptedRun(webview: vscode.Webview, conversationId: string): void {
+    const checkpoint = this.conversationManager.loadInterruptedRun(conversationId);
+    if (!checkpoint) return;
+    webview.postMessage({
+      type: "runInterrupted",
+      runId: checkpoint.runId,
+      conversationId: checkpoint.conversationId,
+      task: checkpoint.task,
+    } satisfies HostToWebviewMessage);
+  }
+
+  private handleStopRun(webview: vscode.Webview): void {
+    const run = this.activeRun;
+    const conversationId = this.currentConversationId;
+    if (!run || !conversationId) return;
+
+    run.cancel();
+    void run.done.finally(() => {
+      const checkpoint = this.conversationManager.loadInterruptedRun(conversationId);
+      if (checkpoint?.runId !== run.runId) return;
+      webview.postMessage({
+        type: "runInterrupted",
+        runId: checkpoint.runId,
+        conversationId: checkpoint.conversationId,
+        task: checkpoint.task,
+      } satisfies HostToWebviewMessage);
+    });
+  }
+
+  private handleResumeRun(
+    message: Extract<WebviewToHostMessage, { type: "resumeRun" }>,
+    webview: vscode.Webview,
+  ): void {
+    const checkpoint = this.conversationManager.loadInterruptedRun(message.conversationId);
+    if (!checkpoint) {
+      webview.postMessage({
+        type: "runFailed",
+        runId: message.runId,
+        message: "Interrupted run is no longer available",
+      } satisfies HostToWebviewMessage);
+      return;
+    }
+
+    const conversation = this.conversationManager.getConversation(message.conversationId);
+    if (!conversation) return;
+    this.currentConversationId = conversation.conversationId;
+    this.executeRun(
+      message.runId,
+      checkpoint.task,
+      checkpoint.mode,
+      checkpoint.model,
+      this.conversationManager.getConversationHistory(conversation.conversationId),
+      conversation.conversationId,
+      webview,
+      checkpoint,
+    );
   }
 
   private sendConversationList(webview: vscode.Webview): void {
@@ -222,6 +287,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     webview: vscode.Webview,
   ): void {
     this.currentConversationId = message.conversationId;
+    this.conversationManager.clearInterruptedRun(message.conversationId);
     this.conversationManager.addUserMessage(message.conversationId, message.userMessage);
     const conversationHistory = this.conversationManager.getConversationHistory(message.conversationId);
     console.log(`[handleContinueConversation] conversationId=${message.conversationId}, history.length=${conversationHistory.length}`);
@@ -241,6 +307,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     conversationHistory: ChatMessage[],
     conversationId: string,
     webview: vscode.Webview,
+    resumeCheckpoint?: InterruptedRunCheckpoint,
   ): void {
     this.activeRun?.cancel();
 
@@ -255,6 +322,14 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
         readFileTool: this.readFileTool,
         applyEditTool: this.applyEditTool,
         runCommandTool: this.runCommandTool,
+        onCheckpoint: (checkpoint) => {
+          this.conversationManager.saveInterruptedRun({
+            ...checkpoint,
+            conversationId,
+            mode: mode ?? checkpoint.mode,
+            model,
+          });
+        },
       }),
       postMessage: (hostMessage: HostToWebviewMessage) => {
         // Capture assistant content and reasoning
@@ -270,13 +345,17 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
           const message = assistantMessages.get(hostMessage.runId);
           if (message && conversationId) {
             this.conversationManager.addAssistantMessage(conversationId, message.content, message.reasoning);
+            this.conversationManager.clearInterruptedRun(conversationId);
           }
+        } else if (hostMessage.type === "runFailed" || hostMessage.type === "runFinished") {
+          this.conversationManager.clearInterruptedRun(conversationId);
         }
 
         webview.postMessage(hostMessage);
       },
       conversationHistory,
       conversationId,
+      resumeState: resumeCheckpoint ? { kind: "react", checkpoint: resumeCheckpoint } : undefined,
     });
 
     this.activeRun = run;

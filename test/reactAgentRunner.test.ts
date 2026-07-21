@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createReactAgentRunner } from "../src/extension/agent/reactAgentRunner";
 import type { AgentRunner } from "../src/extension/agentRunner";
+import type { InterruptedRunCheckpoint } from "../src/shared/chatTypes";
 import type { HostToWebviewMessage } from "../src/shared/messages";
 
 async function collectRunnerMessages(
@@ -8,10 +9,17 @@ async function collectRunnerMessages(
   task = "Inspect workspace",
   signal = new AbortController().signal,
   conversationHistory?: any[],
+  checkpoint?: InterruptedRunCheckpoint,
 ): Promise<HostToWebviewMessage[]> {
   const messages: HostToWebviewMessage[] = [];
 
-  for await (const message of runner.run({ runId: "run-1", task, signal, conversationHistory })) {
+  for await (const message of runner.run({
+    runId: "run-1",
+    task,
+    signal,
+    conversationHistory,
+    ...(checkpoint ? { resumeState: { kind: "react" as const, checkpoint } } : {}),
+  })) {
     messages.push(message);
   }
 
@@ -27,6 +35,82 @@ async function collectRunnerMessagesInMode(runner: AgentRunner, mode: "ask" | "e
 }
 
 describe("createReactAgentRunner", () => {
+  it("saves the next step and tool results in an interrupted-run checkpoint", async () => {
+    const checkpoints: InterruptedRunCheckpoint[] = [];
+    let turn = 0;
+    const runner = createReactAgentRunner({
+      onCheckpoint: (checkpoint) => checkpoints.push(checkpoint),
+      tools: [
+        {
+          name: "echoObservation",
+          description: "Echo a test observation.",
+          inputSchema: { type: "string" },
+          invoke: async () => "observed workspace",
+        },
+      ],
+      modelTurn: async () => {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            kind: "toolRequests",
+            assistantMessage: {
+              role: "assistant",
+              content: "",
+              toolCalls: [
+                {
+                  id: "tool-1",
+                  type: "function",
+                  function: { name: "echoObservation", arguments: '"workspace"' },
+                },
+              ],
+            },
+            requests: [{ id: "tool-1", name: "echoObservation", rawArguments: '"workspace"', input: "workspace" }],
+          };
+        }
+        return { kind: "final", content: "done" };
+      },
+    });
+
+    await collectRunnerMessages(runner);
+
+    expect(checkpoints[0]).toMatchObject({ step: 1, task: "Inspect workspace" });
+    expect(checkpoints.at(-1)).toMatchObject({
+      step: 2,
+      messages: [
+        { role: "user", content: "Inspect workspace" },
+        { role: "assistant", toolCalls: [expect.objectContaining({ id: "tool-1" })] },
+        { role: "tool", requestId: "tool-1", content: "observed workspace" },
+      ],
+    });
+  });
+
+  it("resumes from a React checkpoint without appending the task twice", async () => {
+    const checkpoint: InterruptedRunCheckpoint = {
+      version: 1,
+      conversationId: "conv-1",
+      runId: "run-old",
+      task: "Inspect workspace",
+      step: 2,
+      messages: [
+        { role: "user", content: "Inspect workspace" },
+        { role: "assistant", content: "", toolCalls: [] },
+        { role: "tool", requestId: "tool-1", name: "echoObservation", content: "observed workspace" },
+      ],
+      updatedAt: 1,
+    };
+    let capturedMessages: unknown[] = [];
+    const runner = createReactAgentRunner({
+      modelTurn: async ({ messages }) => {
+        capturedMessages = messages;
+        return { kind: "final", content: "resumed" };
+      },
+    });
+
+    await collectRunnerMessages(runner, "Inspect workspace", new AbortController().signal, undefined, checkpoint);
+
+    expect(capturedMessages).toEqual(checkpoint.messages);
+  });
+
   it("finishes when the model returns a final answer", async () => {
     const runner = createReactAgentRunner({
       modelTurn: async () => ({ kind: "final", content: "Workspace is ready." }),

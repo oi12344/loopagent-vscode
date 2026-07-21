@@ -1,5 +1,5 @@
 import type { HostToWebviewMessage, TaskMode } from "../shared/messages";
-import type { ChatMessage } from "../shared/chatTypes";
+import type { ChatMessage, InterruptedRunCheckpoint } from "../shared/chatTypes";
 
 export type AgentRunRequest = {
   runId: string;
@@ -7,6 +7,13 @@ export type AgentRunRequest = {
   mode?: TaskMode;
   signal: AbortSignal;
   conversationHistory?: ChatMessage[];
+  conversationId?: string;
+  resumeState?: AgentResumeState;
+};
+
+export type AgentResumeState = {
+  kind: "react";
+  checkpoint: InterruptedRunCheckpoint;
 };
 
 export type AgentRunner = {
@@ -23,6 +30,7 @@ export type StartAgentRunOptions = {
   runId?: string;
   conversationHistory?: ChatMessage[];
   conversationId?: string;
+  resumeState?: AgentResumeState;
 };
 
 export type AgentRunHandle = {
@@ -39,6 +47,7 @@ export function startAgentRun({
   runId = createRunId(),
   conversationHistory,
   conversationId,
+  resumeState,
 }: StartAgentRunOptions): AgentRunHandle {
   const abortController = new AbortController();
   const request: AgentRunRequest = {
@@ -47,6 +56,8 @@ export function startAgentRun({
     mode,
     signal: abortController.signal,
     conversationHistory,
+    conversationId,
+    resumeState,
   };
 
   const done = pumpRunMessages(runner, request, postMessage);

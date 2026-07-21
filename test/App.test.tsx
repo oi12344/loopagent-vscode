@@ -106,6 +106,27 @@ describe("LoopAgent webview app", () => {
     expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
   });
 
+  it("offers resume after an interrupted run and starts a new run for the same conversation", async () => {
+    const user = userEvent.setup();
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    render(<App vscodeApi={{ postMessage }} />);
+
+    postHostMessage({ type: "conversationStarted", conversationId: "conv-1", runId: "run-1", userMessage: "Interrupted task" });
+    postHostMessage({ type: "runStarted", runId: "run-1", task: "Interrupted task" });
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "deepseek" });
+    postHostMessage({ type: "runInterrupted", runId: "run-1", conversationId: "conv-1", task: "Interrupted task" });
+
+    expect(screen.getByRole("button", { name: "Resume" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: "resumeRun",
+      runId: expect.stringMatching(/^run-/),
+      conversationId: "conv-1",
+    });
+    expect(screen.getByRole("button", { name: "Stop" })).toBeInTheDocument();
+  });
+
   it("removes an empty assistant placeholder when stopping after assistantFinished", async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);

@@ -1,4 +1,5 @@
 import type { HostToWebviewMessage } from "../../shared/messages";
+import type { InterruptedRunCheckpoint } from "../../shared/chatTypes";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import type { ReactAgentMessage, ReactAgentTool, ReactAgentToolRequest, ReactModelTurn } from "./reactTypes";
 import { createToolRegistry } from "./toolRegistry";
@@ -11,6 +12,7 @@ export type CreateReactAgentRunnerOptions = {
   maxSteps?: number;
   maxToolRequestsPerStep?: number;
   systemPromptProvider?: (request: AgentRunRequest) => string | Promise<string>;
+  onCheckpoint?: (checkpoint: InterruptedRunCheckpoint) => void | Promise<void>;
 };
 
 export function createReactAgentRunner({
@@ -20,13 +22,14 @@ export function createReactAgentRunner({
   maxSteps = 20,
   maxToolRequestsPerStep = 10,
   systemPromptProvider,
+  onCheckpoint,
 }: CreateReactAgentRunnerOptions): AgentRunner {
   const toolRegistry = createToolRegistry(tools);
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
 
   return {
     async *run(request) {
-      const { runId, task, signal, conversationHistory = [] } = request;
+      const { runId, task, signal, conversationHistory = [], resumeState } = request;
       if (signal.aborted) {
         return;
       }
@@ -35,33 +38,59 @@ export function createReactAgentRunner({
         yield { type: "runStarted", runId, task } satisfies HostToWebviewMessage;
         yield { type: "assistantStarted", runId, provider: providerName } satisfies HostToWebviewMessage;
 
-        const messages: ReactAgentMessage[] = [];
-        const systemPrompt = await resolveSystemPrompt(systemPromptProvider, request);
+        const resumedCheckpoint = resumeState?.kind === "react" ? resumeState.checkpoint : undefined;
+        const messages: ReactAgentMessage[] = resumedCheckpoint
+          ? resumedCheckpoint.messages.map((message) => message as unknown as ReactAgentMessage)
+          : [];
+        const initialStep = resumedCheckpoint?.step ?? 1;
 
-        if (systemPrompt) {
-          messages.push({ role: "system", content: systemPrompt });
+        if (!resumedCheckpoint) {
+          const systemPrompt = await resolveSystemPrompt(systemPromptProvider, request);
+
+          if (systemPrompt) {
+            messages.push({ role: "system", content: systemPrompt });
+          }
+
+          for (const historyMsg of conversationHistory) {
+            messages.push({
+              role: historyMsg.role,
+              content: historyMsg.content,
+              ...(historyMsg.reasoning ? { reasoningContent: historyMsg.reasoning } : {}),
+            });
+          }
+
+          const latestHistoryMessage = conversationHistory.at(-1);
+          if (latestHistoryMessage?.role !== "user" || latestHistoryMessage.content !== task) {
+            messages.push({ role: "user", content: task });
+          }
         }
 
-        for (const historyMsg of conversationHistory) {
-          messages.push({
-            role: historyMsg.role,
-            content: historyMsg.content,
-            ...(historyMsg.reasoning ? { reasoningContent: historyMsg.reasoning } : {}),
+        const saveCheckpoint = async (step: number): Promise<void> => {
+          if (!onCheckpoint) return;
+          await onCheckpoint({
+            version: 1,
+            conversationId: request.conversationId ?? resumedCheckpoint?.conversationId ?? "",
+            runId,
+            task,
+            mode: request.mode,
+            step,
+            messages: messages.map((message) => ({ ...message })),
+            updatedAt: Date.now(),
           });
-        }
+        };
 
-        const latestHistoryMessage = conversationHistory.at(-1);
-        if (latestHistoryMessage?.role !== "user" || latestHistoryMessage.content !== task) {
-          messages.push({ role: "user", content: task });
-        }
-
-        for (let step = 1; step <= maxSteps + 1; step++) {
+        for (let step = initialStep; step <= maxSteps + 1; step++) {
           const isFinalAnswerStep = step > maxSteps;
           if (signal.aborted) {
             return;
           }
 
           yield { type: "assistantThinking", runId, message: `Planning step ${step}` } satisfies HostToWebviewMessage;
+
+          await saveCheckpoint(step);
+          if (signal.aborted) {
+            return;
+          }
 
           const toolChoice = isFinalAnswerStep ? "none" : "auto";
           const result = await modelTurn({
@@ -163,6 +192,8 @@ export function createReactAgentRunner({
                 content,
               });
             }
+
+            await saveCheckpoint(step + 1);
           }
         }
 

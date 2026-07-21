@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createConversationStore } from "../../../src/extension/conversation/conversationStore";
 import { createConversationManager } from "../../../src/extension/conversation/conversationManager";
+import type { InterruptedRunCheckpoint } from "../../../src/shared/chatTypes";
 
 describe("ConversationManager", () => {
   it("starts a new conversation", () => {
@@ -172,5 +173,26 @@ describe("ConversationManager", () => {
     expect(manager.getConversation(first.conversationId)?.conversationId).toBe(first.conversationId);
     expect(manager.setActiveConversation(first.conversationId)?.conversationId).toBe(first.conversationId);
     expect(manager.getConversation("nonexistent")).toBeUndefined();
+  });
+
+  it("stores and clears an interrupted run checkpoint", () => {
+    const store = createConversationStore();
+    const manager = createConversationManager(store);
+    const context = manager.startConversation();
+    const checkpoint: InterruptedRunCheckpoint = {
+      version: 1,
+      conversationId: context.conversationId,
+      runId: "run-1",
+      task: "Continue the task",
+      step: 2,
+      messages: [{ role: "user", content: "Continue the task" }],
+      updatedAt: 10,
+    };
+
+    manager.saveInterruptedRun(checkpoint);
+    expect(manager.loadInterruptedRun(context.conversationId)).toEqual(checkpoint);
+
+    manager.clearInterruptedRun(context.conversationId);
+    expect(manager.loadInterruptedRun(context.conversationId)).toBeUndefined();
   });
 });

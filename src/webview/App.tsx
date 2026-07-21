@@ -23,11 +23,12 @@ type AssistantTurn = {
   provider: string;
   reasoning: string;
   content: string;
-  status: "thinking" | "streaming" | "done" | "error";
+  status: "thinking" | "streaming" | "done" | "error" | "interrupted";
   error?: string;
 };
 
 type ChatTurn = UserTurn | AssistantTurn;
+type InterruptedRun = { runId: string; conversationId: string; task: string };
 
 type AssistantUpdate = (turn: AssistantTurn) => AssistantTurn;
 
@@ -90,6 +91,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [openMenu, setOpenMenu] = React.useState<"model" | "thinking" | "history" | null>(null);
   const [conversationId, setConversationId] = React.useState<string | undefined>(undefined);
   const [conversations, setConversations] = React.useState<ConversationSummary[]>([]);
+  const [interruptedRun, setInterruptedRun] = React.useState<InterruptedRun | undefined>();
   const nextTurnId = React.useRef(0);
   const composerToolsRef = React.useRef<HTMLDivElement | null>(null);
   const historyMenuRef = React.useRef<HTMLDivElement | null>(null);
@@ -142,7 +144,11 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         return;
       }
 
-      if ("runId" in hostMessage && ignoredRunIdsRef.current.has(hostMessage.runId)) {
+      if (
+        "runId" in hostMessage &&
+        ignoredRunIdsRef.current.has(hostMessage.runId) &&
+        hostMessage.type !== "runInterrupted"
+      ) {
         if (hostMessage.type === "runFinished" || hostMessage.type === "runFailed") {
           ignoredRunIdsRef.current.delete(hostMessage.runId);
         }
@@ -227,6 +233,14 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           return;
         }
 
+        case "runInterrupted": {
+          ignoredRunIdsRef.current.delete(hostMessage.runId);
+          setInterruptedRun({ runId: hostMessage.runId, conversationId: hostMessage.conversationId, task: hostMessage.task });
+          setIsRunning(false);
+          updateAssistantTurn(hostMessage.runId, (turn) => ({ ...turn, status: "interrupted" }));
+          return;
+        }
+
         case "conversationStarted": {
           setIsRunning(true);
           setConversationId(hostMessage.conversationId);
@@ -235,6 +249,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         }
 
         case "conversationRestored": {
+          setInterruptedRun(undefined);
           setConversationId(hostMessage.conversationId);
           setTurns(
             hostMessage.messages.map((chatMessage, index) =>
@@ -340,6 +355,25 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   function handleStop() {
     interruptActiveRun();
     vscodeApi.postMessage({ type: "stopRun" });
+  }
+
+  function resumeInterruptedRun() {
+    if (!interruptedRun || isRunning) return;
+
+    const runId = createTurnId("run");
+    setInterruptedRun(undefined);
+    setIsRunning(true);
+    setTurns((currentTurns) => {
+      const userIndex = findLastIndex(
+        currentTurns,
+        (turn): turn is UserTurn => turn.role === "user" && turn.content === interruptedRun.task,
+      );
+      if (userIndex === -1) return currentTurns;
+      return currentTurns.map((turn, index) =>
+        index === userIndex && turn.role === "user" ? { ...turn, runId, pending: true } : turn,
+      );
+    });
+    vscodeApi.postMessage({ type: "resumeRun", runId, conversationId: interruptedRun.conversationId });
   }
 
   function handleNewConversation() {
@@ -450,7 +484,17 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
               return <UserMessage key={turn.id} turn={turn} />;
             }
 
-            return <AssistantMessage key={turn.id} turn={turn} />;
+            return (
+              <AssistantMessage
+                key={turn.id}
+                turn={turn}
+                onResume={
+                  turn.status === "interrupted" && interruptedRun?.runId === turn.runId
+                    ? resumeInterruptedRun
+                    : undefined
+                }
+              />
+            );
           })
         )}
       </section>
@@ -616,7 +660,7 @@ function UserMessage({ turn }: { turn: UserTurn }) {
   );
 }
 
-function AssistantMessage({ turn }: { turn: AssistantTurn }) {
+function AssistantMessage({ turn, onResume }: { turn: AssistantTurn; onResume?: () => void }) {
   const [isProcessOpen, setIsProcessOpen] = React.useState(turn.status !== "done");
   const previousStatus = React.useRef(turn.status);
 
@@ -653,6 +697,11 @@ function AssistantMessage({ turn }: { turn: AssistantTurn }) {
         <p className="error-message" role="alert">
           {turn.error}
         </p>
+      ) : null}
+      {onResume ? (
+        <button type="button" onClick={onResume}>
+          Resume
+        </button>
       ) : null}
     </article>
   );
@@ -715,6 +764,10 @@ function formatAssistantStatus(status: AssistantTurn["status"]): string {
 
   if (status === "streaming") {
     return "Responding";
+  }
+
+  if (status === "interrupted") {
+    return "Interrupted";
   }
 
   return "Thinking";

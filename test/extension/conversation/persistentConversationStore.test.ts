@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createPersistentConversationStore } from "../../../src/extension/conversation/persistentConversationStore";
+import type { InterruptedRunCheckpoint } from "../../../src/shared/chatTypes";
 
 const directories: string[] = [];
 const openStores: Array<{ close(): void }> = [];
@@ -185,5 +186,31 @@ describe("createPersistentConversationStore", () => {
     openStores.push(store);
 
     expect(store.loadActiveConversation()).toBeUndefined();
+  });
+
+  it("persists an interrupted run checkpoint across reopen", () => {
+    const { store, databasePath } = openTempStore();
+    const context = store.createConversation();
+    const checkpoint: InterruptedRunCheckpoint = {
+      version: 1,
+      conversationId: context.conversationId,
+      runId: "run-1",
+      task: "Continue the task",
+      mode: "edit",
+      step: 2,
+      messages: [
+        { role: "user", content: "Continue the task" },
+        { role: "assistant", content: "", toolCalls: [] },
+      ],
+      updatedAt: 20,
+    };
+
+    store.saveInterruptedRun(checkpoint);
+    const reopened = createPersistentConversationStore(databasePath);
+    openStores.push(reopened);
+
+    expect(reopened.loadInterruptedRun(context.conversationId)).toEqual(checkpoint);
+    reopened.clearInterruptedRun(context.conversationId);
+    expect(reopened.loadInterruptedRun(context.conversationId)).toBeUndefined();
   });
 });

@@ -13,6 +13,7 @@ import { createVsCodeWorkspaceIntelligence, type VsCodeWorkspaceApi } from "../i
 import { renderCodeRuntimeContextPrompt } from "../runtime/contextPrompt";
 import { collectVsCodeRuntimeContext } from "../runtime/vscodeRuntimeContext";
 import type { RunModelSelection } from "../../shared/messages";
+import type { InterruptedRunCheckpoint } from "../../shared/chatTypes";
 import { getModelRuntimeConfig } from "./modelConfig";
 import { createDeepSeekProvider } from "./providers/deepseekProvider";
 
@@ -50,6 +51,7 @@ export type CreateConfiguredAgentRunnerDeps = {
   readFileTool?: ReactAgentTool;
   applyEditTool?: ReactAgentTool;
   runCommandTool?: ReactAgentTool;
+  onCheckpoint?: (checkpoint: InterruptedRunCheckpoint) => void | Promise<void>;
 };
 
 export async function createConfiguredAgentRunner(
@@ -93,6 +95,7 @@ export async function createConfiguredAgentRunner(
       }
       return [REACT_SYSTEM_PROMPT, runtimePrompt].filter(Boolean).join("\n\n");
     },
+    onCheckpoint: deps.onCheckpoint,
   });
 }
 

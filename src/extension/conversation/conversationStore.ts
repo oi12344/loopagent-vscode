@@ -1,4 +1,9 @@
-import type { ConversationContext, ChatMessage, ConversationSummary } from "../../shared/chatTypes";
+import type {
+  ConversationContext,
+  ChatMessage,
+  ConversationSummary,
+  InterruptedRunCheckpoint,
+} from "../../shared/chatTypes";
 
 /**
  * 对话存储服务
@@ -60,6 +65,12 @@ export type ConversationStore = {
    * @returns 对应的对话上下文；如果不存在返回 undefined
    */
   setActiveConversation(conversationId: string): ConversationContext | undefined;
+
+  saveInterruptedRun(checkpoint: InterruptedRunCheckpoint): void;
+
+  loadInterruptedRun(conversationId: string): InterruptedRunCheckpoint | undefined;
+
+  clearInterruptedRun(conversationId: string): void;
 };
 
 function summarize(context: ConversationContext): ConversationSummary {
@@ -78,6 +89,7 @@ function summarize(context: ConversationContext): ConversationSummary {
  */
 export function createConversationStore(): ConversationStore {
   const conversations = new Map<string, ConversationContext>();
+  const interruptedRuns = new Map<string, InterruptedRunCheckpoint>();
 
   /**
    * 生成唯一的对话ID
@@ -142,6 +154,18 @@ export function createConversationStore(): ConversationStore {
 
     setActiveConversation(conversationId: string): ConversationContext | undefined {
       return conversations.get(conversationId);
+    },
+
+    saveInterruptedRun(checkpoint: InterruptedRunCheckpoint): void {
+      interruptedRuns.set(checkpoint.conversationId, checkpoint);
+    },
+
+    loadInterruptedRun(conversationId: string): InterruptedRunCheckpoint | undefined {
+      return interruptedRuns.get(conversationId);
+    },
+
+    clearInterruptedRun(conversationId: string): void {
+      interruptedRuns.delete(conversationId);
     },
   };
 }

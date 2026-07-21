@@ -2,7 +2,12 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { ChatMessage, ConversationContext, ConversationSummary } from "../../shared/chatTypes";
+import type {
+  ChatMessage,
+  ConversationContext,
+  ConversationSummary,
+  InterruptedRunCheckpoint,
+} from "../../shared/chatTypes";
 import type { ConversationStore } from "./conversationStore";
 
 type ConversationRow = {
@@ -41,6 +46,11 @@ export function createPersistentConversationStore(
     CREATE TABLE IF NOT EXISTS active_conversation (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       conversation_id TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS interrupted_run (
+      conversation_id TEXT PRIMARY KEY,
+      checkpoint_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
     );
   `);
 
@@ -94,6 +104,29 @@ export function createPersistentConversationStore(
     return `conv-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   }
 
+  function readInterruptedRun(conversationId: string): InterruptedRunCheckpoint | undefined {
+    const row = database
+      .prepare("SELECT checkpoint_json FROM interrupted_run WHERE conversation_id = ?")
+      .get(conversationId) as { checkpoint_json: string } | undefined;
+    if (!row) return undefined;
+    try {
+      const checkpoint = JSON.parse(row.checkpoint_json) as InterruptedRunCheckpoint;
+      if (
+        checkpoint.version !== 1 ||
+        checkpoint.conversationId !== conversationId ||
+        typeof checkpoint.runId !== "string" ||
+        typeof checkpoint.task !== "string" ||
+        typeof checkpoint.step !== "number" ||
+        !Array.isArray(checkpoint.messages)
+      ) {
+        return undefined;
+      }
+      return checkpoint;
+    } catch {
+      return undefined;
+    }
+  }
+
   if (!hadActiveConversationTable) {
     const legacy = database
       .prepare("SELECT conversation_id FROM conversation ORDER BY updated_at DESC, rowid DESC LIMIT 1")
@@ -144,6 +177,24 @@ export function createPersistentConversationStore(
 
     clearActiveConversation(): void {
       writeActiveConversationId(undefined);
+    },
+
+    saveInterruptedRun(checkpoint: InterruptedRunCheckpoint): void {
+      database
+        .prepare(
+          `INSERT INTO interrupted_run (conversation_id, checkpoint_json, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(conversation_id) DO UPDATE SET checkpoint_json = excluded.checkpoint_json, updated_at = excluded.updated_at`,
+        )
+        .run(checkpoint.conversationId, JSON.stringify(checkpoint), checkpoint.updatedAt);
+    },
+
+    loadInterruptedRun(conversationId: string): InterruptedRunCheckpoint | undefined {
+      return readInterruptedRun(conversationId);
+    },
+
+    clearInterruptedRun(conversationId: string): void {
+      database.prepare("DELETE FROM interrupted_run WHERE conversation_id = ?").run(conversationId);
     },
 
     listConversations(): ConversationSummary[] {

@@ -51,6 +51,11 @@ export type WebviewToHostMessage =
   | {
       /** 用户点击"停止"，取消正在运行的对话轮次 */
       type: "stopRun";
+    }
+  | {
+      type: "resumeRun";
+      runId: string;
+      conversationId: string;
     };
 
 export type HostToWebviewMessage =
@@ -105,6 +110,12 @@ export type HostToWebviewMessage =
       type: "runFailed";
       runId: string;
       message: string;
+    }
+  | {
+      type: "runInterrupted";
+      runId: string;
+      conversationId: string;
+      task: string;
     }
   | {
       /** Conversation start: signals beginning of a conversation turn */

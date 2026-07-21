@@ -18,6 +18,22 @@ export type ConversationSummary = {
   preview: string;
 };
 
+export type InterruptedRunCheckpoint = {
+  version: 1;
+  conversationId: string;
+  runId: string;
+  task: string;
+  mode?: "ask" | "edit";
+  model?: {
+    provider: "fake" | "deepseek";
+    model: string;
+    thinking: "disabled" | "enabled";
+  };
+  step: number;
+  messages: Array<Record<string, unknown>>;
+  updatedAt: number;
+};
+
 export type ConversationTurn =
   | {
       id: string;
