@@ -150,7 +150,7 @@ npm test -- runCommandTool
 npm test -- providerRegistryCodeContext
 npm test
 npm run typecheck
-npm run build
+npm run compile
 git diff --check
 ```
 
