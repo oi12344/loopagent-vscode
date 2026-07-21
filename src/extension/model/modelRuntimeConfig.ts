@@ -9,13 +9,10 @@ export function createModelRuntimeConfig(
     return workspaceConfig;
   }
 
-  const providerChanged = selection.provider !== workspaceConfig.provider;
-
   return {
     ...workspaceConfig,
-    provider: selection.provider,
+    provider: workspaceConfig.provider,
     model: selection.model.trim() || workspaceConfig.model,
     thinking: selection.thinking,
-    apiKey: providerChanged ? undefined : workspaceConfig.apiKey,
   };
 }

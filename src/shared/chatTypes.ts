@@ -25,7 +25,7 @@ export type InterruptedRunCheckpoint = {
   task: string;
   mode?: "ask" | "edit";
   model?: {
-    provider: "fake" | "deepseek";
+    provider: "deepseek";
     model: string;
     thinking: "disabled" | "enabled";
   };

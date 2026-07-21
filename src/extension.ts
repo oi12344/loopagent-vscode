@@ -370,11 +370,6 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
 async function promptForModelApiKey(context: vscode.ExtensionContext): Promise<void> {
   const provider = getConfiguredProviderId();
 
-  if (provider === "fake") {
-    vscode.window.showWarningMessage("Select a real model provider before setting an API key.");
-    return;
-  }
-
   const apiKey = await vscode.window.showInputBox({
     ignoreFocusOut: true,
     password: true,

@@ -4,7 +4,7 @@ import type { RunModelSelection } from "../../shared/messages";
 import { createModelRuntimeConfig } from "./modelRuntimeConfig";
 import type { DeepSeekThinkingMode } from "./providers/deepseekProvider";
 
-export type ModelProviderId = "fake" | "deepseek";
+export type ModelProviderId = "deepseek";
 
 export type ModelRuntimeConfig = {
   provider: ModelProviderId;
@@ -17,8 +17,7 @@ export type ModelRuntimeConfig = {
 const SECRET_PREFIX = "loopagent.model.apiKey.";
 
 export function getConfiguredProviderId(): ModelProviderId {
-  const configuredProvider = vscode.workspace.getConfiguration("loopagent.model").get<string>("provider", "fake");
-  return configuredProvider === "deepseek" ? "deepseek" : "fake";
+  return "deepseek";
 }
 
 export async function getModelRuntimeConfig(
@@ -51,11 +50,7 @@ export async function getModelApiKey(context: vscode.ExtensionContext, provider:
     return storedKey;
   }
 
-  if (provider === "deepseek") {
-    return process.env.DEEPSEEK_API_KEY;
-  }
-
-  return undefined;
+  return process.env.DEEPSEEK_API_KEY;
 }
 
 export async function setModelApiKey(

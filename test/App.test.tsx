@@ -189,34 +189,6 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
   });
 
-  it("disables deep thinking when the selected model does not support it", async () => {
-    const user = userEvent.setup();
-    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
-
-    render(<App vscodeApi={{ postMessage }} />);
-
-    await user.click(screen.getByRole("button", { name: "DeepSeek v4 Flash" }));
-    await user.click(screen.getByRole("menuitem", { name: "Fake local Local development runner" }));
-
-    expect(screen.getByRole("button", { name: "Fake local" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Think: Not supported" })).toBeDisabled();
-
-    await user.type(screen.getByLabelText("Message"), "hello");
-    await user.click(screen.getByRole("button", { name: "Send" }));
-
-    expect(postMessage).toHaveBeenCalledWith({
-      type: "startTask",
-      runId: expect.stringMatching(/^run-/),
-      task: "hello",
-      mode: "edit",
-      model: {
-        provider: "fake",
-        model: "fake-local",
-        thinking: "disabled",
-      },
-    });
-  });
-
   it("sends typed tasks in the selected Ask mode", async () => {
     const user = userEvent.setup();
     const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();

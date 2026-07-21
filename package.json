@@ -60,10 +60,9 @@
         "loopagent.model.provider": {
           "type": "string",
           "enum": [
-            "fake",
             "deepseek"
           ],
-          "default": "fake",
+          "default": "deepseek",
           "description": "Model provider used when running LoopAgent tasks."
         },
         "loopagent.model.model": {

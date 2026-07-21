@@ -14,7 +14,7 @@ describe("createModelRuntimeConfig", () => {
     expect(
       createModelRuntimeConfig(
         {
-          provider: "fake",
+          provider: "deepseek",
           model: "workspace-model",
           thinking: "disabled",
         },
@@ -27,7 +27,7 @@ describe("createModelRuntimeConfig", () => {
     });
   });
 
-  it("drops the workspace API key when a per-run selection changes provider", () => {
+  it("keeps the workspace API key for the configured provider", () => {
     const selection: RunModelSelection = {
       provider: "deepseek",
       model: "deepseek-v4-flash",
@@ -37,28 +37,28 @@ describe("createModelRuntimeConfig", () => {
     expect(
       createModelRuntimeConfig(
         {
-          provider: "fake",
+          provider: "deepseek",
           model: "workspace-model",
           thinking: "disabled",
-          apiKey: "fake-key",
+          apiKey: "workspace-key",
         },
         selection,
       ),
     ).toMatchObject({
       provider: "deepseek",
-      apiKey: undefined,
+      apiKey: "workspace-key",
     });
   });
 
   it("falls back to workspace model settings when no per-run selection is provided", () => {
     expect(
       createModelRuntimeConfig({
-        provider: "fake",
+        provider: "deepseek",
         model: "workspace-model",
         thinking: "disabled",
       }),
     ).toMatchObject({
-      provider: "fake",
+      provider: "deepseek",
       model: "workspace-model",
       thinking: "disabled",
     });

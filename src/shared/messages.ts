@@ -1,7 +1,7 @@
 import type { ChatMessage, ConversationSummary } from "./chatTypes";
 
 /** AI 模型提供商标识 */
-export type ModelProviderId = "fake" | "deepseek";
+export type ModelProviderId = "deepseek";
 
 /** 模型思维模式 */
 export type ModelThinkingMode = "disabled" | "enabled";

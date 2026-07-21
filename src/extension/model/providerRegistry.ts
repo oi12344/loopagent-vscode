@@ -5,7 +5,6 @@ import type { ReactAgentTool } from "../agent/reactTypes";
 import { createOpenAiReactModelTurn } from "../agent/openAiReactModelTurn";
 import { createReactAgentRunner } from "../agent/reactAgentRunner";
 import type { AgentRunner } from "../agentRunner";
-import { fakeAgentRunner } from "../fakeRun";
 import type { ParserRuntime } from "../intelligence/parser/parserRuntime";
 import { createTreeSitterParserRuntime } from "../intelligence/parser/treeSitterRuntime";
 import type { WorkspaceIntelligence } from "../intelligence/workspaceIntelligence";
@@ -60,10 +59,6 @@ export async function createConfiguredAgentRunner(
   deps: CreateConfiguredAgentRunnerDeps = {},
 ): Promise<AgentRunner> {
   const config = await getModelRuntimeConfig(context, selection);
-  if (config.provider === "fake") {
-    return fakeAgentRunner;
-  }
-
   const workspaceIntelligence =
     deps.workspaceIntelligence ??
     createVsCodeWorkspaceIntelligence(deps.vscodeApi ?? requireVsCodeApi(), {

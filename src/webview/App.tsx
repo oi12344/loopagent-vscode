@@ -54,17 +54,6 @@ const modelOptions: ModelOption[] = [
     },
     supportsThinking: true,
   },
-  {
-    id: "fake-local",
-    label: "Fake local",
-    description: "Local development runner",
-    selection: {
-      provider: "fake",
-      model: "fake-local",
-      thinking: "disabled",
-    },
-    supportsThinking: false,
-  },
 ];
 
 const suggestedTasks = ["Explain the active file", "Find where this is implemented"];
