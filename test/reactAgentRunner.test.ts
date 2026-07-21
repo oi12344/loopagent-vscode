@@ -94,6 +94,7 @@ describe("createReactAgentRunner", () => {
       { type: "agentEvent", runId: "run-1", message: "Running tool echoObservation" },
       { type: "assistantThinking", runId: "run-1", message: "Planning step 2" },
       { type: "assistantDelta", runId: "run-1", content: "Used observation." },
+      { type: "assistantFinished", runId: "run-1" },
       { type: "runFinished", runId: "run-1" },
     ]);
   });
@@ -1007,6 +1008,28 @@ describe("createReactAgentRunner", () => {
       { role: "user", content: "Write a function" },
       { role: "assistant", content: "Here's a function", reasoningContent: "Thinking about the best approach" },
       { role: "user", content: "Improve it" },
+    ]);
+  });
+
+  it("does not duplicate a task already stored as the latest user message", async () => {
+    const capturedMessages: unknown[] = [];
+    const runner = createReactAgentRunner({
+      modelTurn: async ({ messages }) => {
+        capturedMessages.push(messages);
+        return { kind: "final", content: "Done." };
+      },
+    });
+
+    await collectRunnerMessages(runner, "Current question", new AbortController().signal, [
+      { role: "user", content: "Earlier question" },
+      { role: "assistant", content: "Earlier answer" },
+      { role: "user", content: "Current question" },
+    ]);
+
+    expect(capturedMessages[0]).toEqual([
+      { role: "user", content: "Earlier question" },
+      { role: "assistant", content: "Earlier answer" },
+      { role: "user", content: "Current question" },
     ]);
   });
 });
