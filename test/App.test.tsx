@@ -372,6 +372,7 @@ describe("LoopAgent webview app", () => {
 
     await user.click(screen.getByRole("button", { name: "History" }));
 
+    expect(screen.getByRole("menu", { name: "History" })).toHaveClass("history-menu");
     expect(screen.getByRole("menuitem", { name: "And Rust?" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "What is TypeScript?" })).toBeInTheDocument();
 

@@ -58,6 +58,7 @@
 
 ## 设计文档（specs/）
 
+- [历史菜单定位修复设计](specs/2026-07-21-history-menu-position-design.md)
 - [移除 Fake 模型提供方设计](specs/2026-07-21-remove-fake-provider-design.md)
 
 - [React Webview 最小模块设计](specs/2026-07-04-react-webview-design.md)

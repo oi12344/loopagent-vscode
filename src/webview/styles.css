@@ -360,6 +360,13 @@ button:disabled {
   z-index: 5;
 }
 
+.history-menu {
+  bottom: auto;
+  left: auto;
+  right: 0;
+  top: calc(100% + 6px);
+}
+
 .menu-item {
   background: transparent;
   color: var(--vscode-foreground);

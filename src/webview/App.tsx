@@ -619,7 +619,7 @@ function HistoryMenu({
   onSelect(conversationId: string): void;
 }) {
   return (
-    <div className="composer-menu" role="menu" aria-label="History">
+    <div className="composer-menu history-menu" role="menu" aria-label="History">
       {conversations.length === 0 ? (
         <p className="menu-empty">No past conversations yet.</p>
       ) : (
