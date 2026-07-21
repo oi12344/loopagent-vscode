@@ -28,6 +28,9 @@ export function createPersistentConversationStore(
   database.exec(
     "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;",
   );
+  const hadActiveConversationTable = database
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'active_conversation'")
+    .get() !== undefined;
   database.exec(`
     CREATE TABLE IF NOT EXISTS conversation (
       conversation_id TEXT PRIMARY KEY,
@@ -89,6 +92,13 @@ export function createPersistentConversationStore(
 
   function generateConversationId(): string {
     return `conv-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  }
+
+  if (!hadActiveConversationTable) {
+    const legacy = database
+      .prepare("SELECT conversation_id FROM conversation ORDER BY updated_at DESC, rowid DESC LIMIT 1")
+      .get() as { conversation_id: string } | undefined;
+    if (legacy) writeActiveConversationId(legacy.conversation_id);
   }
 
   return {
