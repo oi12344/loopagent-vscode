@@ -1,6 +1,6 @@
 # 受控命令执行工具设计
 
-> 状态：设计已确认，等待实施计划。
+> 状态：已实施，并完成自动化验证与 Windows Extension Host 真实验收。
 
 ## 背景
 
@@ -175,3 +175,16 @@ git diff --check
 只有实际使用证明逐次审批造成明显阻塞后，才评估低风险命令自动批准或持久化权限规则。只有用户明确需要
 可交互进程时，才设计 PTY 或 Terminal 集成。只有进入阶段 B 的跨平台要求后，才扩展 shell、信号和进程树
 终止的宿主矩阵。
+
+## 实施与验证结果
+
+2026-07-21 已按本设计完成 `runCommand` 工具及生产 ReAct runner 接入：
+
+- `test/runCommandTool.test.ts` 的 5 个用例通过，覆盖批准执行、拒绝、目录逃逸、非零退出、取消/超时与有界输出等核心契约。
+- `test/providerRegistryCodeContext.test.ts` 的 3 个用例通过，确认生产模型请求包含 `runCommand`、既有工具仍保留、tool observation 能回传模型。
+- 全量测试通过：60 个测试文件、410 个用例；`npm run typecheck`、`npm run compile` 和 `git diff --check` 均通过。
+- 使用唯一的 Extension Development Host（`npm run debug:vscode`，固定端口 `9333`）完成真实验收。确认框完整显示命令和 `E:\zz\loopagent-vscode`。
+- Run 路径实际执行 `npm run compile`，Agent 报告退出码 `0`、stdout 中的 `node esbuild.js` 和空 stderr。
+- Cancel 路径拒绝 `npm run typecheck` 后未执行命令；Agent 明确报告没有真实退出码或输出，且未重复申请同一命令。
+
+实现期间还修复了真实全量测试暴露的两个既有契约问题：恢复 runner 的 `assistantFinished` 事件，并避免旧版会话数据迁移错误激活已清除的现代会话。相关提交见实施计划末尾。

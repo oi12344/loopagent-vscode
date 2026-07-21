@@ -39,7 +39,7 @@
 - Consumes: `ReactAgentTool`；VS Code 的 `workspace.workspaceFolders`、`window.showWarningMessage`；调用方传入的 `AbortSignal`。
 - Produces: `createRunCommandTool(vscodeApi, options?): ReactAgentTool`，工具名固定为 `runCommand`，输入为 `{ command: string; cwd?: string }`。
 
-- [ ] **Step 1: 写工具契约和安全边界的失败测试**
+- [x] **Step 1: 写工具契约和安全边界的失败测试**
 
 在 `test/runCommandTool.test.ts` 创建临时根目录与目录型符号链接，fake VS Code API 只实现以下结构：
 
@@ -97,13 +97,13 @@ it("terminates the process tree on timeout and abort", async () => {
 
 同文件实现 `nodeCommand`、`nodeTreeCommand`、`runTimeoutAndAbortCases` 与 `waitForProcessExit`；它们只组合 `process.execPath`、临时文件和轮询 `process.kill(pid, 0)`，不得用源码字符串断言替代真实子进程。
 
-- [ ] **Step 2: 运行测试确认红灯**
+- [x] **Step 2: 运行测试确认红灯**
 
 Run: `npm test -- runCommandTool`
 
 Expected: FAIL，错误包含 `Cannot find module '../src/extension/agent/runCommandTool'`。
 
-- [ ] **Step 3: 实现最小工具**
+- [x] **Step 3: 实现最小工具**
 
 在 `src/extension/agent/runCommandTool.ts` 实现以下公开形状；`options` 只允许测试缩短超时和输出上限，不暴露给模型：
 
@@ -162,13 +162,13 @@ stderr:
 
 取消时先清理进程树，再以 `signal.reason` 拒绝；超时时清理后返回 `Status: timed_out`。Windows 调用 `taskkill.exe /PID <pid> /T /F`，非 Windows 对 detached process group 发送信号；目标已退出按幂等成功处理，其他错误写入 `console.error` 后继续释放监听器和定时器。
 
-- [ ] **Step 4: 运行核心测试确认绿灯**
+- [x] **Step 4: 运行核心测试确认绿灯**
 
 Run: `npm test -- runCommandTool`
 
 Expected: PASS，5 个核心用例通过，测试结束后无残留 node 子进程。
 
-- [ ] **Step 5: 提交核心工具**
+- [x] **Step 5: 提交核心工具**
 
 ```powershell
 git add src/extension/agent/runCommandTool.ts test/runCommandTool.test.ts
@@ -186,7 +186,7 @@ git commit -m "feat(agent): add approved workspace command tool"
 - Consumes: Task 1 的 `createRunCommandTool` 与 `ReactAgentTool`。
 - Produces: `CreateConfiguredAgentRunnerDeps.runCommandTool?: ReactAgentTool`，生产工具顺序为 `exploreCode`、`readFile`、`applyEdit`、`runCommand`。
 
-- [ ] **Step 1: 扩展生产 runner 失败测试**
+- [x] **Step 1: 扩展生产 runner 失败测试**
 
 把现有 `returns readFile and confirmed applyEdit observations to the model` 改名为 `returns read, edit and approved command observations to the model`，增加：
 
@@ -212,13 +212,13 @@ expect(capturedMessages.flat()).toContainEqual(expect.objectContaining({
 }));
 ```
 
-- [ ] **Step 2: 运行测试确认红灯**
+- [x] **Step 2: 运行测试确认红灯**
 
 Run: `npm test -- providerRegistryCodeContext`
 
 Expected: FAIL，`runCommandTool.invoke` 未调用，system prompt 缺少两条命令规则。
 
-- [ ] **Step 3: 完成最小生产接入**
+- [x] **Step 3: 完成最小生产接入**
 
 在 `CreateConfiguredAgentRunnerDeps` 增加 `runCommandTool?: ReactAgentTool`，并在 tools 数组末尾加入：
 
@@ -236,7 +236,7 @@ runCommandTool: this.runCommandTool,
 
 不修改 `ReactAgentTool`、Webview 消息、`reactAgentRunner` 或并发调度；`runCommand` 未声明 `isConcurrencySafe`，自然保持串行。
 
-- [ ] **Step 4: 运行接入测试、类型检查和编译**
+- [x] **Step 4: 运行接入测试、类型检查和编译**
 
 Run: `npm test -- providerRegistryCodeContext`
 
@@ -250,7 +250,7 @@ Run: `npm run compile`
 
 Expected: PASS，`dist/extension.js` 与 `dist/webview.js` 构建成功。
 
-- [ ] **Step 5: 提交生产接入**
+- [x] **Step 5: 提交生产接入**
 
 ```powershell
 git add src/extension.ts src/extension/model/providerRegistry.ts test/providerRegistryCodeContext.test.ts
@@ -263,7 +263,7 @@ git commit -m "feat(agent): wire approved commands into react runner"
 - Modify: `docs/superpowers/specs/2026-07-21-run-command-tool-design.md`
 - Modify: `docs/superpowers/plans/2026-07-21-run-command-tool-plan.md`
 
-- [ ] **Step 1: 运行集中自动验证**
+- [x] **Step 1: 运行集中自动验证**
 
 ```powershell
 npm test -- runCommandTool
@@ -276,19 +276,19 @@ git diff --check
 
 Expected: 所有命令退出码为 0；Vitest 无失败文件/用例；TypeScript 与 esbuild 成功；diff 无空白错误。
 
-- [ ] **Step 2: 在唯一调试窗口完成真实闭环**
+- [x] **Step 2: 在唯一调试窗口完成真实闭环**
 
 如果固定调试窗口未运行，执行一次 `npm run debug:vscode`；已运行则刷新同一窗口并重新执行 `LoopAgent: Open Panel`。向真实 Agent 提交“运行 `npm run typecheck` 并报告结果”，确认：
 
 模态框必须完整显示命令与 `E:\zz\loopagent-vscode`；选择 `Run` 后 Agent 收到真实结果并给出结论；关闭第二次无副作用命令的审批框后不创建进程且不重复申请；结束时只有一个调试窗口且无遗留进程。
 
-- [ ] **Step 3: 集中审查与清理**
+- [x] **Step 3: 集中审查与清理**
 
 Run: `git diff -- src/extension/agent/runCommandTool.ts src/extension/model/providerRegistry.ts src/extension.ts test/runCommandTool.test.ts test/providerRegistryCodeContext.test.ts`
 
 Expected: 只包含本功能；无临时日志、死代码、新依赖、权限缓存或工作区外访问路径。
 
-- [ ] **Step 4: 更新中文实施结果并提交**
+- [x] **Step 4: 更新中文实施结果并提交**
 
 在规格状态和本计划末尾写入实际测试文件/用例数、六条验证命令结果、真实审批/拒绝结果、提交号及实际限制；不得预填未执行结果。
 
@@ -296,3 +296,33 @@ Expected: 只包含本功能；无临时日志、死代码、新依赖、权限�
 git add docs/superpowers/specs/2026-07-21-run-command-tool-design.md docs/superpowers/plans/2026-07-21-run-command-tool-plan.md
 git commit -m "docs: record approved command verification"
 ```
+
+## 实施结果
+
+完成日期：2026-07-21。
+
+自动化验证：
+
+- `npm test -- runCommandTool`：通过，1 个测试文件、5 个用例。
+- `npm test -- providerRegistryCodeContext`：通过，1 个测试文件、3 个用例。
+- `npm test`：通过，60 个测试文件、410 个用例。
+- `npm run typecheck`：通过，无 TypeScript 错误。
+- `npm run compile`：通过，esbuild 成功生成扩展与 Webview 产物。
+- `git diff --check ae6c85d..HEAD`：通过，无空白错误。
+
+真实宿主验收：
+
+- 通过 `npm run debug:vscode` 启动并复用唯一的 LoopAgent Extension Development Host，固定远程调试端口为 `9333`。
+- 审批框完整显示 `npm run compile` 与真实工作目录 `E:\zz\loopagent-vscode`；选择 Run 后命令实际执行，Agent 报告退出码 `0`、stdout 为 `npm run compile`/`node esbuild.js`，stderr 为空。
+- 另一轮审批中拒绝 `npm run typecheck`；命令未执行，Agent 明确说明没有真实退出码或输出，并且没有再次申请同一命令。
+- 验收结束时仅存在一个 Extension Development Host，无额外调试配置目录。
+
+相关提交：
+
+- `ac1e648 feat(agent): add approved workspace command tool`
+- `4ef9550 fix(agent): tolerate missing debug output channel`
+- `4e490e5 feat(agent): wire approved commands into react runner`
+- `8c9407e fix(agent): restore conversation completion events`
+- `8a11ea4 fix(conversation): migrate legacy active pointer`
+
+当前阶段保留的边界与设计一致：逐次审批、非交互命令、首个工作区目录、固定 5 分钟超时和 64 KiB 有界输出；未增加权限记忆、PTY、Terminal 或 Task API。
