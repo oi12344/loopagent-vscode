@@ -3,7 +3,7 @@ import type { WorkspaceIntelligence } from "../intelligence/workspaceIntelligenc
 import type { ReactAgentTool } from "./reactTypes";
 
 let outputChannel: vscode.OutputChannel | undefined;
-function getOutputChannel(): vscode.OutputChannel {
+function getOutputChannel(): vscode.OutputChannel | undefined {
   if (!outputChannel) {
     try {
       const vsc = require("vscode") as typeof vscode;
@@ -12,7 +12,7 @@ function getOutputChannel(): vscode.OutputChannel {
       // Fallback if vscode not available
     }
   }
-  return outputChannel!;
+  return outputChannel;
 }
 
 export const MAX_EXPLORE_CODE_QUERY_LENGTH = 1_000;
@@ -39,14 +39,14 @@ export function createExploreCodeTool(workspaceIntelligence: WorkspaceIntelligen
     async invoke({ input, signal }) {
       const query = parseQuery(input);
       signal.throwIfAborted();
-      getOutputChannel().appendLine(`[exploreCode] 工具调用开始 query="${query}"`);
+      getOutputChannel()?.appendLine(`[exploreCode] 工具调用开始 query="${query}"`);
 
       let prompt: string;
       try {
         prompt = await workspaceIntelligence.buildCodeIntelligencePrompt(query);
       } catch (error) {
         signal.throwIfAborted();
-        getOutputChannel().appendLine(
+        getOutputChannel()?.appendLine(
           `[exploreCode] buildCodeIntelligencePrompt 失败: ${error instanceof Error ? error.message : String(error)}`,
         );
         return FAILED_OBSERVATION;
@@ -54,7 +54,7 @@ export function createExploreCodeTool(workspaceIntelligence: WorkspaceIntelligen
 
       signal.throwIfAborted();
       const format = prompt.startsWith("##") ? "Markdown" : prompt.startsWith("<") ? "XML/DSML" : "文本";
-      getOutputChannel().appendLine(
+      getOutputChannel()?.appendLine(
         `[exploreCode] 工具返回 长度=${prompt.length} 格式=${format} 前100字符="${prompt.slice(0, 100)}"`,
       );
       return prompt.length > 0 ? prompt : EMPTY_OBSERVATION;
