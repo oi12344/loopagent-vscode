@@ -25,6 +25,7 @@ export type SubagentRunRequest = {
   model: unknown;
   runId: string;
   messages: ReactAgentMessage[];
+  requiredToolNames: string[];
   signal: AbortSignal;
 };
 
@@ -76,7 +77,8 @@ export function createAgentPool({
         return await run({
           ...request,
           runId: `subagent-${++runNumber}`,
-          messages: createFreshMessages(brief, globalConstraints, relevantPaths, previousReports, request.task),
+          messages: createFreshMessages(brief, globalConstraints, relevantPaths, previousReports, request.task, request.role),
+          requiredToolNames: requiredToolNamesForRole(request.role),
           signal: controller.signal,
         });
       } finally {
@@ -97,12 +99,21 @@ function createFreshMessages(
   relevantPaths: string[],
   previousReports: string[],
   task: string,
+  role: AgentRole,
 ): ReactAgentMessage[] {
+  const requiredToolNames = requiredToolNamesForRole(role);
   return [
     { role: "system", content: globalConstraints },
     { role: "user", content: `Task brief:\n${brief}` },
     ...(relevantPaths.length === 0 ? [] : [{ role: "user" as const, content: `Relevant paths:\n${relevantPaths.join("\n")}` }]),
     ...(previousReports.length === 0 ? [] : [{ role: "user" as const, content: `Previous reports:\n${previousReports.join("\n")}` }]),
+    { role: "user", content: `Before finishing, call required tool(s): ${requiredToolNames.join(", ")}. Do not finish without a successful structured report.` },
     { role: "user", content: task },
   ];
+}
+
+function requiredToolNamesForRole(role: AgentRole): string[] {
+  return role === "taskReviewer" || role === "finalReviewer"
+    ? ["reportSubagentResult", "reportReview"]
+    : ["reportSubagentResult"];
 }

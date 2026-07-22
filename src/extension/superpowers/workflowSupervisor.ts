@@ -57,6 +57,15 @@ export function createWorkflowSupervisor(options: CreateWorkflowSupervisorOption
         save(phase, { waitingFor, activeAgentId: undefined });
         return event(`Waiting for ${waitingFor}`);
       };
+      const interrupt = (phase: WorkflowPhase, waitingFor: string): HostToWebviewMessage => {
+        save(phase, { waitingFor, activeAgentId: undefined });
+        return {
+          type: "runInterrupted",
+          runId: request.runId,
+          conversationId,
+          task: request.task,
+        };
+      };
       const cancel = () => {
         options.agentPool.cancelAll();
         save("blocked", { activeAgentId: undefined, waitingFor: "cancelled" });
@@ -79,21 +88,21 @@ export function createWorkflowSupervisor(options: CreateWorkflowSupervisorOption
           save("brainstorming");
         }
         if (checkpoint.phase === "brainstorming") {
-          yield wait("designApproval", "design approval");
+          yield interrupt("designApproval", "design approval");
           return;
         }
         if (checkpoint.phase === "designApproval") {
           save("writeSpec", { waitingFor: undefined });
         }
         if (checkpoint.phase === "writeSpec") {
-          yield wait("specReview", "spec review");
+          yield interrupt("specReview", "spec review");
           return;
         }
         if (checkpoint.phase === "specReview") {
           save("writePlan", { waitingFor: undefined });
         }
         if (checkpoint.phase === "writePlan") {
-          yield wait("planApproval", "plan approval");
+          yield interrupt("planApproval", "plan approval");
           return;
         }
         if (checkpoint.phase === "planApproval") {

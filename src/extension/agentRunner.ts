@@ -1,5 +1,6 @@
 import type { HostToWebviewMessage, TaskMode } from "../shared/messages";
 import type { ChatMessage, InterruptedRunCheckpoint, SuperpowersCheckpoint } from "../shared/chatTypes";
+import type { ReactAgentMessage } from "./agent/reactTypes";
 
 export type AgentRunRequest = {
   runId: string;
@@ -7,6 +8,8 @@ export type AgentRunRequest = {
   mode?: TaskMode;
   signal: AbortSignal;
   conversationHistory?: ChatMessage[];
+  initialMessages?: ReactAgentMessage[];
+  requiredToolNames?: string[];
   conversationId?: string;
   resumeState?: AgentResumeState;
 };

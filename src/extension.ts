@@ -447,8 +447,15 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       applyEditTool: this.applyEditTool,
       runCommandTool: this.runCommandTool,
       extraTools: tools,
+      requiredToolNames: request.requiredToolNames,
     });
-    for await (const _ of runner.run({ runId: request.runId, task: request.task, signal: request.signal })) {
+    for await (const _ of runner.run({
+      runId: request.runId,
+      task: request.task,
+      signal: request.signal,
+      initialMessages: request.messages,
+      requiredToolNames: request.requiredToolNames,
+    })) {
       // The parent workflow is the user-visible progress channel; tool callbacks retain the structured outcome.
     }
     return result ?? { status: "BLOCKED", summary: "Subagent did not report a structured result", reportPath: "", commit: "", tests: [] };

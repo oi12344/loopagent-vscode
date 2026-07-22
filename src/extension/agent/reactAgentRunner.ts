@@ -11,6 +11,7 @@ export type CreateReactAgentRunnerOptions = {
   tools?: ReactAgentTool[];
   maxSteps?: number;
   maxToolRequestsPerStep?: number;
+  requiredToolNames?: string[];
   systemPromptProvider?: (request: AgentRunRequest) => string | Promise<string>;
   onCheckpoint?: (checkpoint: InterruptedRunCheckpoint) => void | Promise<void>;
 };
@@ -21,6 +22,7 @@ export function createReactAgentRunner({
   tools = createDefaultReactTools(),
   maxSteps = 20,
   maxToolRequestsPerStep = 10,
+  requiredToolNames: configuredRequiredToolNames = [],
   systemPromptProvider,
   onCheckpoint,
 }: CreateReactAgentRunnerOptions): AgentRunner {
@@ -30,6 +32,7 @@ export function createReactAgentRunner({
   return {
     async *run(request) {
       const { runId, task, signal, conversationHistory = [], resumeState } = request;
+      const requiredToolNames = request.requiredToolNames ?? configuredRequiredToolNames;
       if (signal.aborted) {
         return;
       }
@@ -41,8 +44,10 @@ export function createReactAgentRunner({
         const resumedCheckpoint = resumeState?.kind === "react" ? resumeState.checkpoint : undefined;
         const messages: ReactAgentMessage[] = resumedCheckpoint
           ? resumedCheckpoint.messages.map((message) => message as unknown as ReactAgentMessage)
-          : [];
+          : (request.initialMessages ?? []).map((message) => ({ ...message }));
         const initialStep = resumedCheckpoint?.step ?? 1;
+        const successfulTools = new Set<string>();
+        let requiredToolRetries = 0;
 
         if (!resumedCheckpoint) {
           const systemPrompt = await resolveSystemPrompt(systemPromptProvider, request);
@@ -59,8 +64,8 @@ export function createReactAgentRunner({
             });
           }
 
-          const latestHistoryMessage = conversationHistory.at(-1);
-          if (latestHistoryMessage?.role !== "user" || latestHistoryMessage.content !== task) {
+          const latestMessage = messages.at(-1);
+          if (latestMessage?.role !== "user" || latestMessage.content !== task) {
             messages.push({ role: "user", content: task });
           }
         }
@@ -79,7 +84,7 @@ export function createReactAgentRunner({
           });
         };
 
-        for (let step = initialStep; step <= maxSteps + 1; step++) {
+        for (let step = initialStep; step <= maxSteps + 1 + 2; step++) {
           const isFinalAnswerStep = step > maxSteps;
           if (signal.aborted) {
             return;
@@ -108,6 +113,15 @@ export function createReactAgentRunner({
           }
 
           if (result.kind === "final") {
+            const missingTools = getMissingRequiredTools(requiredToolNames, successfulTools);
+            if (missingTools.length > 0) {
+              if (requiredToolRetries >= 2) {
+                throw new Error(`Required tools were not called successfully: ${missingTools.join(", ")}`);
+              }
+              requiredToolRetries++;
+              messages.push({ role: "user", content: `Before finishing, call required tool(s): ${missingTools.join(", ")}.` });
+              continue;
+            }
             yield { type: "assistantDelta", runId, content: result.content } satisfies HostToWebviewMessage;
             yield { type: "assistantFinished", runId } satisfies HostToWebviewMessage;
             yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
@@ -115,6 +129,15 @@ export function createReactAgentRunner({
           }
 
           if (isFinalAnswerStep) {
+            const missingTools = getMissingRequiredTools(requiredToolNames, successfulTools);
+            if (missingTools.length > 0) {
+              if (requiredToolRetries >= 2) {
+                throw new Error(`Required tools were not called successfully: ${missingTools.join(", ")}`);
+              }
+              requiredToolRetries++;
+              messages.push({ role: "user", content: `Before finishing, call required tool(s): ${missingTools.join(", ")}.` });
+              continue;
+            }
             if (result.reasoning) {
               yield { type: "assistantReasoningDelta", runId, content: result.reasoning } satisfies HostToWebviewMessage;
             }
@@ -170,6 +193,7 @@ export function createReactAgentRunner({
             for (const [index, { request, call }] of batch.requests.entries()) {
               const outcome = outcomes[index]!;
               const content = outcome.content;
+              if (outcome.succeeded) successfulTools.add(request.name);
               if (request.name === "exploreCode") {
                 yield {
                   type: "agentEvent",
@@ -208,6 +232,10 @@ export function createReactAgentRunner({
       }
     },
   };
+}
+
+function getMissingRequiredTools(requiredToolNames: string[], successfulTools: ReadonlySet<string>): string[] {
+  return requiredToolNames.filter((name) => !successfulTools.has(name));
 }
 
 type ToolRequestBatch = {

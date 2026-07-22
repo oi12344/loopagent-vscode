@@ -70,10 +70,22 @@ describe("WorkflowSupervisor", () => {
       ...(resumeState ? { resumeState } : {}),
     });
 
-    await collect(supervisor.run(request("run-1")));
+    const firstRun = await collect(supervisor.run(request("run-1")));
+    expect(firstRun.at(-1)).toEqual({
+      type: "runInterrupted",
+      runId: "run-1",
+      conversationId: "conversation-2",
+      task: "Add a small feature",
+    });
     expect(store.load("conversation-2")).toMatchObject({ phase: "designApproval", waitingFor: "design approval", skillNames: SKILLS });
 
-    await collect(supervisor.run(request("run-2", { kind: "superpowers", checkpoint: store.load("conversation-2") } as never)));
+    const secondRun = await collect(supervisor.run(request("run-2", { kind: "superpowers", checkpoint: store.load("conversation-2") } as never)));
+    expect(secondRun.at(-1)).toEqual({
+      type: "runInterrupted",
+      runId: "run-2",
+      conversationId: "conversation-2",
+      task: "Add a small feature",
+    });
     expect(store.load("conversation-2")).toMatchObject({ phase: "specReview", waitingFor: "spec review" });
 
     await collect(supervisor.run(request("run-3", { kind: "superpowers", checkpoint: store.load("conversation-2") } as never)));

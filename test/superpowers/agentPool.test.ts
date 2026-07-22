@@ -54,4 +54,24 @@ describe("AgentPool", () => {
     expect(requests[0]?.runId).not.toBe(requests[1]?.runId);
     expect(requests[0]?.messages).not.toBe(requests[1]?.messages);
   });
+
+  it("includes fresh context and structured reporting requirements for each role", async () => {
+    const requests: Array<{ messages: Array<{ role: string; content: string }>; requiredToolNames: string[] }> = [];
+    const pool = createAgentPool({
+      globalConstraints: "constraints",
+      brief: "brief",
+      run: async (request) => {
+        requests.push({ messages: request.messages, requiredToolNames: request.requiredToolNames });
+        return { status: "DONE", summary: "done", reportPath: "report.md", commit: "abc", tests: [] };
+      },
+    });
+
+    await pool.dispatch({ agentId: "implementer-1", role: "implementer", task: "implement", model: "model", signal: new AbortController().signal });
+    await pool.dispatch({ agentId: "review-1", role: "taskReviewer", task: "review", model: "model", signal: new AbortController().signal });
+
+    expect(requests[0]?.messages.some((message) => /reportSubagentResult/.test(message.content))).toBe(true);
+    expect(requests[0]?.requiredToolNames).toEqual(["reportSubagentResult"]);
+    expect(requests[1]?.messages.some((message) => /reportSubagentResult.*reportReview/s.test(message.content))).toBe(true);
+    expect(requests[1]?.requiredToolNames).toEqual(["reportSubagentResult", "reportReview"]);
+  });
 });

@@ -1116,6 +1116,70 @@ describe("createReactAgentRunner", () => {
       { role: "user", content: "Current question" },
     ]);
   });
+
+  it("passes initial messages to modelTurn before the task", async () => {
+    let capturedMessages: unknown[] = [];
+    const runner = createReactAgentRunner({
+      modelTurn: async ({ messages }) => {
+        capturedMessages = messages;
+        return { kind: "final", content: "Done." };
+      },
+    });
+
+    for await (const _ of runner.run({
+      runId: "run-1",
+      task: "Implement the task",
+      signal: new AbortController().signal,
+      initialMessages: [
+        { role: "system", content: "fresh brief" },
+        { role: "user", content: "Required reportSubagentResult" },
+      ],
+    })) {
+      // consume
+    }
+
+    expect(capturedMessages).toEqual([
+      { role: "system", content: "fresh brief" },
+      { role: "user", content: "Required reportSubagentResult" },
+      { role: "user", content: "Implement the task" },
+    ]);
+  });
+
+  it("does not finish when required tools are missing", async () => {
+    let turns = 0;
+    const runner = createReactAgentRunner({
+      requiredToolNames: ["reportSubagentResult"],
+      modelTurn: async () => {
+        turns++;
+        return { kind: "final", content: "I am done." };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(turns).toBe(3);
+    expect(messages).toContainEqual({ type: "runFailed", runId: "run-1", message: expect.stringContaining("reportSubagentResult") });
+    expect(messages).not.toContainEqual({ type: "runFinished", runId: "run-1" });
+  });
+
+  it("finishes after a required reporting tool succeeds", async () => {
+    let turns = 0;
+    const runner = createReactAgentRunner({
+      requiredToolNames: ["reportSubagentResult"],
+      tools: [{ name: "reportSubagentResult", description: "report", inputSchema: { type: "object" }, invoke: async () => "recorded" }],
+      modelTurn: async () => {
+        turns++;
+        return turns === 1
+          ? toolRequest("report-1", "reportSubagentResult", { status: "DONE" })
+          : { kind: "final", content: "I am done." };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(messages).toContainEqual({ type: "runFinished", runId: "run-1" });
+    expect(messages).not.toContainEqual({ type: "runFailed", runId: "run-1", message: expect.any(String) });
+  });
 });
 
 function toolRequest(id: string, name: string, input: unknown) {

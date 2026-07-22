@@ -53,6 +53,7 @@ export type CreateConfiguredAgentRunnerDeps = {
   runCommandTool?: ReactAgentTool;
   onCheckpoint?: (checkpoint: InterruptedRunCheckpoint) => void | Promise<void>;
   extraTools?: ReactAgentTool[];
+  requiredToolNames?: string[];
   superpowersResourceRoot?: string;
   superpowersRunner?: AgentRunner;
   validateSuperpowers?: () => Promise<void>;
@@ -110,6 +111,7 @@ export async function createConfiguredAgentRunner(
       return [REACT_SYSTEM_PROMPT, runtimePrompt].filter(Boolean).join("\n\n");
     },
     onCheckpoint: deps.onCheckpoint,
+    requiredToolNames: deps.requiredToolNames,
   });
 }
 
