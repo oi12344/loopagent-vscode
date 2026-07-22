@@ -59,6 +59,9 @@ function getSkill(skillsByName: ReadonlyMap<string, SuperpowersSkill>, name: str
 
 async function resolveInside(root: string, requestedPath: string): Promise<string> {
   if (isAbsolute(requestedPath)) throw new Error(`Absolute paths are not allowed: ${requestedPath}`);
+  if (requestedPath.split(/[\\/]+/).includes("..")) {
+    throw new Error(`Parent path segments are not allowed: ${requestedPath}`);
+  }
 
   const candidate = resolve(root, requestedPath);
   if (!isInside(root, candidate)) throw new Error(`Path is outside the allowed directory: ${requestedPath}`);

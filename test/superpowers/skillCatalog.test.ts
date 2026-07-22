@@ -35,7 +35,17 @@ describe("SkillCatalog", () => {
       resolve(process.cwd(), "resources", "superpowers"),
     );
 
-    await expect(catalog.loadResource("brainstorming", "../LICENSE")).rejects.toThrow(/outside/i);
+    await expect(catalog.loadResource("brainstorming", "../LICENSE")).rejects.toThrow(/parent/i);
+  });
+
+  it("rejects a resource path containing an in-root parent segment", async () => {
+    const catalog = await createSkillCatalog(
+      resolve(process.cwd(), "resources", "superpowers"),
+    );
+
+    await expect(
+      catalog.loadResource("brainstorming", "scripts/../visual-companion.md"),
+    ).rejects.toThrow(/parent/i);
   });
 
   it("rejects an absolute resource path", async () => {
