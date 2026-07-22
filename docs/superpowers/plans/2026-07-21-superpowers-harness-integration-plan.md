@@ -132,10 +132,11 @@ type WorkflowStore = { save(c: SuperpowersCheckpoint): void; load(id: string): S
 
 #### Task 7 实际结果（2026-07-22，源码复审修复后复验）
 
-- [x] 已执行 `npm test`（65 文件、450 用例）、`npm run typecheck`、`npm run compile`、`npm run package:vsix` 和 `git diff --check`，退出码均为 0。
+- [x] 已执行 `npm test`（65 文件、458 用例）、`npm run typecheck`、`npm run compile`、`npm run package:vsix` 和 `git diff --check`，退出码均为 0。
 - [x] 已核对 `.artifacts/loopagent-vscode-0.0.1.vsix`：67 个条目，含 14 个技能正文与 `LICENSE`。
 - [x] 已执行 `resourceIntegrity`、`skillCatalog`、`superpowersTools`、`workflowStore` 和 `workflowSupervisor` 边界测试：5 文件、24 用例均通过。
 - [x] 最终整分支复审发现并修复两个 Critical：用户审批门禁改为可由现有 Resume 消费的 `runInterrupted`；AgentPool fresh context 和必需结构化报告工具已贯穿真实 ReAct runner。随后补充 required-tool 补救轮 `toolChoice: auto` 修复，相关复审与 40/40 聚焦回归通过。
+- [x] 后续整分支复审补齐技能正文注入与 checkpoint 驱动预检：fresh/Resume 均把适用技能正文传入 ReAct；产品运行时不再绑定本仓库计划路径，fresh workspace 不预要求 plan/ledger，Resume 仅校验 checkpoint 已声明的工件。
 - [ ] 已在唯一 Extension Development Host 中打开 LoopAgent 面板，但管理员 VS Code 的 UI 自动化层无法点击或填值，无法提交 edit 请求；因此审批门禁、implementer/reviewer/fixer/finalReviewer、Stop/Resume、无重复任务和单 writer 的真实路径仍未验证，未将自动化测试替代为真实路径结论。
 - [x] 已关闭本次调试宿主；`127.0.0.1:9333` 不再监听。
 

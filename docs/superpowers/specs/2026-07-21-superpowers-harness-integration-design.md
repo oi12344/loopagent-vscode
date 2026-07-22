@@ -147,8 +147,9 @@ checkpoint 至少记录当前技能、阶段、批准记录、计划路径、任
 
 ## Task 7 验证记录（2026-07-22，源码复审修复后复验）
 
-- `npm test` 通过：65 个测试文件、450 个用例；`npm run typecheck`、`npm run compile`、`npm run package:vsix` 和 `git diff --check` 均以 0 退出。
+- `npm test` 通过：65 个测试文件、458 个用例；`npm run typecheck`、`npm run compile`、`npm run package:vsix` 和 `git diff --check` 均以 0 退出。
 - VSIX 为 `.artifacts/loopagent-vscode-0.0.1.vsix`，共 67 个条目；其中含 14 个 `resources/superpowers/skills/*/SKILL.md` 和 `resources/superpowers/LICENSE`。
 - 5 个 Superpowers 安全与状态边界测试文件共 24 个用例通过，覆盖资源路径、技能路径穿越、非白名单脚本、无效 Agent 结果、审查结果和 checkpoint 不一致。
 - 最终源码复审发现并修复两个 Critical 及一个 Important：审批门禁发送 `runInterrupted` 并可从 checkpoint Resume；fresh context 和 required report tool 传入实际 ReAct runner；required-tool 补救轮保持 `toolChoice: auto`，成功报告后才允许 `runFinished`。修复后受影响测试、类型检查、编译和 diff 检查均通过。
+- 后续整分支复审补齐技能正文注入与通用预检：fresh/Resume 每轮按 checkpoint 技能清单重载正文并注入 ReAct；计划与 ledger 校验由 checkpoint 状态驱动，产品运行时不硬编码本仓库文件，也不要求 fresh workspace 预先存在工件。
 - 已启动且仅启动一个 Extension Development Host，并确认 LoopAgent 面板可见、状态为 Ready、存在 Edit/Ask 切换和消息输入框。管理员 VS Code 的 UI 自动化无法点击或填值，因此未提交 edit 请求，也未能实际验证审批、Stop/Resume、写入 Agent 串行和最终工作流事件；该项保持未完成。
