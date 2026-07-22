@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentRunner, AgentRunRequest } from "../src/extension/agentRunner";
 import type { WebviewToHostMessage } from "../src/shared/messages";
+import type { SuperpowersCheckpoint } from "../src/shared/chatTypes";
 
 type WebviewMessageListener = (message: WebviewToHostMessage) => void;
 
@@ -178,6 +179,63 @@ describe("LoopAgent extension workspace intelligence lifecycle", () => {
 
     expect(capturedRequests[0]?.signal.aborted).toBe(true);
   });
+
+  it("restores a cancelled Edit workflow from its conversation checkpoint after switching back", async () => {
+    const capturedRequests: AgentRunRequest[] = [];
+    const workflowCheckpoints = new Map<string, SuperpowersCheckpoint>();
+    const workflowStore = {
+      save: (checkpoint: SuperpowersCheckpoint) => workflowCheckpoints.set(checkpoint.conversationId, checkpoint),
+      load: (conversationId: string) => workflowCheckpoints.get(conversationId),
+      clear: (conversationId: string) => workflowCheckpoints.delete(conversationId),
+    };
+    const createConfiguredAgentRunner = vi.fn(async (): Promise<AgentRunner> => ({
+      run: async function* (request) {
+        capturedRequests.push(request);
+        if (request.runId === "run-edit") await new Promise<void>(() => {});
+      },
+    }));
+    let registeredProvider: { resolveWebviewView(webviewView: FakeWebviewView): void } | undefined;
+    let messageListener: WebviewMessageListener | undefined;
+
+    vi.resetModules();
+    vi.doMock("vscode", () => createFakeVsCode((provider) => { registeredProvider = provider; }));
+    vi.doMock("../src/extension/model/providerRegistry", () => ({ createConfiguredAgentRunner }));
+    vi.doMock("../src/extension/intelligence/parser/treeSitterRuntime", () => ({ createTreeSitterParserRuntime: vi.fn(() => ({ parse: vi.fn() })) }));
+    vi.doMock("../src/extension/intelligence/vscodeWorkspaceIntelligence", () => ({
+      createVsCodeWorkspaceIntelligence: vi.fn(() => ({ dispose: vi.fn(async () => undefined) })),
+    }));
+    vi.doMock("../src/extension/superpowers/workflowStore", () => ({ createWorkflowStore: () => workflowStore }));
+
+    const { activate } = await import("../src/extension");
+    activate({ subscriptions: [], extensionUri: { fsPath: "E:\\work\\extension" }, storageUri: { fsPath: "E:\\storage" } } as never);
+    const view = createFakeWebviewView((listener) => { messageListener = listener; });
+    registeredProvider?.resolveWebviewView(view);
+
+    messageListener?.({ type: "startTask", runId: "run-edit", task: "Edit the original conversation", mode: "edit" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const originalConversationId = (view.webview.postMessage as ReturnType<typeof vi.fn>).mock.calls
+      .find(([message]) => (message as { type?: string }).type === "conversationStarted")?.[0]
+      .conversationId as string;
+    workflowStore.save({
+      version: 1, conversationId: originalConversationId, runId: "run-edit", phase: "implement", skillNames: [], taskIndex: 0, updatedAt: 1,
+    });
+
+    messageListener?.({ type: "startTask", runId: "run-other", task: "Other conversation", mode: "ask" });
+    expect(capturedRequests.find((request) => request.runId === "run-edit")?.signal.aborted).toBe(true);
+    messageListener?.({ type: "switchConversation", conversationId: originalConversationId });
+
+    expect(view.webview.postMessage).toHaveBeenCalledWith({
+      type: "runInterrupted", runId: "run-edit", conversationId: originalConversationId, task: "Edit the original conversation",
+    });
+
+    messageListener?.({ type: "resumeRun", runId: "run-resume", conversationId: originalConversationId });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(capturedRequests.at(-1)?.conversationId).toBe(originalConversationId);
+    expect(capturedRequests.at(-1)?.resumeState).toEqual({
+      kind: "superpowers", checkpoint: expect.objectContaining({ conversationId: originalConversationId, runId: "run-edit" }),
+    });
+  });
 });
 
 type FakeWebviewView = {
@@ -219,4 +277,21 @@ function createNoopRunner(): AgentRunner {
 
 function createDisposable(): { dispose(): void } {
   return { dispose: vi.fn() };
+}
+
+function createFakeVsCode(registerProvider: (provider: { resolveWebviewView(webviewView: FakeWebviewView): void }) => void) {
+  return {
+    CodeLens: class {},
+    EventEmitter: class { readonly event = () => createDisposable(); fire() {} dispose() {} },
+    Position: class {},
+    Range: class {},
+    commands: { executeCommand: vi.fn(), registerCommand: vi.fn(() => createDisposable()) },
+    window: {
+      registerWebviewViewProvider: vi.fn((_viewId, provider) => { registerProvider(provider); return createDisposable(); }),
+      showInformationMessage: vi.fn(), showWarningMessage: vi.fn(), showInputBox: vi.fn(),
+    },
+    Uri: { joinPath: vi.fn((_base, ...segments: string[]) => ({ toString: () => segments.join("/") })) },
+    languages: { registerCodeLensProvider: vi.fn(() => createDisposable()) },
+    workspace: { registerTextDocumentContentProvider: vi.fn(() => createDisposable()) },
+  };
 }

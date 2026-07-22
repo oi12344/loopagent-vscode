@@ -216,12 +216,21 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
 
   private sendInterruptedRun(webview: vscode.Webview, conversationId: string): void {
     const checkpoint = this.conversationManager.loadInterruptedRun(conversationId);
-    if (!checkpoint) return;
+    const workflowCheckpoint = this.workflowStore.load(conversationId);
+    const workflowInterrupted = workflowCheckpoint?.conversationId === conversationId
+      ? {
+          runId: workflowCheckpoint.runId,
+          conversationId,
+          task: this.conversationManager.getConversationHistory(conversationId).filter((message) => message.role === "user").at(-1)?.content ?? "",
+        }
+      : undefined;
+    const interrupted = checkpoint ?? workflowInterrupted;
+    if (!interrupted) return;
     webview.postMessage({
       type: "runInterrupted",
-      runId: checkpoint.runId,
-      conversationId: checkpoint.conversationId,
-      task: checkpoint.task,
+      runId: interrupted.runId,
+      conversationId: interrupted.conversationId,
+      task: interrupted.task,
     } satisfies HostToWebviewMessage);
   }
 
