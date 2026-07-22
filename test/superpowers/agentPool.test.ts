@@ -1,0 +1,57 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { createAgentPool } from "../../src/extension/superpowers/agentPool";
+
+describe("AgentPool", () => {
+  it("rejects a second writer while an implementer is active", async () => {
+    let release!: () => void;
+    const active = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const run = vi.fn(async ({ runId, messages }: { runId: string; messages: unknown[] }) => {
+      await active;
+      return { status: "DONE" as const, summary: runId, reportPath: "report.md", commit: "abc", tests: [] };
+    });
+    const pool = createAgentPool({ run, globalConstraints: "constraints", brief: "brief" });
+
+    const implementer = pool.dispatch({
+      agentId: "implementer-1",
+      role: "implementer",
+      task: "implement",
+      model: "model",
+      signal: new AbortController().signal,
+    });
+
+    await expect(
+      pool.dispatch({
+        agentId: "fixer-1",
+        role: "fixer",
+        task: "fix",
+        model: "model",
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow("writer already active");
+
+    release();
+    await expect(implementer).resolves.toMatchObject({ status: "DONE" });
+  });
+
+  it("gives every dispatch a distinct run ID and message array", async () => {
+    const requests: Array<{ runId: string; messages: unknown[] }> = [];
+    const pool = createAgentPool({
+      globalConstraints: "constraints",
+      brief: "brief",
+      run: async (request) => {
+        requests.push(request);
+        return { status: "DONE", summary: "done", reportPath: "report.md", commit: "abc", tests: [] };
+      },
+    });
+
+    await pool.dispatch({ agentId: "review-1", role: "taskReviewer", task: "review", model: "model", signal: new AbortController().signal });
+    await pool.dispatch({ agentId: "review-2", role: "finalReviewer", task: "final review", model: "model", signal: new AbortController().signal });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.runId).not.toBe(requests[1]?.runId);
+    expect(requests[0]?.messages).not.toBe(requests[1]?.messages);
+  });
+});
