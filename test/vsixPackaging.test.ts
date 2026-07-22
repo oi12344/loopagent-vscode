@@ -60,6 +60,7 @@ describe("VSIX packaging contract", () => {
         "docs/**",
         ".local-vscode-*/**",
         ".artifacts/**",
+        ".superpowers/**",
       ]),
     );
   });

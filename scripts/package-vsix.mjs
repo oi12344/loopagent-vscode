@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -11,6 +11,16 @@ const root = resolve(import.meta.dirname, "..");
 const artifactPath = resolve(root, ".artifacts", "loopagent-vscode-0.0.1.vsix");
 const vscePath = resolve(root, "node_modules", ".bin", process.platform === "win32" ? "vsce.cmd" : "vsce");
 const vsceArgs = ["package", "--no-dependencies", "--out", artifactPath, ...process.argv.slice(2)];
+const superpowersManifest = JSON.parse(
+  readFileSync(resolve(root, "resources", "superpowers", "manifest.json"), "utf8"),
+);
+const requiredSuperpowersEntries = [
+  "extension/resources/superpowers/LICENSE",
+  "extension/resources/superpowers/manifest.json",
+  ...superpowersManifest.skills.map(
+    (skill) => `extension/resources/superpowers/${skill.path}`,
+  ),
+];
 
 await mkdir(resolve(root, ".artifacts"), { recursive: true });
 rmSync(resolve(root, "dist"), { recursive: true, force: true });
@@ -67,5 +77,13 @@ if (result.exitCode !== 0) {
   process.exitCode = result.exitCode ?? 1;
 } else {
   const entries = await assertVsixContents(artifactPath);
+  const missingSuperpowersEntries = requiredSuperpowersEntries.filter(
+    (entry) => !entries.includes(entry),
+  );
+  if (missingSuperpowersEntries.length > 0) {
+    throw new Error(
+      `VSIX is missing vendored Superpowers resources: ${JSON.stringify(missingSuperpowersEntries)}`,
+    );
+  }
   console.log(JSON.stringify({ artifactPath, entryCount: entries.length }));
 }
