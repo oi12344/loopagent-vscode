@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { AgentPool, AgentRole, SubagentResult } from "../../src/extension/superpowers/agentPool";
+import { createReviewResultBridge } from "../../src/extension/superpowers/superpowersAgentRunner";
 import { createWorkflowSupervisor } from "../../src/extension/superpowers/workflowSupervisor";
 import type { WorkflowStore } from "../../src/extension/superpowers/workflowStore";
 import type { SuperpowersCheckpoint } from "../../src/shared/chatTypes";
@@ -18,15 +19,19 @@ const SKILLS = [
 describe("WorkflowSupervisor", () => {
   it("runs implement, review, fix, rereview, and final review in order", async () => {
     const roles: AgentRole[] = [];
+    const reviews = createReviewResultBridge();
     const pool: AgentPool = {
       async dispatch(request) {
         roles.push(request.role);
-        return scriptedResult(request.role, roles.filter((role) => role === "taskReviewer").length);
+        if (request.role === "taskReviewer" || request.role === "finalReviewer") {
+          reviews.onReview(request.agentId, review(roles.filter((role) => role === "taskReviewer").length));
+        }
+        return done();
       },
       cancelAll() {},
     };
     const store = memoryStore();
-    const supervisor = createWorkflowSupervisor({ agentPool: pool, workflowStore: store, model: "model" });
+    const supervisor = createWorkflowSupervisor({ agentPool: reviews.wrap(pool), workflowStore: store, model: "model" });
 
     const messages = await collect(supervisor.run({
       runId: "run-1",
@@ -70,6 +75,7 @@ describe("WorkflowSupervisor", () => {
   it("stops before a second agent when cancellation arrives after a dispatch", async () => {
     const controller = new AbortController();
     const roles: AgentRole[] = [];
+    const store = memoryStore();
     const supervisor = createWorkflowSupervisor({
       agentPool: {
         async dispatch(request) {
@@ -79,7 +85,7 @@ describe("WorkflowSupervisor", () => {
         },
         cancelAll() {},
       },
-      workflowStore: memoryStore(),
+      workflowStore: store,
       model: "model",
     });
 
@@ -92,7 +98,8 @@ describe("WorkflowSupervisor", () => {
     }));
 
     expect(roles).toEqual(["implementer"]);
-    expect(messages).not.toContainEqual({ type: "runFinished", runId: "run-1" });
+    expect(messages).toContainEqual({ type: "runFailed", runId: "run-1", message: "Superpowers workflow cancelled" });
+    expect(store.load("conversation-1")).toMatchObject({ phase: "blocked", activeAgentId: undefined, waitingFor: "cancelled" });
   });
 
   it("blocks before implementation when preflight detects a plan conflict", async () => {
@@ -142,13 +149,57 @@ describe("WorkflowSupervisor", () => {
 
     expect(calls).toBe(3);
   });
+
+  it("blocks a reviewer that does not submit reportReview data", async () => {
+    const roles: AgentRole[] = [];
+    const store = memoryStore();
+    const supervisor = createWorkflowSupervisor({
+      agentPool: {
+        async dispatch(request) { roles.push(request.role); return done(); },
+        cancelAll() {},
+      },
+      workflowStore: store,
+      model: "model",
+    });
+
+    await collect(supervisor.run(runFrom("preflight")));
+
+    expect(roles).toEqual(["implementer", "taskReviewer"]);
+    expect(store.load("conversation-1")).toMatchObject({ phase: "blocked", waitingFor: "review result is incomplete" });
+  });
+
+  it("clears the active agent and emits failure when dispatch throws", async () => {
+    const store = memoryStore();
+    const supervisor = createWorkflowSupervisor({
+      agentPool: { dispatch: async () => { throw new Error("agent unavailable"); }, cancelAll() {} },
+      workflowStore: store,
+      model: "model",
+    });
+
+    const messages = await collect(supervisor.run(runFrom("preflight")));
+
+    expect(messages).toContainEqual({ type: "runFailed", runId: "run-1", message: "agent unavailable" });
+    expect(store.load("conversation-1")).toMatchObject({ phase: "blocked", activeAgentId: undefined, waitingFor: "agent unavailable" });
+  });
+
+  it("rejects an invalid superpowers resume checkpoint", async () => {
+    const supervisor = createWorkflowSupervisor({
+      agentPool: { dispatch: async () => done(), cancelAll() {} },
+      workflowStore: memoryStore(),
+      model: "model",
+    });
+
+    const messages = await collect(supervisor.run({
+      ...runFrom("preflight"),
+      resumeState: { kind: "superpowers", checkpoint: { ...checkpoint("preflight"), version: 2 } } as never,
+    }));
+
+    expect(messages).toEqual([{ type: "runFailed", runId: "run-1", message: "Invalid Superpowers resume checkpoint" }]);
+  });
 });
 
-function scriptedResult(role: AgentRole, reviewNumber: number): SubagentResult {
-  if (role === "taskReviewer" || role === "finalReviewer") {
-    return { ...done(), specCompliant: reviewNumber > 1, qualityApproved: reviewNumber > 1, findings: reviewNumber > 1 ? [] : ["Fix the failing check"] } as SubagentResult;
-  }
-  return done();
+function review(reviewNumber: number) {
+  return { specCompliant: reviewNumber > 1, qualityApproved: reviewNumber > 1, findings: reviewNumber > 1 ? [] : ["Fix the failing check"] };
 }
 
 function done(): SubagentResult {
@@ -164,6 +215,16 @@ function checkpoint(phase: SuperpowersCheckpoint["phase"]): SuperpowersCheckpoin
     skillNames: SKILLS,
     taskIndex: 0,
     updatedAt: 1,
+  };
+}
+
+function runFrom(phase: SuperpowersCheckpoint["phase"]) {
+  return {
+    runId: "run-1",
+    task: "Implement safely",
+    conversationId: "conversation-1",
+    signal: new AbortController().signal,
+    resumeState: { kind: "superpowers", checkpoint: checkpoint(phase) } as never,
   };
 }
 

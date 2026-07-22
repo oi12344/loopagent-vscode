@@ -1,8 +1,9 @@
 import type { AgentRunRequest, AgentRunner } from "../agentRunner";
-import type { AgentPool, AgentRole, ReviewResult, SubagentResult } from "./agentPool";
+import type { AgentRole, ReviewResult, SubagentResult } from "./agentPool";
 import type { SkillCatalog } from "./superpowersTypes";
+import type { ReviewReportedSubagentResult, ReviewingAgentPool } from "./superpowersAgentRunner";
 import type { WorkflowStore } from "./workflowStore";
-import type { SuperpowersCheckpoint, WorkflowPhase } from "../../shared/chatTypes";
+import { isSuperpowersCheckpoint, type SuperpowersCheckpoint, type WorkflowPhase } from "../../shared/chatTypes";
 import type { HostToWebviewMessage } from "../../shared/messages";
 
 const REQUIRED_SKILLS = [
@@ -16,11 +17,10 @@ const REQUIRED_SKILLS = [
 ];
 
 type SuperpowersResumeState = { kind: "superpowers"; checkpoint: SuperpowersCheckpoint };
-
 export type WorkflowSupervisor = AgentRunner;
 
 export type CreateWorkflowSupervisorOptions = {
-  agentPool: AgentPool;
+  agentPool: ReviewingAgentPool;
   workflowStore: WorkflowStore;
   model: unknown;
   catalog?: SkillCatalog;
@@ -40,7 +40,12 @@ export function createWorkflowSupervisor(options: CreateWorkflowSupervisorOption
         return;
       }
 
-      let checkpoint = resumeCheckpoint(request) ?? options.workflowStore.load(conversationId) ?? createCheckpoint(request, conversationId, options.planPath);
+      const resumed = resumeCheckpoint(request, conversationId);
+      if (resumed === null) {
+        yield failure(request.runId, "Invalid Superpowers resume checkpoint");
+        return;
+      }
+      let checkpoint = resumed ?? options.workflowStore.load(conversationId) ?? createCheckpoint(request, conversationId, options.planPath);
       checkpoint = { ...checkpoint, conversationId, runId: request.runId, activeAgentId: undefined, updatedAt: Date.now() };
 
       const save = (phase: WorkflowPhase, changes: Partial<SuperpowersCheckpoint> = {}) => {
@@ -52,9 +57,17 @@ export function createWorkflowSupervisor(options: CreateWorkflowSupervisorOption
         save(phase, { waitingFor, activeAgentId: undefined });
         return event(`Waiting for ${waitingFor}`);
       };
+      const cancel = () => {
+        options.agentPool.cancelAll();
+        save("blocked", { activeAgentId: undefined, waitingFor: "cancelled" });
+        return failure(request.runId, "Superpowers workflow cancelled");
+      };
 
       try {
-        if (request.signal.aborted) return;
+        if (request.signal.aborted) {
+          yield cancel();
+          return;
+        }
 
         if (checkpoint.phase === "bootstrap") {
           save("bootstrap");
@@ -164,11 +177,12 @@ export function createWorkflowSupervisor(options: CreateWorkflowSupervisorOption
         }
       } catch (error) {
         if (request.signal.aborted) {
-          options.agentPool.cancelAll();
-          save(checkpoint.phase, { activeAgentId: undefined });
+          yield cancel();
           return;
         }
-        yield failure(request.runId, error instanceof Error ? error.message : "Superpowers workflow failed");
+        const message = error instanceof Error ? error.message : "Superpowers workflow failed";
+        save("blocked", { activeAgentId: undefined, waitingFor: message });
+        yield failure(request.runId, message);
       }
     },
   };
@@ -183,15 +197,14 @@ async function* dispatch(
   phase: WorkflowPhase,
   task: string,
   event: (message: string) => HostToWebviewMessage,
-): AsyncGenerator<HostToWebviewMessage, SubagentResult | undefined> {
+): AsyncGenerator<HostToWebviewMessage, ReviewReportedSubagentResult | undefined> {
   const agentId = `${role}-${checkpoint.taskIndex + 1}`;
   save(phase, { activeAgentId: agentId });
   yield event(`${role} started`);
-  if (request.signal.aborted) return undefined;
+  if (request.signal.aborted) throw new Error("Workflow cancelled");
   let result = await options.agentPool.dispatch({ agentId, role, task, model: options.model, signal: request.signal });
   if (request.signal.aborted) {
-    options.agentPool.cancelAll();
-    return undefined;
+    throw new Error("Workflow cancelled");
   }
   const context = result.status === "NEEDS_CONTEXT" ? options.provideContext?.(result, role)?.trim() : undefined;
   if (context) {
@@ -204,8 +217,7 @@ async function* dispatch(
       signal: request.signal,
     });
     if (request.signal.aborted) {
-      options.agentPool.cancelAll();
-      return undefined;
+      throw new Error("Workflow cancelled");
     }
   }
   save(phase, { activeAgentId: undefined });
@@ -226,19 +238,22 @@ function createCheckpoint(request: AgentRunRequest, conversationId: string, plan
   };
 }
 
-function resumeCheckpoint(request: AgentRunRequest): SuperpowersCheckpoint | undefined {
+function resumeCheckpoint(request: AgentRunRequest, conversationId: string): SuperpowersCheckpoint | undefined | null {
   const resumeState = request.resumeState as unknown;
   if (!resumeState || typeof resumeState !== "object") return undefined;
   const candidate = resumeState as Partial<SuperpowersResumeState>;
-  return candidate.kind === "superpowers" ? candidate.checkpoint : undefined;
+  if (candidate.kind !== "superpowers") return undefined;
+  const checkpoint = candidate.checkpoint;
+  return isSuperpowersCheckpoint(checkpoint, conversationId) && checkpoint.runId.trim().length > 0 ? checkpoint : null;
 }
 
-function reviewResult(result: SubagentResult): ReviewResult | undefined {
-  const candidate = result as SubagentResult & Partial<ReviewResult>;
-  return typeof candidate.specCompliant === "boolean"
-    && typeof candidate.qualityApproved === "boolean"
-    && Array.isArray(candidate.findings)
-    ? { specCompliant: candidate.specCompliant, qualityApproved: candidate.qualityApproved, findings: candidate.findings }
+function reviewResult(result: Awaited<ReturnType<ReviewingAgentPool["dispatch"]>>): ReviewResult | undefined {
+  const review = result.review;
+  return review
+    && typeof review.specCompliant === "boolean"
+    && typeof review.qualityApproved === "boolean"
+    && Array.isArray(review.findings)
+    ? review
     : undefined;
 }
 
