@@ -429,7 +429,6 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       catalog: undefined,
       loadSkill: async (name) => (await this.getSuperpowersCatalog()).load(name),
       workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "",
-      planPath: "docs/superpowers/plans/2026-07-21-superpowers-harness-integration-plan.md",
     }));
   }
 

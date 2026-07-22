@@ -30,8 +30,8 @@ export type CreateWorkflowSupervisorOptions = {
   loadSkill?: (name: string) => Promise<unknown>;
   planPath?: string;
   workspaceRoot?: string;
-  validatePlan?: () => string | undefined;
-  validateLedger?: () => string | undefined;
+  validatePlan?: (checkpoint: SuperpowersCheckpoint) => string | undefined;
+  validateLedger?: (checkpoint: SuperpowersCheckpoint) => string | undefined;
   provideContext?: (result: SubagentResult, role: AgentRole) => string | undefined;
 };
 
@@ -118,8 +118,13 @@ export function createWorkflowSupervisor(options: CreateWorkflowSupervisorOption
         }
 
         if (checkpoint.phase === "preflight") {
-          const planError = options.validatePlan?.() ?? validatePlan(options, checkpoint);
-          const inconsistency = planError ?? options.validateLedger?.() ?? validateLedger(options);
+          const planError = checkpoint.planPath
+            ? options.validatePlan?.(checkpoint) ?? validatePlan(options, checkpoint)
+            : undefined;
+          const ledgerError = shouldValidateLedger(options, checkpoint)
+            ? options.validateLedger?.(checkpoint) ?? validateLedger(options)
+            : undefined;
+          const inconsistency = planError ?? ledgerError;
           if (inconsistency) {
             yield wait("blocked", inconsistency);
             return;
@@ -298,13 +303,17 @@ async function loadSkillContext(options: CreateWorkflowSupervisorOptions, names:
 }
 
 function validatePlan(options: CreateWorkflowSupervisorOptions, checkpoint: SuperpowersCheckpoint): string | undefined {
-  if (options.workspaceRoot === undefined) return undefined;
-  return validateWorkspaceFile(options.workspaceRoot, checkpoint.planPath ?? options.planPath, "plan");
+  return validateWorkspaceFile(options.workspaceRoot ?? "", checkpoint.planPath, "plan");
 }
 
 function validateLedger(options: CreateWorkflowSupervisorOptions): string | undefined {
-  if (options.workspaceRoot === undefined) return undefined;
-  return validateWorkspaceFile(options.workspaceRoot, ".superpowers/sdd/progress.md", "ledger");
+  return validateWorkspaceFile(options.workspaceRoot ?? "", ".superpowers/sdd/progress.md", "ledger");
+}
+
+function shouldValidateLedger(options: CreateWorkflowSupervisorOptions, checkpoint: SuperpowersCheckpoint): boolean {
+  if (checkpoint.taskIndex > 0 || Boolean(checkpoint.baseCommit?.trim())) return true;
+  if (!options.workspaceRoot?.trim()) return false;
+  return existsSync(resolve(options.workspaceRoot, ".superpowers/sdd/progress.md"));
 }
 
 function validateWorkspaceFile(workspaceRoot: string, requestedPath: string | undefined, label: string): string | undefined {

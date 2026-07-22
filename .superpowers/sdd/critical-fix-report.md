@@ -32,5 +32,7 @@
 ## 技能正文与预检接线
 
 - Supervisor 在 fresh run 和 Resume 时重新加载 checkpoint 中的技能名；正文通过 dispatch context 进入 AgentPool fresh messages，再作为 ReAct `initialMessages` 进入 modelTurn。
-- Extension 提供当前 workspace 和 `docs/superpowers/plans/2026-07-21-superpowers-harness-integration-plan.md`；Supervisor 校验计划文件及 `.superpowers/sdd/progress.md` 均位于 workspace、存在、为普通文件且非空。
-- 缺少 workspace、计划路径、文件或有效 ledger 时，预检保存明确 `blocked` 原因；ask runner 不经过该 Supervisor。
+- Extension 仅提供当前 workspace，不注入仓库特定计划路径。计划路径只由 checkpoint 或创建 Supervisor 时的显式 option 声明，并保存到 checkpoint。
+- Fresh workflow 没有 `planPath`、`taskIndex` 或 `baseCommit` 时不要求预先存在计划和 ledger；只有 checkpoint 声明计划时才校验计划，已有任务进度或 workspace 已有 ledger 时才校验 `.superpowers/sdd/progress.md`。
+- 需要校验的文件必须位于 workspace、为普通文件且非空；缺失、逃逸或空文件均保存明确 `blocked` 原因。空 workspace 的 fresh edit 可通过 preflight，带有效计划和 ledger 的 Resume 可继续执行。
+- 本轮验证：相关测试 56 项、全量测试 458 项、`npm run typecheck`、`npm run compile` 和 `git diff --check` 均通过。

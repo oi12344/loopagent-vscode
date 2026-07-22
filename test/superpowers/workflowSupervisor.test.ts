@@ -1,4 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -129,7 +131,7 @@ describe("WorkflowSupervisor", () => {
       agentPool: { dispatch: async () => { dispatched = true; return done(); }, cancelAll() {} },
       workflowStore: store,
       model: "model",
-      validatePlan: () => "plan conflicts with the current branch",
+      validatePlan: (current) => current.planPath ? "plan conflicts with the current branch" : undefined,
     });
 
     await collect(supervisor.run({
@@ -137,7 +139,7 @@ describe("WorkflowSupervisor", () => {
       task: "Implement safely",
       conversationId: "conversation-1",
       signal: new AbortController().signal,
-      resumeState: { kind: "superpowers", checkpoint: checkpoint("preflight") } as never,
+      resumeState: { kind: "superpowers", checkpoint: { ...checkpoint("preflight"), planPath: "docs/superpowers/plans/current.md" } } as never,
     }));
 
     expect(dispatched).toBe(false);
@@ -209,20 +211,106 @@ describe("WorkflowSupervisor", () => {
     expect(contexts[0]).toContain("# brainstorming");
   });
 
-  it("blocks with a clear plan error when the workspace plan is missing", async () => {
+  it("allows a fresh preflight in an empty workspace", async () => {
+    const workspaceRoot = createWorkspace();
+    let dispatched = false;
+    try {
+      const store = memoryStore();
+      const supervisor = createWorkflowSupervisor({
+        agentPool: { dispatch: async () => { dispatched = true; return done(); }, cancelAll() {} },
+        workflowStore: store,
+        model: "model",
+        workspaceRoot,
+        loadSkill: async (name) => name,
+      });
+      const request = (runId: string, resumeState?: unknown) => ({
+        runId,
+        task: "Implement safely",
+        conversationId: "conversation-1",
+        signal: new AbortController().signal,
+        ...(resumeState ? { resumeState } : {}),
+      });
+
+      await collect(supervisor.run(request("run-1")));
+      await collect(supervisor.run(request("run-2", { kind: "superpowers", checkpoint: store.load("conversation-1") } as never)));
+      await collect(supervisor.run(request("run-3", { kind: "superpowers", checkpoint: store.load("conversation-1") } as never)));
+      await collect(supervisor.run(request("run-4", { kind: "superpowers", checkpoint: store.load("conversation-1") } as never)));
+
+      expect(dispatched).toBe(true);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ["missing", "docs/superpowers/plans/missing.md", /does not exist/i],
+    ["outside the workspace", "../outside.md", /outside the workspace/i],
+    ["empty", "docs/superpowers/plans/empty.md", /empty/i],
+  ])("blocks a resumed workflow whose declared plan is %s", async (_case, planPath, expected) => {
+    const workspaceRoot = createWorkspace();
     const store = memoryStore();
-    const supervisor = createWorkflowSupervisor({
-      agentPool: { dispatch: async () => done(), cancelAll() {} },
-      workflowStore: store,
-      model: "model",
-      workspaceRoot: "C:/path-that-does-not-exist",
-      planPath: "docs/superpowers/plans/current-plan.md",
-    });
+    try {
+      if (planPath.includes("empty")) {
+        mkdirSync(join(workspaceRoot, "docs", "superpowers", "plans"), { recursive: true });
+        writeFileSync(join(workspaceRoot, planPath), "");
+      }
+      const supervisor = createWorkflowSupervisor({
+        agentPool: { dispatch: async () => done(), cancelAll() {} },
+        workflowStore: store,
+        model: "model",
+        workspaceRoot,
+      });
 
-    await collect(supervisor.run(runFrom("preflight")));
+      await collect(supervisor.run(runFrom("preflight", { planPath })));
 
-    expect(store.load("conversation-1")).toMatchObject({ phase: "blocked" });
-    expect(store.load("conversation-1")?.waitingFor).toMatch(/plan|workspace|exist/i);
+      expect(store.load("conversation-1")).toMatchObject({ phase: "blocked" });
+      expect(store.load("conversation-1")?.waitingFor).toMatch(expected);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks a resumed task with progress when its ledger is missing", async () => {
+    const workspaceRoot = createWorkspace();
+    const store = memoryStore();
+    try {
+      const supervisor = createWorkflowSupervisor({
+        agentPool: { dispatch: async () => done(), cancelAll() {} },
+        workflowStore: store,
+        model: "model",
+        workspaceRoot,
+      });
+
+      await collect(supervisor.run(runFrom("preflight", { taskIndex: 1 })));
+
+      expect(store.load("conversation-1")).toMatchObject({ phase: "blocked" });
+      expect(store.load("conversation-1")?.waitingFor).toMatch(/ledger.*does not exist/i);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("continues a resumed task when its declared plan and ledger are valid", async () => {
+    const workspaceRoot = createWorkspace();
+    let dispatched = false;
+    try {
+      mkdirSync(join(workspaceRoot, "docs", "superpowers", "plans"), { recursive: true });
+      mkdirSync(join(workspaceRoot, ".superpowers", "sdd"), { recursive: true });
+      writeFileSync(join(workspaceRoot, "docs", "superpowers", "plans", "current.md"), "# Plan\n");
+      writeFileSync(join(workspaceRoot, ".superpowers", "sdd", "progress.md"), "# Progress\n");
+      const supervisor = createWorkflowSupervisor({
+        agentPool: { dispatch: async () => { dispatched = true; return done(); }, cancelAll() {} },
+        workflowStore: memoryStore(),
+        model: "model",
+        workspaceRoot,
+      });
+
+      await collect(supervisor.run(runFrom("preflight", { planPath: "docs/superpowers/plans/current.md", taskIndex: 1 })));
+
+      expect(dispatched).toBe(true);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it("clears the active agent and emits failure when dispatch throws", async () => {
@@ -275,14 +363,18 @@ function checkpoint(phase: SuperpowersCheckpoint["phase"]): SuperpowersCheckpoin
   };
 }
 
-function runFrom(phase: SuperpowersCheckpoint["phase"]) {
+function runFrom(phase: SuperpowersCheckpoint["phase"], changes: Partial<SuperpowersCheckpoint> = {}) {
   return {
     runId: "run-1",
     task: "Implement safely",
     conversationId: "conversation-1",
     signal: new AbortController().signal,
-    resumeState: { kind: "superpowers", checkpoint: checkpoint(phase) } as never,
+    resumeState: { kind: "superpowers", checkpoint: { ...checkpoint(phase), ...changes } } as never,
   };
+}
+
+function createWorkspace(): string {
+  return mkdtempSync(join(tmpdir(), "loopagent-supervisor-"));
 }
 
 function memoryStore(): WorkflowStore {
