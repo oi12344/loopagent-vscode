@@ -2,7 +2,7 @@
 
 ## 目标
 
-将官方 `obra/superpowers` v6.1.1 的全部 14 个技能原样接入 LoopAgent，使 VS Code 扩展具备真实的 Superpowers 工作流能力：技能发现与路由、设计和计划审批、多智能体实现与审查、任务台账、可恢复执行，以及完成前验证。
+将官方 `obra/superpowers` v6.1.1 的全部 14 个技能原样接入 LoopAgent，使 VS Code 扩展具备真实的 Superpowers 工作流能力：技能发现与路由、设计和计划阶段、多智能体实现与审查、任务台账、可恢复执行，以及完成前验证。
 
 集成目标是增加 LoopAgent 的宿主适配层，不重写官方技能正文，也不把工作流简化成一段系统提示词。
 
@@ -76,12 +76,10 @@ Supervisor 通过现有 `AgentRunner` 和 provider 工厂启动子 Agent。子 A
 
 1. `BOOTSTRAP`：加载项目规则、技能清单和 `using-superpowers`。
 2. `ROUTE`：选择并加载适用技能。
-3. `BRAINSTORMING`：一次只问一个问题，提出替代方案，分段展示设计。
-4. `DESIGN_APPROVAL`：等待用户批准设计。
-5. `WRITE_SPEC`：写入中文规格并自审。
-6. `SPEC_REVIEW`：等待用户审阅规格文件。
-7. `WRITE_PLAN`：生成中文实施计划。
-8. `PLAN_APPROVAL`：用户明确开始后才进入实施。
+3. `BRAINSTORMING`、`DESIGN_APPROVAL`、`WRITE_SPEC`、`SPEC_REVIEW`、`WRITE_PLAN`、`PLAN_APPROVAL`：保留为 checkpoint 兼容阶段，由 Supervisor 在同一次 run 内自动推进，不发送空的 `runInterrupted`。
+4. `PREFLIGHT`：存在 checkpoint 已声明的计划或台账时校验文件，然后进入实施。
+
+用户发送一次 edit 请求后应直接进入多 Agent 实施和审查流程。只有用户主动 Stop、子 Agent 返回 `NEEDS_CONTEXT`/`BLOCKED`、取消、资源错误或 checkpoint 不一致时才停止；旧 checkpoint 恢复到上述任一兼容阶段时同样自动继续。Stop 保存当前可执行 phase，Resume 从该 phase 重试，不把可恢复状态覆盖为不可执行的 `blocked`。
 
 ### 实施阶段
 
@@ -95,7 +93,7 @@ Supervisor 通过现有 `AgentRunner` 和 provider 工厂启动子 Agent。子 A
 
 ### 恢复与停止
 
-checkpoint 至少记录当前技能、阶段、批准记录、计划路径、任务索引、活动 Agent、run ID、提交基线和取消状态。Stop 会级联取消当前子 Agent，并保留 checkpoint。Resume 先校验计划文件、当前提交和 `progress.md`；不一致时停止自动恢复并请求用户选择。
+checkpoint 至少记录当前技能、阶段、计划路径、任务索引、活动 Agent、run ID、提交基线和取消状态。Stop 会级联取消当前子 Agent，并保留 checkpoint。Resume 先校验计划文件、当前提交和 `progress.md`；不一致时停止自动恢复并请求用户选择。
 
 ## 子 Agent 合同
 
@@ -135,7 +133,7 @@ checkpoint 至少记录当前技能、阶段、批准记录、计划路径、任
 
 ### 真实用户路径
 
-在唯一的 Extension Development Host 中使用 `npm run debug:vscode`，从一句功能请求触发 brainstorming，批准设计和计划，观察实现/审查 Agent，停止后恢复一次，并确认最终结果。
+在唯一的 Extension Development Host 中使用 `npm run debug:vscode`，从一句功能请求直接观察实现/审查 Agent，停止后恢复一次，并确认最终结果；正常路径不得先出现空的 Resume 门禁。
 
 ### 完成门禁
 
@@ -150,6 +148,6 @@ checkpoint 至少记录当前技能、阶段、批准记录、计划路径、任
 - `npm test` 通过：65 个测试文件、458 个用例；`npm run typecheck`、`npm run compile`、`npm run package:vsix` 和 `git diff --check` 均以 0 退出。
 - VSIX 为 `.artifacts/loopagent-vscode-0.0.1.vsix`，共 67 个条目；其中含 14 个 `resources/superpowers/skills/*/SKILL.md` 和 `resources/superpowers/LICENSE`。
 - 5 个 Superpowers 安全与状态边界测试文件共 24 个用例通过，覆盖资源路径、技能路径穿越、非白名单脚本、无效 Agent 结果、审查结果和 checkpoint 不一致。
-- 最终源码复审发现并修复两个 Critical 及一个 Important：审批门禁发送 `runInterrupted` 并可从 checkpoint Resume；fresh context 和 required report tool 传入实际 ReAct runner；required-tool 补救轮保持 `toolChoice: auto`，成功报告后才允许 `runFinished`。修复后受影响测试、类型检查、编译和 diff 检查均通过。
+- 最终源码复审当时将审批门禁接成可 Resume 的 `runInterrupted`；该行为后来造成首次发送连续中断，已由 Task 8 的同一次 run 自动推进取代。fresh context、required report tool 和 required-tool 补救轮仍保持不变。
 - 后续整分支复审补齐技能正文注入与通用预检：fresh/Resume 每轮按 checkpoint 技能清单重载正文并注入 ReAct；计划与 ledger 校验由 checkpoint 状态驱动，产品运行时不硬编码本仓库文件，也不要求 fresh workspace 预先存在工件。
-- 已启动且仅启动一个 Extension Development Host，并确认 LoopAgent 面板可见、状态为 Ready、存在 Edit/Ask 切换和消息输入框。管理员 VS Code 的 UI 自动化无法点击或填值，因此未提交 edit 请求，也未能实际验证审批、Stop/Resume、写入 Agent 串行和最终工作流事件；该项保持未完成。
+- 已启动且仅启动一个 Extension Development Host，并确认 LoopAgent 面板可见、状态为 Ready、存在 Edit/Ask 切换和消息输入框。管理员 VS Code 的 UI 自动化无法点击或填值，因此未提交 edit 请求，也未能实际验证 Stop/Resume、写入 Agent 串行和最终工作流事件；该项保持未完成。

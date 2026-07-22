@@ -56,10 +56,19 @@ describe("WorkflowSupervisor", () => {
     expect(store.load("conversation-1")?.phase).toBe("finished");
   });
 
-  it("persists each approval gate and continues from its checkpoint", async () => {
+  it("automatically advances approval checkpoints without interrupting", async () => {
     const store = memoryStore();
+    const roles: AgentRole[] = [];
     const supervisor = createWorkflowSupervisor({
-      agentPool: { dispatch: async () => done(), cancelAll() {} },
+      agentPool: {
+        async dispatch(request) {
+          roles.push(request.role);
+          return request.role === "taskReviewer" || request.role === "finalReviewer"
+            ? { ...done(), review: review(2) }
+            : done();
+        },
+        cancelAll() {},
+      },
       workflowStore: store,
       model: "model",
       loadSkill: async (name) => name,
@@ -72,38 +81,40 @@ describe("WorkflowSupervisor", () => {
       ...(resumeState ? { resumeState } : {}),
     });
 
-    const firstRun = await collect(supervisor.run(request("run-1")));
-    expect(firstRun.at(-1)).toEqual({
-      type: "runInterrupted",
-      runId: "run-1",
-      conversationId: "conversation-2",
-      task: "Add a small feature",
-    });
-    expect(store.load("conversation-2")).toMatchObject({ phase: "designApproval", waitingFor: "design approval", skillNames: SKILLS });
+    const runs = [
+      request("run-1"),
+      ...(["designApproval", "specReview", "planApproval"] as const).map((phase, index) =>
+        request(`run-${index + 2}`, { kind: "superpowers", checkpoint: { ...checkpoint(phase), conversationId: "conversation-2" } } as never)),
+    ];
 
-    const secondRun = await collect(supervisor.run(request("run-2", { kind: "superpowers", checkpoint: store.load("conversation-2") } as never)));
-    expect(secondRun.at(-1)).toEqual({
-      type: "runInterrupted",
-      runId: "run-2",
-      conversationId: "conversation-2",
-      task: "Add a small feature",
-    });
-    expect(store.load("conversation-2")).toMatchObject({ phase: "specReview", waitingFor: "spec review" });
-
-    await collect(supervisor.run(request("run-3", { kind: "superpowers", checkpoint: store.load("conversation-2") } as never)));
-    expect(store.load("conversation-2")).toMatchObject({ phase: "planApproval", waitingFor: "plan approval" });
+    for (const run of runs) {
+      const messages = await collect(supervisor.run(run));
+      expect(messages.some((message) => message.type === "runInterrupted")).toBe(false);
+      expect(messages.at(-1)).toEqual({ type: "runFinished", runId: run.runId });
+    }
+    expect(store.load("conversation-2")).toMatchObject({ phase: "finished", waitingFor: undefined, skillNames: SKILLS });
+    expect(roles).toEqual(Array.from({ length: 4 }, () => ["implementer", "taskReviewer", "finalReviewer"]).flat());
   });
 
-  it("stops before a second agent when cancellation arrives after a dispatch", async () => {
+  it("resumes the interrupted phase after cancellation", async () => {
     const controller = new AbortController();
     const roles: AgentRole[] = [];
+    let cancelFirstDispatch = true;
+    let waitingDuringResume: string | undefined = "unset";
     const store = memoryStore();
     const supervisor = createWorkflowSupervisor({
       agentPool: {
         async dispatch(request) {
           roles.push(request.role);
-          controller.abort();
-          return done();
+          if (cancelFirstDispatch) {
+            cancelFirstDispatch = false;
+            controller.abort();
+          } else {
+            waitingDuringResume = store.load("conversation-1")?.waitingFor;
+          }
+          return request.role === "taskReviewer" || request.role === "finalReviewer"
+            ? { ...done(), review: review(2) }
+            : done();
         },
         cancelAll() {},
       },
@@ -121,7 +132,18 @@ describe("WorkflowSupervisor", () => {
 
     expect(roles).toEqual(["implementer"]);
     expect(messages).toContainEqual({ type: "runFailed", runId: "run-1", message: "Superpowers workflow cancelled" });
-    expect(store.load("conversation-1")).toMatchObject({ phase: "blocked", activeAgentId: undefined, waitingFor: "cancelled" });
+    expect(store.load("conversation-1")).toMatchObject({ phase: "implement", activeAgentId: undefined, waitingFor: "cancelled" });
+
+    const resumed = await collect(supervisor.run({
+      ...runFrom("implement"),
+      runId: "run-2",
+      resumeState: { kind: "superpowers", checkpoint: store.load("conversation-1") } as never,
+    }));
+
+    expect(roles).toEqual(["implementer", "implementer", "taskReviewer", "finalReviewer"]);
+    expect(waitingDuringResume).toBeUndefined();
+    expect(resumed.at(-1)).toEqual({ type: "runFinished", runId: "run-2" });
+    expect(store.load("conversation-1")).toMatchObject({ phase: "finished", activeAgentId: undefined, waitingFor: undefined });
   });
 
   it("blocks before implementation when preflight detects a plan conflict", async () => {

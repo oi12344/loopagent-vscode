@@ -61,18 +61,9 @@ export function createWorkflowSupervisor(options: CreateWorkflowSupervisorOption
         save(phase, { waitingFor, activeAgentId: undefined });
         return event(`Waiting for ${waitingFor}`);
       };
-      const interrupt = (phase: WorkflowPhase, waitingFor: string): HostToWebviewMessage => {
-        save(phase, { waitingFor, activeAgentId: undefined });
-        return {
-          type: "runInterrupted",
-          runId: request.runId,
-          conversationId,
-          task: request.task,
-        };
-      };
       const cancel = () => {
         options.agentPool.cancelAll();
-        save("blocked", { activeAgentId: undefined, waitingFor: "cancelled" });
+        save(checkpoint.phase, { activeAgentId: undefined, waitingFor: "cancelled" });
         return failure(request.runId, "Superpowers workflow cancelled");
       };
 
@@ -96,22 +87,19 @@ export function createWorkflowSupervisor(options: CreateWorkflowSupervisorOption
           save("brainstorming");
         }
         if (checkpoint.phase === "brainstorming") {
-          yield interrupt("designApproval", "design approval");
-          return;
+          save("designApproval");
         }
         if (checkpoint.phase === "designApproval") {
           save("writeSpec", { waitingFor: undefined });
         }
         if (checkpoint.phase === "writeSpec") {
-          yield interrupt("specReview", "spec review");
-          return;
+          save("specReview");
         }
         if (checkpoint.phase === "specReview") {
           save("writePlan", { waitingFor: undefined });
         }
         if (checkpoint.phase === "writePlan") {
-          yield interrupt("planApproval", "plan approval");
-          return;
+          save("planApproval");
         }
         if (checkpoint.phase === "planApproval") {
           save("preflight", { waitingFor: undefined });
@@ -223,7 +211,7 @@ async function* dispatch(
   skillContext: string,
 ): AsyncGenerator<HostToWebviewMessage, ReviewReportedSubagentResult | undefined> {
   const agentId = `${role}-${checkpoint.taskIndex + 1}`;
-  save(phase, { activeAgentId: agentId });
+  save(phase, { activeAgentId: agentId, waitingFor: undefined });
   yield event(`${role} started`);
   if (request.signal.aborted) throw new Error("Workflow cancelled");
   let result = await options.agentPool.dispatch({ agentId, role, task, model: options.model, signal: request.signal, context: skillContext });

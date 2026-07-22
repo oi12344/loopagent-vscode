@@ -4,7 +4,7 @@
 
 **Goal:** 将 obra/superpowers v6.1.1 的全部官方技能接入 LoopAgent，在 edit 模式提供可恢复的多智能体实现、审查和验证闭环。
 
-**Architecture:** 固定打包官方技能原文，由 `SkillCatalog` 按需加载；`WorkflowSupervisor` 管理阶段、用户门禁、checkpoint 和台账；`AgentPool` 基于现有 ReAct runner 为实现者、审查者和修复者创建独立上下文。ask 模式保持现有 ReAct，edit 模式进入 Superpowers。
+**Architecture:** 固定打包官方技能原文，由 `SkillCatalog` 按需加载；`WorkflowSupervisor` 管理阶段、阻塞状态、checkpoint 和台账，设计/规格/计划兼容阶段在同一次 run 内自动推进；`AgentPool` 基于现有 ReAct runner 为实现者、审查者和修复者创建独立上下文。ask 模式保持现有 ReAct，edit 模式进入 Superpowers。
 
 **Tech Stack:** TypeScript、VS Code Extension API、Node.js SQLite、React Webview、Vitest、Git Bash、现有 DeepSeek provider。
 
@@ -103,7 +103,7 @@ type WorkflowStore = { save(c: SuperpowersCheckpoint): void; load(id: string): S
 **Interfaces:** `createWorkflowSupervisor(options): WorkflowSupervisor`；`WorkflowSupervisor.run(request: AgentRunRequest): AsyncIterable<HostToWebviewMessage>`；恢复状态支持 `resumeState.kind === "superpowers"`。
 
 - [ ] 写失败纵向测试：脚本化 Agent 依次返回实现通过、审查不通过、修复通过、复审通过，断言角色顺序为 `implementer → taskReviewer → fixer → taskReviewer → finalReviewer`，最终产生 `runFinished`。
-- [ ] 实现 `BOOTSTRAP → ROUTE → BRAINSTORMING → DESIGN_APPROVAL → WRITE_SPEC → SPEC_REVIEW → WRITE_PLAN → PLAN_APPROVAL`；每个用户门禁保存 `waitingFor` 并结束当前 run，后续 continue 从 checkpoint 继续。
+- [ ] 实现 `BOOTSTRAP → ROUTE → BRAINSTORMING → DESIGN_APPROVAL → WRITE_SPEC → SPEC_REVIEW → WRITE_PLAN → PLAN_APPROVAL`；这些兼容阶段在同一次 run 内自动推进，只有真实阻塞或用户主动 Stop 才结束当前 run。
 - [ ] 实施阶段按任务 brief、实现、审查、修复/复审、ledger、整分支终审顺序执行；未加载适用技能时拒绝回答/编辑/命令。
 - [ ] 处理 `NEEDS_CONTEXT`、`BLOCKED`、计划冲突、提交/ledger 不一致和取消信号；阶段边界和 Agent 生命周期都写 checkpoint。
 - [ ] 运行 `npm test -- workflowSupervisor`，提交：`git add src/extension/superpowers/workflowSupervisor.ts src/extension/superpowers/superpowersAgentRunner.ts test/superpowers/workflowSupervisor.test.ts; git commit -m "feat(superpowers): orchestrate gated workflow"`。
@@ -125,7 +125,7 @@ type WorkflowStore = { save(c: SuperpowersCheckpoint): void; load(id: string): S
 **Files:** Modify `docs/superpowers/specs/2026-07-21-superpowers-harness-integration-design.md` and this plan only with actual results; modify `.vscodeignore` only if the resource test proves omission。
 
 - [ ] 运行 `npm test`、`npm run typecheck`、`npm run compile`、`npm run package:vsix`、`git diff --check`；确认所有命令退出码为 0，VSIX 含 14 个技能和 LICENSE。
-- [ ] 使用唯一 `npm run debug:vscode` 窗口执行 `LoopAgent: Open Panel`，提交小型 edit 请求，批准设计/规格/计划，观察实现、审查、修复/复审和最终结果；中途 Stop 一次再 Resume，确认不重复已通过任务且无第二个写 Agent。
+- [ ] 使用唯一 `npm run debug:vscode` 窗口执行 `LoopAgent: Open Panel`，提交小型 edit 请求，确认不出现空审批中断并观察实现、审查、修复/复审和最终结果；中途 Stop 一次再 Resume，确认不重复已通过任务且无第二个写 Agent。
 - [ ] 检查路径穿越、未确认命令、非白名单脚本、非法 Agent 结果、缺失资源和 checkpoint 不一致均进入明确失败状态。
 - [ ] 只记录实际执行过的测试文件/用例数量、VSIX 路径、调试结果、提交范围和限制；更新规格/计划完成记录。
 - [ ] 提交：`git add docs/superpowers/specs/2026-07-21-superpowers-harness-integration-design.md docs/superpowers/plans/2026-07-21-superpowers-harness-integration-plan.md; git commit -m "docs: record superpowers integration verification"`。
@@ -135,15 +135,24 @@ type WorkflowStore = { save(c: SuperpowersCheckpoint): void; load(id: string): S
 - [x] 已执行 `npm test`（65 文件、458 用例）、`npm run typecheck`、`npm run compile`、`npm run package:vsix` 和 `git diff --check`，退出码均为 0。
 - [x] 已核对 `.artifacts/loopagent-vscode-0.0.1.vsix`：67 个条目，含 14 个技能正文与 `LICENSE`。
 - [x] 已执行 `resourceIntegrity`、`skillCatalog`、`superpowersTools`、`workflowStore` 和 `workflowSupervisor` 边界测试：5 文件、24 用例均通过。
-- [x] 最终整分支复审发现并修复两个 Critical：用户审批门禁改为可由现有 Resume 消费的 `runInterrupted`；AgentPool fresh context 和必需结构化报告工具已贯穿真实 ReAct runner。随后补充 required-tool 补救轮 `toolChoice: auto` 修复，相关复审与 40/40 聚焦回归通过。
+- [x] 最终整分支复审当时将用户审批门禁改为可由现有 Resume 消费的 `runInterrupted`；该行为现由 Task 8 的同一次 run 自动推进取代。AgentPool fresh context、必需结构化报告工具和 required-tool 补救轮 `toolChoice: auto` 保持不变。
 - [x] 后续整分支复审补齐技能正文注入与 checkpoint 驱动预检：fresh/Resume 均把适用技能正文传入 ReAct；产品运行时不再绑定本仓库计划路径，fresh workspace 不预要求 plan/ledger，Resume 仅校验 checkpoint 已声明的工件。
-- [ ] 已在唯一 Extension Development Host 中打开 LoopAgent 面板，但管理员 VS Code 的 UI 自动化层无法点击或填值，无法提交 edit 请求；因此审批门禁、implementer/reviewer/fixer/finalReviewer、Stop/Resume、无重复任务和单 writer 的真实路径仍未验证，未将自动化测试替代为真实路径结论。
+- [ ] 已在唯一 Extension Development Host 中打开 LoopAgent 面板，但管理员 VS Code 的 UI 自动化层无法点击或填值，无法提交 edit 请求；因此 implementer/reviewer/fixer/finalReviewer、Stop/Resume、无重复任务和单 writer 的真实路径仍未验证，未将自动化测试替代为真实路径结论。
 - [x] 已关闭本次调试宿主；`127.0.0.1:9333` 不再监听。
+
+### Task 8: 移除空审批中断（2026-07-22）
+
+**Files:** Modify `src/extension/superpowers/workflowSupervisor.ts`, `test/superpowers/workflowSupervisor.test.ts` and this design/plan。
+
+- [x] 将首次运行及 `designApproval`、`specReview`、`planApproval` 旧 checkpoint 写成一个失败回归测试，断言均无 `runInterrupted` 且最终产生 `runFinished`；同时覆盖 Stop 后从当前可执行 phase Resume。
+- [x] 删除三个审批阶段的 `interrupt`/`return`，保留阶段保存和 `waitingFor` 清理，使它们在同一次 run 内推进到 `preflight`；取消时保留当前 phase，Resume 派发时清理取消原因，避免无声结束或状态残留。
+- [x] 运行 `npm test -- workflowSupervisor --reporter=dot`（15/15）、`npm test`（65 文件/458 用例）、`npm run typecheck`、`npm run compile` 和受影响文件的 diff 检查，全部退出码 0。
+- [x] 运行 `npm run package:vsix`（VSIX 67 个条目）和 `npm run start:vscode:vsix-e2e`，在固定 profile 中覆盖安装并保持唯一调试窗口（9333 监听，扩展 `local-dev.loopagent-vscode@0.0.1`）。
 
 ## 完成标准
 
 - [ ] v6.1.1 全部技能进入 VSIX，资源、路径安全和路由门禁测试通过。
 - [ ] edit 模式从 bootstrap 到最终验证走通，ask 模式回归通过。
 - [ ] 实现、审查、修复和终审使用 fresh context，写入 Agent 串行。
-- [ ] 设计、规格、计划、Stop/Resume 和状态不一致均有明确门禁。
+- [ ] 设计、规格和计划兼容阶段自动推进；Stop/Resume 和状态不一致具有明确恢复边界。
 - [ ] `npm test`、`npm run typecheck`、`npm run compile`、`npm run package:vsix` 和 `git diff --check` 全部通过，且唯一调试窗口完成真实用户路径。
