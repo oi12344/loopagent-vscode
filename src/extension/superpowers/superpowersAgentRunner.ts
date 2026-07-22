@@ -1,5 +1,7 @@
 import type { AgentRunner } from "../agentRunner";
+import type { ReactAgentTool } from "../agent/reactTypes";
 import type { AgentPool, ReviewResult, SubagentResult } from "./agentPool";
+import { createSuperpowersTools, type CreateSuperpowersToolsOptions } from "./superpowersTools";
 import type { WorkflowSupervisor } from "./workflowSupervisor";
 
 export function createSuperpowersAgentRunner(supervisor: WorkflowSupervisor): AgentRunner {
@@ -17,6 +19,20 @@ export type ReviewingAgentPool = {
   dispatch(request: Parameters<AgentPool["dispatch"]>[0]): Promise<ReviewReportedSubagentResult>;
   cancelAll(): void;
 };
+
+export type CreateSuperpowersAgentToolsOptions = Omit<CreateSuperpowersToolsOptions, "onReview"> & {
+  agentId: string;
+  reviewBridge: ReviewResultBridge;
+};
+
+export function createSuperpowersAgentTools({ agentId, reviewBridge, ...options }: CreateSuperpowersAgentToolsOptions): ReactAgentTool[] {
+  return createSuperpowersTools({
+    ...options,
+    onReview(review) {
+      reviewBridge.onReview(agentId, review);
+    },
+  });
+}
 
 export function createReviewResultBridge(): ReviewResultBridge {
   const reviews = new Map<string, ReviewResult>();

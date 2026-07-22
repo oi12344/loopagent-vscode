@@ -1,7 +1,10 @@
+import { tmpdir } from "node:os";
+
 import { describe, expect, it } from "vitest";
 
+import type { ReactAgentTool } from "../../src/extension/agent/reactTypes";
 import type { AgentPool, AgentRole, SubagentResult } from "../../src/extension/superpowers/agentPool";
-import { createReviewResultBridge } from "../../src/extension/superpowers/superpowersAgentRunner";
+import { createReviewResultBridge, createSuperpowersAgentTools } from "../../src/extension/superpowers/superpowersAgentRunner";
 import { createWorkflowSupervisor } from "../../src/extension/superpowers/workflowSupervisor";
 import type { WorkflowStore } from "../../src/extension/superpowers/workflowStore";
 import type { SuperpowersCheckpoint } from "../../src/shared/chatTypes";
@@ -24,7 +27,12 @@ describe("WorkflowSupervisor", () => {
       async dispatch(request) {
         roles.push(request.role);
         if (request.role === "taskReviewer" || request.role === "finalReviewer") {
-          reviews.onReview(request.agentId, review(roles.filter((role) => role === "taskReviewer").length));
+          await invoke(createSuperpowersAgentTools({
+            agentId: request.agentId,
+            reviewBridge: reviews,
+            catalog: emptyCatalog(),
+            resourceRoot: tmpdir(),
+          }), "reportReview", review(roles.filter((role) => role === "taskReviewer").length));
         }
         return done();
       },
@@ -241,4 +249,18 @@ async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
   const values: T[] = [];
   for await (const value of iterable) values.push(value);
   return values;
+}
+
+function emptyCatalog() {
+  return {
+    list: () => [],
+    async load(): Promise<never> { throw new Error("not used"); },
+    async loadResource(): Promise<never> { throw new Error("not used"); },
+  };
+}
+
+function invoke(tools: ReactAgentTool[], name: string, input: unknown): Promise<string> {
+  const tool = tools.find((candidate) => candidate.name === name);
+  if (!tool) throw new Error(`Missing tool ${name}`);
+  return Promise.resolve(tool.invoke({ request: { id: "tool-1", name, rawArguments: JSON.stringify(input), input }, input, signal: new AbortController().signal }));
 }
