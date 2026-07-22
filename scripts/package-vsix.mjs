@@ -1,26 +1,21 @@
 import { spawn } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const require = createRequire(import.meta.url);
 const { assertVsixContents } = require("./vsixContents.js");
+const { listSuperpowersResourcePaths } = require("./superpowersResources.js");
 
 const root = resolve(import.meta.dirname, "..");
 const artifactPath = resolve(root, ".artifacts", "loopagent-vscode-0.0.1.vsix");
 const vscePath = resolve(root, "node_modules", ".bin", process.platform === "win32" ? "vsce.cmd" : "vsce");
 const vsceArgs = ["package", "--no-dependencies", "--out", artifactPath, ...process.argv.slice(2)];
-const superpowersManifest = JSON.parse(
-  readFileSync(resolve(root, "resources", "superpowers", "manifest.json"), "utf8"),
+const superpowersResourceRoot = resolve(root, "resources", "superpowers");
+const requiredSuperpowersEntries = listSuperpowersResourcePaths(superpowersResourceRoot).map(
+  (path) => `extension/resources/superpowers/${path}`,
 );
-const requiredSuperpowersEntries = [
-  "extension/resources/superpowers/LICENSE",
-  "extension/resources/superpowers/manifest.json",
-  ...superpowersManifest.skills.map(
-    (skill) => `extension/resources/superpowers/${skill.path}`,
-  ),
-];
 
 await mkdir(resolve(root, ".artifacts"), { recursive: true });
 rmSync(resolve(root, "dist"), { recursive: true, force: true });

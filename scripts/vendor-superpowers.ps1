@@ -11,7 +11,16 @@ if ($Tag -ne "v6.1.1") {
 }
 
 $version = $Tag.Substring(1)
-$destinationPath = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $Destination))
+$repositoryRoot = Split-Path -Parent $PSScriptRoot
+$expectedDestinationPath = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot "resources\\superpowers"))
+$destinationPath = if ([System.IO.Path]::IsPathRooted($Destination)) {
+  [System.IO.Path]::GetFullPath($Destination)
+} else {
+  [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $Destination))
+}
+if (-not [string]::Equals($destinationPath, $expectedDestinationPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+  throw "Destination must be resources/superpowers: $Destination"
+}
 $destinationParent = Split-Path -Parent $destinationPath
 $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("loopagent-superpowers-" + [guid]::NewGuid())
 

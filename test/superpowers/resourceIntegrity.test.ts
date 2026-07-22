@@ -1,5 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -32,4 +34,38 @@ describe("vendored Superpowers resources", () => {
       expect(existsSync(resourcesPath(skill.path))).toBe(true);
     }
   });
+
+  it("rejects a destination outside the vendored resource directory before replacing it", () => {
+    const temporaryDirectory = mkdtempSync(join(tmpdir(), "loopagent-superpowers-destination-"));
+    const unsafeDestination = temporaryDirectory;
+    const sentinelPath = join(unsafeDestination, "keep.txt");
+    mkdirSync(unsafeDestination, { recursive: true });
+    writeFileSync(sentinelPath, "keep");
+
+    try {
+      const result = spawnSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          resolve(process.cwd(), "scripts", "vendor-superpowers.ps1"),
+          "-Tag",
+          "v6.1.1",
+          "-Destination",
+          ".",
+        ],
+        { cwd: temporaryDirectory, encoding: "utf8" },
+      );
+
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}${result.stderr}`).toContain(
+        "Destination must be resources/superpowers",
+      );
+      expect(readFileSync(sentinelPath, "utf8")).toBe("keep");
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
