@@ -669,10 +669,12 @@ describe("createReactAgentRunner", () => {
   it("reports distinct and safe exploreCode progress for every call", async () => {
     let turn = 0;
     const query = `${"x".repeat(100)}  \n ${"y".repeat(100)}`;
+    // 同一 preview 但原始参数不同（空白差异），避免被去重护栏拦截
+    const query2 = `${"x".repeat(100)} \n\t ${"y".repeat(100)}`;
     const queryPreview = `${"x".repeat(100)} ${"y".repeat(99)}`;
     const queries = [
       query,
-      query,
+      query2,
       "inspect E:\\secret\\source.ts",
       "inspect \\\\server\\share\\source.ts",
       "path=/home/user/source.ts",
@@ -833,14 +835,15 @@ describe("createReactAgentRunner", () => {
         }
         toolTurn += 1;
         const id = `tool-${toolTurn}`;
+        const rawArguments = JSON.stringify(`workspace ${toolTurn}`);
         return {
           kind: "toolRequests",
           assistantMessage: {
             role: "assistant",
             content: "",
-            toolCalls: [{ id, type: "function", function: { name: "echoObservation", arguments: '"workspace"' } }],
+            toolCalls: [{ id, type: "function", function: { name: "echoObservation", arguments: rawArguments } }],
           },
-          requests: [{ id, name: "echoObservation", rawArguments: '"workspace"', input: "workspace" }],
+          requests: [{ id, name: "echoObservation", rawArguments, input: `workspace ${toolTurn}` }],
         };
       },
     });
@@ -1008,6 +1011,45 @@ describe("createReactAgentRunner", () => {
       { role: "assistant", content: "Here's a function", reasoningContent: "Thinking about the best approach" },
       { role: "user", content: "Improve it" },
     ]);
+  });
+
+  it("blocks a repeated identical successful tool call instead of re-running it", async () => {
+    let turn = 0;
+    const invoke = vi.fn(async () => "code context");
+    const request = () => toolRequest("tool-1", "exploreCode", { query: "same" });
+    const runner = createReactAgentRunner({
+      maxSteps: 10,
+      tools: [{ name: "exploreCode", description: "Search code.", inputSchema: {}, invoke }],
+      modelTurn: async ({ messages }) => {
+        turn += 1;
+        if (turn === 1) return request();
+        if (turn === 2) return request(); // 相同参数重复调用
+        expect(messages.at(-1)).toMatchObject({ role: "tool", content: expect.stringContaining("重复调用") });
+        return { kind: "final", content: "done" };
+      },
+    });
+
+    await collectRunnerMessages(runner);
+
+    expect(invoke).toHaveBeenCalledTimes(1); // 第二次被去重拦截，工具未再执行
+  });
+
+  it("terminates the run when a tool keeps failing on identical calls", async () => {
+    const invoke = vi.fn(async () => {
+      throw new Error("boom");
+    });
+    const runner = createReactAgentRunner({
+      maxSteps: 20,
+      tools: [{ name: "applyEdit", description: "Edit.", inputSchema: {}, invoke }],
+      modelTurn: async () => toolRequest("edit-1", "applyEdit", { changes: [] }),
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(invoke).toHaveBeenCalledTimes(3); // 连续失败 3 次后熔断，远早于 20 步上限
+    expect(messages).toContainEqual(
+      expect.objectContaining({ type: "runFailed", message: expect.stringContaining("连续失败 3 次") }),
+    );
   });
 });
 
