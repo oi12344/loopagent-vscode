@@ -130,6 +130,14 @@ type WorkflowStore = { save(c: SuperpowersCheckpoint): void; load(id: string): S
 - [ ] 只记录实际执行过的测试文件/用例数量、VSIX 路径、调试结果、提交范围和限制；更新规格/计划完成记录。
 - [ ] 提交：`git add docs/superpowers/specs/2026-07-21-superpowers-harness-integration-design.md docs/superpowers/plans/2026-07-21-superpowers-harness-integration-plan.md; git commit -m "docs: record superpowers integration verification"`。
 
+#### Task 7 实际结果（2026-07-22）
+
+- [x] 已执行 `npm test`（65 文件、445 用例）、`npm run typecheck`、`npm run compile`、`npm run package:vsix` 和 `git diff --check`，退出码均为 0。
+- [x] 已核对 `.artifacts/loopagent-vscode-0.0.1.vsix`：67 个条目，含 14 个技能正文与 `LICENSE`。
+- [x] 已执行 `resourceIntegrity`、`skillCatalog`、`superpowersTools`、`workflowStore` 和 `workflowSupervisor` 边界测试：5 文件、24 用例均通过。
+- [ ] 已在唯一 Extension Development Host 中打开 LoopAgent 面板，但管理员 VS Code 的 UI 自动化层无法点击或填值，无法提交 edit 请求；因此审批门禁、implementer/reviewer/fixer/finalReviewer、Stop/Resume、无重复任务和单 writer 的真实路径仍未验证，未将自动化测试替代为真实路径结论。
+- [x] 已关闭本次调试宿主；`127.0.0.1:9333` 不再监听。
+
 ## 完成标准
 
 - [ ] v6.1.1 全部技能进入 VSIX，资源、路径安全和路由门禁测试通过。

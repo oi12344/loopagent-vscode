@@ -144,3 +144,10 @@ checkpoint 至少记录当前技能、阶段、批准记录、计划路径、任
 ## 后续事项
 
 计划级命令授权、按角色模型成本路由、官方版本更新器和真正并行的多工作区写入不属于本次第一阶段；只有真实使用数据证明当前权限或吞吐不足时再单独设计。
+
+## Task 7 验证记录（2026-07-22）
+
+- `npm test` 通过：65 个测试文件、445 个用例；`npm run typecheck`、`npm run compile`、`npm run package:vsix` 和 `git diff --check` 均以 0 退出。
+- VSIX 为 `.artifacts/loopagent-vscode-0.0.1.vsix`，共 67 个条目；其中含 14 个 `resources/superpowers/skills/*/SKILL.md` 和 `resources/superpowers/LICENSE`。
+- 5 个 Superpowers 安全与状态边界测试文件共 24 个用例通过，覆盖资源路径、技能路径穿越、非白名单脚本、无效 Agent 结果、审查结果和 checkpoint 不一致。
+- 已启动且仅启动一个 Extension Development Host，并确认 LoopAgent 面板可见、状态为 Ready、存在 Edit/Ask 切换和消息输入框。管理员 VS Code 的 UI 自动化无法点击或填值，因此未提交 edit 请求，也未能实际验证审批、Stop/Resume、写入 Agent 串行和最终工作流事件；该项保持未完成。
