@@ -97,7 +97,8 @@ export function createReactAgentRunner({
             return;
           }
 
-          const toolChoice = isFinalAnswerStep ? "none" : "auto";
+          const missingRequiredTools = getMissingRequiredTools(requiredToolNames, successfulTools);
+          const toolChoice = isFinalAnswerStep && missingRequiredTools.length === 0 ? "none" : "auto";
           const result = await modelTurn({
             messages,
             signal,
@@ -130,21 +131,15 @@ export function createReactAgentRunner({
 
           if (isFinalAnswerStep) {
             const missingTools = getMissingRequiredTools(requiredToolNames, successfulTools);
-            if (missingTools.length > 0) {
-              if (requiredToolRetries >= 2) {
-                throw new Error(`Required tools were not called successfully: ${missingTools.join(", ")}`);
+            if (missingTools.length === 0) {
+              if (result.reasoning) {
+                yield { type: "assistantReasoningDelta", runId, content: result.reasoning } satisfies HostToWebviewMessage;
               }
-              requiredToolRetries++;
-              messages.push({ role: "user", content: `Before finishing, call required tool(s): ${missingTools.join(", ")}.` });
-              continue;
+              yield { type: "assistantDelta", runId, content: result.assistantMessage.content } satisfies HostToWebviewMessage;
+              yield { type: "assistantFinished", runId } satisfies HostToWebviewMessage;
+              yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
+              return;
             }
-            if (result.reasoning) {
-              yield { type: "assistantReasoningDelta", runId, content: result.reasoning } satisfies HostToWebviewMessage;
-            }
-            yield { type: "assistantDelta", runId, content: result.assistantMessage.content } satisfies HostToWebviewMessage;
-            yield { type: "assistantFinished", runId } satisfies HostToWebviewMessage;
-            yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
-            return;
           }
 
           if (result.requests.length > maxToolRequestsPerStep) {

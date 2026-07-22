@@ -1180,6 +1180,27 @@ describe("createReactAgentRunner", () => {
     expect(messages).toContainEqual({ type: "runFinished", runId: "run-1" });
     expect(messages).not.toContainEqual({ type: "runFailed", runId: "run-1", message: expect.any(String) });
   });
+
+  it("keeps tool choice auto during a required-tool recovery turn", async () => {
+    const choices: Array<string | undefined> = [];
+    let turns = 0;
+    const runner = createReactAgentRunner({
+      maxSteps: 1,
+      requiredToolNames: ["reportSubagentResult"],
+      tools: [{ name: "reportSubagentResult", description: "report", inputSchema: { type: "object" }, invoke: async () => "recorded" }],
+      modelTurn: async ({ toolChoice }) => {
+        choices.push(toolChoice);
+        turns++;
+        if (turns === 1 || turns === 3) return { kind: "final", content: "I am done." };
+        return toolRequest("report-recovery", "reportSubagentResult", { status: "DONE" });
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(choices).toEqual(["auto", "auto", "none"]);
+    expect(messages).toContainEqual({ type: "runFinished", runId: "run-1" });
+  });
 });
 
 function toolRequest(id: string, name: string, input: unknown) {
