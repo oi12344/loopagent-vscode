@@ -149,6 +149,13 @@ type WorkflowStore = { save(c: SuperpowersCheckpoint): void; load(id: string): S
 - [x] 运行 `npm test -- workflowSupervisor --reporter=dot`（15/15）、`npm test`（65 文件/458 用例）、`npm run typecheck`、`npm run compile` 和受影响文件的 diff 检查，全部退出码 0。
 - [x] 运行 `npm run package:vsix`（VSIX 67 个条目）和 `npm run start:vscode:vsix-e2e`，在固定 profile 中覆盖安装并保持唯一调试窗口（9333 监听，扩展 `local-dev.loopagent-vscode@0.0.1`）。
 
+### Task 9: 修复结构化回报 schema（2026-07-22）
+
+**Files:** Modify `src/extension/superpowers/superpowersTools.ts`, `test/superpowers/superpowersTools.test.ts` and this plan。
+
+- [x] 为 `reportSubagentResult` 和 `reportReview` 暴露完整 JSON Schema，让模型的 function parameters 直接包含必填字段。
+- [x] 回归测试覆盖 schema 字段；聚焦测试 2 文件/10 用例、全量测试 65 文件/459 用例、类型检查、编译、VSIX 67 条目打包和 VS Code 重启验证均通过，固定 profile 新 PID 为 41936。
+
 ## 完成标准
 
 - [ ] v6.1.1 全部技能进入 VSIX，资源、路径安全和路由门禁测试通过。

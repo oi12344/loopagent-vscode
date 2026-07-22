@@ -97,7 +97,7 @@ checkpoint 至少记录当前技能、阶段、计划路径、任务索引、活
 
 ## 子 Agent 合同
 
-子 Agent 的自然语言最终回答不能直接驱动状态机。实现者和审查者必须通过受控结果工具提交结构化状态。缺字段时最多允许一次纠正回合，仍无效则标记 `BLOCKED`，不能伪装成完成。
+子 Agent 的自然语言最终回答不能直接驱动状态机。实现者和审查者必须通过带完整 JSON Schema 的受控结果工具提交结构化状态：`reportSubagentResult` 要求 `status`、`summary`、`reportPath`、`commit`、`tests`，`reportReview` 要求 `specCompliant`、`qualityApproved`、`findings`。缺字段时最多允许一次纠正回合，仍无效则标记 `BLOCKED`，不能伪装成完成。
 
 同一时间最多一个写入型 Agent。实现者、审查者和修复者均使用当前会话显式选择的模型；第一版不新增角色模型设置，未来有多档模型时再实现成本路由。
 

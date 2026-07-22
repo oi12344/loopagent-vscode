@@ -75,8 +75,20 @@ export function createSuperpowersTools(options: CreateSuperpowersToolsOptions): 
     },
     {
       name: "reportSubagentResult",
-      description: "Submit the structured outcome of the current subagent task.",
-      inputSchema: { type: "object", additionalProperties: true },
+      description: "Submit the structured outcome of the current subagent task. Required: status, summary, reportPath, commit, tests; optional concerns.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["status", "summary", "reportPath", "commit", "tests"],
+        properties: {
+          status: { type: "string", enum: ["DONE", "DONE_WITH_CONCERNS", "NEEDS_CONTEXT", "BLOCKED"] },
+          summary: { type: "string" },
+          reportPath: { type: "string" },
+          commit: { type: "string" },
+          tests: { type: "array", items: { type: "string" } },
+          concerns: { type: "array", items: { type: "string" } },
+        },
+      },
       resultSchema: { status: ["DONE", "DONE_WITH_CONCERNS", "NEEDS_CONTEXT", "BLOCKED"] },
       async invoke({ input }) {
         const result = parseSubagentResult(input);
@@ -87,8 +99,17 @@ export function createSuperpowersTools(options: CreateSuperpowersToolsOptions): 
     },
     {
       name: "reportReview",
-      description: "Submit structured specification and quality review conclusions.",
-      inputSchema: { type: "object", additionalProperties: true },
+      description: "Submit structured specification and quality review conclusions. Required: specCompliant, qualityApproved, findings.",
+      inputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["specCompliant", "qualityApproved", "findings"],
+        properties: {
+          specCompliant: { type: "boolean" },
+          qualityApproved: { type: "boolean" },
+          findings: { type: "array", items: { type: "string" } },
+        },
+      },
       resultSchema: { required: ["specCompliant", "qualityApproved", "findings"] },
       async invoke({ input }) {
         const result = parseReviewResult(input);

@@ -69,6 +69,31 @@ describe("Superpowers tools", () => {
 
     await expect(invoke(tools, "reportReview", { specCompliant: true, findings: [] })).rejects.toThrow(/correct/i);
   });
+
+  it("exposes the required structured fields to the model", async () => {
+    const { catalog, root } = await createCatalog();
+    const tools = createSuperpowersTools({ catalog, resourceRoot: root });
+    const report = tools.find((tool) => tool.name === "reportSubagentResult");
+    const review = tools.find((tool) => tool.name === "reportReview");
+
+    expect(report?.inputSchema).toMatchObject({
+      type: "object",
+      required: ["status", "summary", "reportPath", "commit", "tests"],
+      properties: {
+        status: { type: "string", enum: ["DONE", "DONE_WITH_CONCERNS", "NEEDS_CONTEXT", "BLOCKED"] },
+        tests: { type: "array", items: { type: "string" } },
+      },
+    });
+    expect(review?.inputSchema).toMatchObject({
+      type: "object",
+      required: ["specCompliant", "qualityApproved", "findings"],
+      properties: {
+        specCompliant: { type: "boolean" },
+        qualityApproved: { type: "boolean" },
+        findings: { type: "array", items: { type: "string" } },
+      },
+    });
+  });
 });
 
 function invoke(tools: ReturnType<typeof createSuperpowersTools>, name: string, input: unknown): Promise<string> {
