@@ -29,6 +29,7 @@ type AssistantTurn = {
 
 type ChatTurn = UserTurn | AssistantTurn;
 type InterruptedRun = { runId: string; conversationId: string; task: string };
+type WorkflowProgress = { phase?: string; agents: string[] };
 
 type AssistantUpdate = (turn: AssistantTurn) => AssistantTurn;
 
@@ -81,6 +82,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [conversationId, setConversationId] = React.useState<string | undefined>(undefined);
   const [conversations, setConversations] = React.useState<ConversationSummary[]>([]);
   const [interruptedRun, setInterruptedRun] = React.useState<InterruptedRun | undefined>();
+  const [workflowProgress, setWorkflowProgress] = React.useState<Record<string, WorkflowProgress>>({});
   const nextTurnId = React.useRef(0);
   const composerToolsRef = React.useRef<HTMLDivElement | null>(null);
   const historyMenuRef = React.useRef<HTMLDivElement | null>(null);
@@ -200,6 +202,23 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         }
 
         case "agentEvent": {
+          return;
+        }
+
+        case "workflowStateChanged": {
+          setWorkflowProgress((current) => ({
+            ...current,
+            [hostMessage.runId]: { phase: hostMessage.phase, agents: current[hostMessage.runId]?.agents ?? [] },
+          }));
+          return;
+        }
+
+        case "subagentStateChanged": {
+          setWorkflowProgress((current) => {
+            const progress = current[hostMessage.runId] ?? { agents: [] };
+            const agent = `${hostMessage.agentId}: ${hostMessage.status}`;
+            return { ...current, [hostMessage.runId]: { ...progress, agents: [...progress.agents.filter((item) => !item.startsWith(`${hostMessage.agentId}:`)), agent] } };
+          });
           return;
         }
 
@@ -477,6 +496,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
               <AssistantMessage
                 key={turn.id}
                 turn={turn}
+                workflow={workflowProgress[turn.runId]}
                 onResume={
                   turn.status === "interrupted" && interruptedRun?.runId === turn.runId
                     ? resumeInterruptedRun
@@ -649,7 +669,7 @@ function UserMessage({ turn }: { turn: UserTurn }) {
   );
 }
 
-function AssistantMessage({ turn, onResume }: { turn: AssistantTurn; onResume?: () => void }) {
+function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; workflow?: WorkflowProgress; onResume?: () => void }) {
   const [isProcessOpen, setIsProcessOpen] = React.useState(turn.status !== "done");
   const previousStatus = React.useRef(turn.status);
 
@@ -679,6 +699,12 @@ function AssistantMessage({ turn, onResume }: { turn: AssistantTurn; onResume?: 
       ) : null}
 
       {turn.content.length > 0 ? <div className="message-body assistant-answer">{turn.content}</div> : null}
+      {workflow?.phase ? (
+        <div className="workflow-timeline" aria-label="Workflow progress">
+          <span>{workflow.phase}</span>
+          {workflow.agents.map((agent) => <span key={agent}>{agent}</span>)}
+        </div>
+      ) : null}
       {turn.status !== "done" && turn.content.length === 0 && !turn.error ? (
         <div className="assistant-placeholder">Waiting for response...</div>
       ) : null}

@@ -72,6 +72,17 @@ export type HostToWebviewMessage =
       message: string;
     }
   | {
+      type: "workflowStateChanged";
+      runId: string;
+      phase: string;
+    }
+  | {
+      type: "subagentStateChanged";
+      runId: string;
+      agentId: string;
+      status: string;
+    }
+  | {
       /** Assistant initialization: signals assistant model is starting */
       type: "assistantStarted";
       runId: string;

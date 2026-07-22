@@ -15,8 +15,13 @@ import { createConversationStore } from "./extension/conversation/conversationSt
 import type { ConversationStore } from "./extension/conversation/conversationStore";
 import { createPersistentConversationStore } from "./extension/conversation/persistentConversationStore";
 import { createConversationManager, type ConversationManager } from "./extension/conversation/conversationManager";
+import { createAgentPool, type SubagentRunRequest, type SubagentResult } from "./extension/superpowers/agentPool";
+import { createSkillCatalog } from "./extension/superpowers/skillCatalog";
+import { createReviewResultBridge, createSuperpowersAgentRunner, createSuperpowersAgentTools } from "./extension/superpowers/superpowersAgentRunner";
+import { createWorkflowStore } from "./extension/superpowers/workflowStore";
+import { createWorkflowSupervisor } from "./extension/superpowers/workflowSupervisor";
 import type { WebviewToHostMessage, HostToWebviewMessage, TaskMode, RunModelSelection } from "./shared/messages";
-import type { ChatMessage, InterruptedRunCheckpoint } from "./shared/chatTypes";
+import type { ChatMessage, InterruptedRunCheckpoint, SuperpowersCheckpoint } from "./shared/chatTypes";
 
 const chatViewId = "loopagent.chat";
 const viewContainerId = "workbench.view.extension.loopagent";
@@ -81,6 +86,12 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private readonly runCommandTool;
   private readonly conversationStore: ConversationStore & { close?(): void };
   private readonly conversationManager: ConversationManager;
+  private readonly superpowersResourceRoot: string;
+  private superpowersCatalog: ReturnType<typeof createSkillCatalog> | undefined;
+  private readonly workflowStore;
+  private readonly reviewBridge = createReviewResultBridge();
+  private readonly superpowersAgentPool;
+  private activeRunInfo: { conversationId: string; task: string; mode: TaskMode; model?: RunModelSelection } | undefined;
   private currentConversationId: string | undefined;
 
   constructor(private readonly context: vscode.ExtensionContext) {
@@ -98,6 +109,13 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       ? createConversationStoreForWorkspace(workspaceRoot)
       : createConversationStore();
     this.conversationManager = createConversationManager(this.conversationStore);
+    this.superpowersResourceRoot = join(context.extensionUri.fsPath, "resources", "superpowers");
+    this.workflowStore = createWorkflowStore(this.conversationStore);
+    this.superpowersAgentPool = createAgentPool({
+      brief: "Complete the requested workspace change.",
+      globalConstraints: "Follow the task brief and project rules. Use the supplied tools for workspace changes and commands.",
+      run: (request) => this.runSuperpowersSubagent(request),
+    });
   }
 
   async dispose(): Promise<void> {
@@ -171,6 +189,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.activeRun?.cancel();
     if (this.currentConversationId) {
       this.conversationManager.clearInterruptedRun(this.currentConversationId);
+      this.workflowStore.clear(this.currentConversationId);
     }
     this.currentConversationId = undefined;
     this.conversationManager.clearActiveConversation();
@@ -209,17 +228,24 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private handleStopRun(webview: vscode.Webview): void {
     const run = this.activeRun;
     const conversationId = this.currentConversationId;
+    const runInfo = this.activeRunInfo;
     if (!run || !conversationId) return;
 
     run.cancel();
     void run.done.finally(() => {
       const checkpoint = this.conversationManager.loadInterruptedRun(conversationId);
-      if (checkpoint?.runId !== run.runId) return;
+      const workflowCheckpoint = this.workflowStore.load(conversationId);
+      const interrupted = checkpoint?.runId === run.runId
+        ? checkpoint
+        : workflowCheckpoint?.runId === run.runId && runInfo
+          ? { runId: workflowCheckpoint.runId, conversationId, task: runInfo.task }
+          : undefined;
+      if (!interrupted) return;
       webview.postMessage({
         type: "runInterrupted",
-        runId: checkpoint.runId,
-        conversationId: checkpoint.conversationId,
-        task: checkpoint.task,
+        runId: interrupted.runId,
+        conversationId: interrupted.conversationId,
+        task: interrupted.task,
       } satisfies HostToWebviewMessage);
     });
   }
@@ -229,7 +255,8 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     webview: vscode.Webview,
   ): void {
     const checkpoint = this.conversationManager.loadInterruptedRun(message.conversationId);
-    if (!checkpoint) {
+    const workflowCheckpoint = this.workflowStore.load(message.conversationId);
+    if (!checkpoint && !workflowCheckpoint) {
       webview.postMessage({
         type: "runFailed",
         runId: message.runId,
@@ -243,13 +270,13 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.currentConversationId = conversation.conversationId;
     this.executeRun(
       message.runId,
-      checkpoint.task,
-      checkpoint.mode,
-      checkpoint.model,
+      checkpoint?.task ?? conversation.messages.filter((item) => item.role === "user").at(-1)?.content ?? "",
+      checkpoint?.mode ?? "edit",
+      checkpoint?.model,
       this.conversationManager.getConversationHistory(conversation.conversationId),
       conversation.conversationId,
       webview,
-      checkpoint,
+      checkpoint ?? workflowCheckpoint,
     );
   }
 
@@ -288,6 +315,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   ): void {
     this.currentConversationId = message.conversationId;
     this.conversationManager.clearInterruptedRun(message.conversationId);
+    this.workflowStore.clear(message.conversationId);
     this.conversationManager.addUserMessage(message.conversationId, message.userMessage);
     const conversationHistory = this.conversationManager.getConversationHistory(message.conversationId);
     console.log(`[handleContinueConversation] conversationId=${message.conversationId}, history.length=${conversationHistory.length}`);
@@ -307,7 +335,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     conversationHistory: ChatMessage[],
     conversationId: string,
     webview: vscode.Webview,
-    resumeCheckpoint?: InterruptedRunCheckpoint,
+    resumeCheckpoint?: InterruptedRunCheckpoint | SuperpowersCheckpoint,
   ): void {
     this.activeRun?.cancel();
 
@@ -318,6 +346,9 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       task,
       mode: mode ?? "edit",
       runner: createConfiguredAgentRunner(this.context, model, {
+        superpowersResourceRoot: this.superpowersResourceRoot,
+        validateSuperpowers: () => this.getSuperpowersCatalog().then(() => undefined),
+        superpowersRunner: this.createSuperpowersRunner(model),
         workspaceIntelligence: this.workspaceIntelligence,
         readFileTool: this.readFileTool,
         applyEditTool: this.applyEditTool,
@@ -330,8 +361,16 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
             model,
           });
         },
-      }),
+      }, mode ?? "edit"),
       postMessage: (hostMessage: HostToWebviewMessage) => {
+        if (hostMessage.type === "agentEvent" && (mode ?? "edit") === "edit") {
+          const workflow = this.workflowStore.load(conversationId);
+          if (workflow) {
+            webview.postMessage({ type: "workflowStateChanged", runId: hostMessage.runId, phase: workflow.phase } satisfies HostToWebviewMessage);
+            const match = /^(\\S+) (started|DONE|DONE_WITH_CONCERNS|NEEDS_CONTEXT|BLOCKED)$/.exec(hostMessage.message);
+            if (match) webview.postMessage({ type: "subagentStateChanged", runId: hostMessage.runId, agentId: match[1], status: match[2].toLowerCase() } satisfies HostToWebviewMessage);
+          }
+        }
         // Capture assistant content and reasoning
         if (hostMessage.type === "assistantDelta") {
           const current = assistantMessages.get(hostMessage.runId) ?? { content: "", reasoning: "" };
@@ -347,23 +386,68 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
             this.conversationManager.addAssistantMessage(conversationId, message.content, message.reasoning);
             this.conversationManager.clearInterruptedRun(conversationId);
           }
-        } else if (hostMessage.type === "runFailed" || hostMessage.type === "runFinished") {
+        } else if (hostMessage.type === "runFinished") {
           this.conversationManager.clearInterruptedRun(conversationId);
+          this.workflowStore.clear(conversationId);
         }
 
         webview.postMessage(hostMessage);
       },
       conversationHistory,
       conversationId,
-      resumeState: resumeCheckpoint ? { kind: "react", checkpoint: resumeCheckpoint } : undefined,
+      resumeState: resumeCheckpoint
+        ? "phase" in resumeCheckpoint
+          ? { kind: "superpowers", checkpoint: resumeCheckpoint }
+          : { kind: "react", checkpoint: resumeCheckpoint }
+        : undefined,
     });
 
     this.activeRun = run;
+    this.activeRunInfo = { conversationId, task, mode: mode ?? "edit", model };
     void run.done.finally(() => {
       if (this.activeRun === run) {
         this.activeRun = undefined;
+        this.activeRunInfo = undefined;
       }
     });
+  }
+
+  private createSuperpowersRunner(model: RunModelSelection | undefined): import("./extension/agentRunner").AgentRunner {
+    return createSuperpowersAgentRunner(createWorkflowSupervisor({
+      agentPool: this.reviewBridge.wrap(this.superpowersAgentPool),
+      workflowStore: this.workflowStore,
+      model,
+      catalog: undefined,
+      loadSkill: async (name) => (await this.getSuperpowersCatalog()).load(name),
+    }));
+  }
+
+  private async runSuperpowersSubagent(request: SubagentRunRequest): Promise<SubagentResult> {
+    const catalog = await this.getSuperpowersCatalog();
+    let result: SubagentResult | undefined;
+    const tools = createSuperpowersAgentTools({
+      agentId: request.agentId,
+      reviewBridge: this.reviewBridge,
+      catalog,
+      resourceRoot: this.superpowersResourceRoot,
+      onSubagentResult: (reported) => { result = reported; },
+    });
+    const runner = await createConfiguredAgentRunner(this.context, request.model as RunModelSelection | undefined, {
+      workspaceIntelligence: this.workspaceIntelligence,
+      readFileTool: this.readFileTool,
+      applyEditTool: this.applyEditTool,
+      runCommandTool: this.runCommandTool,
+      extraTools: tools,
+    });
+    for await (const _ of runner.run({ runId: request.runId, task: request.task, signal: request.signal })) {
+      // The parent workflow is the user-visible progress channel; tool callbacks retain the structured outcome.
+    }
+    return result ?? { status: "BLOCKED", summary: "Subagent did not report a structured result", reportPath: "", commit: "", tests: [] };
+  }
+
+  private getSuperpowersCatalog(): ReturnType<typeof createSkillCatalog> {
+    this.superpowersCatalog ??= createSkillCatalog(this.superpowersResourceRoot);
+    return this.superpowersCatalog;
   }
 }
 

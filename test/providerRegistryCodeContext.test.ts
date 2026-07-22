@@ -7,6 +7,31 @@ import type { ModelMessage, ModelProvider } from "../src/extension/model/types";
 import type { HostToWebviewMessage } from "../src/shared/messages";
 
 describe("createConfiguredAgentRunner code intelligence context", () => {
+  it("keeps Ask on the React runner when Superpowers resources are unavailable", async () => {
+    vi.resetModules();
+    vi.doMock("../src/extension/model/modelConfig", () => ({
+      getModelRuntimeConfig: async () => ({ provider: "deepseek", model: "test-model", baseUrl: "", apiKey: "test-key", thinking: "disabled" }),
+    }));
+    vi.doMock("../src/extension/model/providers/deepseekProvider", () => ({
+      createDeepSeekProvider: (): ModelProvider => ({ id: "mock", displayName: "Mock model", stream: async function* () { yield { type: "contentDelta", content: "ask works" }; } }),
+    }));
+
+    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
+    const runner = await createConfiguredAgentRunner({} as never, { provider: "deepseek" }, { superpowersResourceRoot: "E:\\missing-superpowers", workspaceIntelligence: { buildCodeIntelligencePrompt: async () => "" } } as never, "ask");
+
+    await expect(collectHostMessages(runner, "Explain this code")).resolves.toContainEqual({
+      type: "assistantDelta", runId: "run-1", content: "ask works",
+    });
+  });
+
+  it("reports the Superpowers resource path when Edit cannot initialize it", async () => {
+    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
+
+    await expect(
+      createConfiguredAgentRunner({} as never, { provider: "deepseek" }, { superpowersResourceRoot: "E:\\missing-superpowers" } as never, "edit"),
+    ).rejects.toThrow("E:\\missing-superpowers");
+  });
+
   it("runs native exploreCode tool calls and returns observations to the next model turn", async () => {
     const capturedMessages: ModelMessage[][] = [];
     const workspaceIntelligence = {

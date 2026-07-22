@@ -1,5 +1,5 @@
 import type { HostToWebviewMessage, TaskMode } from "../shared/messages";
-import type { ChatMessage, InterruptedRunCheckpoint } from "../shared/chatTypes";
+import type { ChatMessage, InterruptedRunCheckpoint, SuperpowersCheckpoint } from "../shared/chatTypes";
 
 export type AgentRunRequest = {
   runId: string;
@@ -11,10 +11,9 @@ export type AgentRunRequest = {
   resumeState?: AgentResumeState;
 };
 
-export type AgentResumeState = {
-  kind: "react";
-  checkpoint: InterruptedRunCheckpoint;
-};
+export type AgentResumeState =
+  | { kind: "react"; checkpoint: InterruptedRunCheckpoint }
+  | { kind: "superpowers"; checkpoint: SuperpowersCheckpoint };
 
 export type AgentRunner = {
   run(request: AgentRunRequest): AsyncIterable<HostToWebviewMessage>;

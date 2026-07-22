@@ -13,6 +13,7 @@ import { renderCodeRuntimeContextPrompt } from "../runtime/contextPrompt";
 import { collectVsCodeRuntimeContext } from "../runtime/vscodeRuntimeContext";
 import type { RunModelSelection } from "../../shared/messages";
 import type { InterruptedRunCheckpoint } from "../../shared/chatTypes";
+import { createSkillCatalog } from "../superpowers/skillCatalog";
 import { getModelRuntimeConfig } from "./modelConfig";
 import { createDeepSeekProvider } from "./providers/deepseekProvider";
 
@@ -51,13 +52,30 @@ export type CreateConfiguredAgentRunnerDeps = {
   applyEditTool?: ReactAgentTool;
   runCommandTool?: ReactAgentTool;
   onCheckpoint?: (checkpoint: InterruptedRunCheckpoint) => void | Promise<void>;
+  extraTools?: ReactAgentTool[];
+  superpowersResourceRoot?: string;
+  superpowersRunner?: AgentRunner;
+  validateSuperpowers?: () => Promise<void>;
 };
 
 export async function createConfiguredAgentRunner(
   context: vscode.ExtensionContext,
   selection?: RunModelSelection,
   deps: CreateConfiguredAgentRunnerDeps = {},
+  mode: "ask" | "edit" = "ask",
 ): Promise<AgentRunner> {
+  if (mode === "edit") {
+    try {
+      if (deps.validateSuperpowers) await deps.validateSuperpowers();
+      else if (deps.superpowersResourceRoot) await createSkillCatalog(deps.superpowersResourceRoot);
+    } catch (error) {
+      const detail = error instanceof Error ? `: ${error.message}` : "";
+      throw new Error(`Superpowers resources unavailable at ${deps.superpowersResourceRoot ?? "configured resource root"}${detail}`);
+    }
+    if (deps.superpowersRunner) return deps.superpowersRunner;
+    throw new Error(`Superpowers resources unavailable at ${deps.superpowersResourceRoot ?? "configured resource root"}`);
+  }
+
   const config = await getModelRuntimeConfig(context, selection);
   const workspaceIntelligence =
     deps.workspaceIntelligence ??
@@ -76,6 +94,7 @@ export async function createConfiguredAgentRunner(
     ...(deps.readFileTool ? [deps.readFileTool] : []),
     ...(deps.applyEditTool ? [deps.applyEditTool] : []),
     ...(deps.runCommandTool ? [deps.runCommandTool] : []),
+    ...(deps.extraTools ?? []),
   ];
   return createReactAgentRunner({
     providerName: provider.displayName,

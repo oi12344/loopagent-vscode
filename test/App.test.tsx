@@ -223,6 +223,19 @@ describe("LoopAgent webview app", () => {
     );
   });
 
+  it("shows workflow and subagent progress without replacing the assistant answer", () => {
+    render(<App />);
+
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "LoopAgent" });
+    postHostMessage({ type: "assistantDelta", runId: "run-1", content: "Existing answer" });
+    postHostMessage({ type: "workflowStateChanged", runId: "run-1", phase: "implement" });
+    postHostMessage({ type: "subagentStateChanged", runId: "run-1", agentId: "implementer-1", status: "running" });
+
+    expect(screen.getByText("Existing answer")).toBeInTheDocument();
+    expect(screen.getByText("implement")).toBeInTheDocument();
+    expect(screen.getByText("implementer-1: running")).toBeInTheDocument();
+  });
+
   it("renders assistant process and streamed answer", async () => {
     const user = userEvent.setup();
     const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();

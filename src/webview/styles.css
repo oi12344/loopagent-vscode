@@ -221,6 +221,15 @@ h1 {
   margin: 0;
 }
 
+.workflow-timeline {
+  border-left: 2px solid var(--vscode-charts-blue, var(--vscode-textLink-foreground));
+  color: var(--vscode-descriptionForeground);
+  display: grid;
+  font-size: 12px;
+  gap: 3px;
+  padding-left: 8px;
+}
+
 .error-message {
   color: var(--vscode-errorForeground);
   margin: 0;
