@@ -41,6 +41,13 @@ function checkpoint(conversationId = "conversation-1"): SuperpowersCheckpoint {
   };
 }
 
+function replacePersistedCheckpoint(databasePath: string, value: unknown): void {
+  const database = new DatabaseSync(databasePath);
+  database.prepare("UPDATE superpowers_workflow SET checkpoint_json = ? WHERE conversation_id = ?")
+    .run(JSON.stringify(value), "conversation-1");
+  database.close();
+}
+
 describe("WorkflowStore", () => {
   it("round-trips a review checkpoint and clears it", () => {
     const { databasePath, workflowStore } = openTempStore();
@@ -59,10 +66,23 @@ describe("WorkflowStore", () => {
   it("throws when a persisted checkpoint is invalid instead of silently resetting it", () => {
     const { databasePath, workflowStore } = openTempStore();
     workflowStore.save(checkpoint());
-    const database = new DatabaseSync(databasePath);
-    database.prepare("UPDATE superpowers_workflow SET checkpoint_json = ? WHERE conversation_id = ?")
-      .run(JSON.stringify({ ...checkpoint(), phase: "unknown" }), "conversation-1");
-    database.close();
+    replacePersistedCheckpoint(databasePath, { ...checkpoint(), phase: "unknown" });
+
+    expect(() => workflowStore.load("conversation-1")).toThrow(/invalid workflow checkpoint/i);
+  });
+
+  it("throws when a persisted checkpoint has an unsupported version", () => {
+    const { databasePath, workflowStore } = openTempStore();
+    workflowStore.save(checkpoint());
+    replacePersistedCheckpoint(databasePath, { ...checkpoint(), version: 2 });
+
+    expect(() => workflowStore.load("conversation-1")).toThrow(/invalid workflow checkpoint/i);
+  });
+
+  it("throws when a persisted checkpoint belongs to another conversation", () => {
+    const { databasePath, workflowStore } = openTempStore();
+    workflowStore.save(checkpoint());
+    replacePersistedCheckpoint(databasePath, { ...checkpoint("conversation-2") });
 
     expect(() => workflowStore.load("conversation-1")).toThrow(/invalid workflow checkpoint/i);
   });
