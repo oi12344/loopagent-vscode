@@ -28,18 +28,50 @@ export function createPersistentConversationStore(
   database.exec(
     "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;",
   );
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS conversation (
-      conversation_id TEXT PRIMARY KEY,
-      messages_json TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS active_conversation (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      conversation_id TEXT NOT NULL
-    );
-  `);
+  // 先尝试创建表。对于已有的数据库，CREATE TABLE IF NOT EXISTS 不做任何操作
+  const conversationTableExists = (
+    database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='conversation'").get() as
+      | { name: string }
+      | undefined
+  ) !== undefined;
+  const activeConversationTableExists = (
+    database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='active_conversation'").get() as
+      | { name: string }
+      | undefined
+  ) !== undefined;
+
+  if (conversationTableExists && !activeConversationTableExists) {
+    // 旧数据库格式：只有 conversation 表，需要迁移
+    database.exec(`
+      CREATE TABLE active_conversation (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        conversation_id TEXT NOT NULL
+      );
+    `);
+    // 迁移策略：把最新的对话设为活跃
+    const latestRow = database
+      .prepare("SELECT conversation_id FROM conversation ORDER BY updated_at DESC, rowid DESC LIMIT 1")
+      .get() as { conversation_id: string } | undefined;
+    if (latestRow) {
+      database
+        .prepare("INSERT INTO active_conversation (id, conversation_id) VALUES (1, ?)")
+        .run(latestRow.conversation_id);
+    }
+  } else {
+    // 新数据库或已迁移的数据库，创建新表即可
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS conversation (
+        conversation_id TEXT PRIMARY KEY,
+        messages_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS active_conversation (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        conversation_id TEXT NOT NULL
+      );
+    `);
+  }
 
   function readContext(conversationId: string): ConversationContext | undefined {
     const row = database
