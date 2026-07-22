@@ -1131,16 +1131,16 @@ describe("createReactAgentRunner", () => {
       task: "Implement the task",
       signal: new AbortController().signal,
       initialMessages: [
-        { role: "system", content: "fresh brief" },
-        { role: "user", content: "Required reportSubagentResult" },
+        { role: "system", content: "# using-superpowers\nFollow the workflow." },
+        { role: "user", content: "# brainstorming\nClarify the design." },
       ],
     })) {
       // consume
     }
 
     expect(capturedMessages).toEqual([
-      { role: "system", content: "fresh brief" },
-      { role: "user", content: "Required reportSubagentResult" },
+      { role: "system", content: "# using-superpowers\nFollow the workflow." },
+      { role: "user", content: "# brainstorming\nClarify the design." },
       { role: "user", content: "Implement the task" },
     ]);
   });

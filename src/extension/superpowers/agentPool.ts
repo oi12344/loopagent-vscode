@@ -36,6 +36,7 @@ export type AgentPool = {
     task: string;
     model: unknown;
     signal: AbortSignal;
+    context?: string;
   }): Promise<SubagentResult>;
   cancelAll(): void;
 };
@@ -77,7 +78,7 @@ export function createAgentPool({
         return await run({
           ...request,
           runId: `subagent-${++runNumber}`,
-          messages: createFreshMessages(brief, globalConstraints, relevantPaths, previousReports, request.task, request.role),
+          messages: createFreshMessages(brief, globalConstraints, relevantPaths, previousReports, request.task, request.role, request.context),
           requiredToolNames: requiredToolNamesForRole(request.role),
           signal: controller.signal,
         });
@@ -100,6 +101,7 @@ function createFreshMessages(
   previousReports: string[],
   task: string,
   role: AgentRole,
+  context?: string,
 ): ReactAgentMessage[] {
   const requiredToolNames = requiredToolNamesForRole(role);
   return [
@@ -107,6 +109,7 @@ function createFreshMessages(
     { role: "user", content: `Task brief:\n${brief}` },
     ...(relevantPaths.length === 0 ? [] : [{ role: "user" as const, content: `Relevant paths:\n${relevantPaths.join("\n")}` }]),
     ...(previousReports.length === 0 ? [] : [{ role: "user" as const, content: `Previous reports:\n${previousReports.join("\n")}` }]),
+    ...(context ? [{ role: "user" as const, content: `Applicable skill contents:\n${context}` }] : []),
     { role: "user", content: `Before finishing, call required tool(s): ${requiredToolNames.join(", ")}. Do not finish without a successful structured report.` },
     { role: "user", content: task },
   ];

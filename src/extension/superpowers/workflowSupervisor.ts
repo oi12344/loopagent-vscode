@@ -1,3 +1,6 @@
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
+
 import type { AgentRunRequest, AgentRunner } from "../agentRunner";
 import type { AgentRole, ReviewResult, SubagentResult } from "./agentPool";
 import type { SkillCatalog } from "./superpowersTypes";
@@ -26,6 +29,7 @@ export type CreateWorkflowSupervisorOptions = {
   catalog?: SkillCatalog;
   loadSkill?: (name: string) => Promise<unknown>;
   planPath?: string;
+  workspaceRoot?: string;
   validatePlan?: () => string | undefined;
   validateLedger?: () => string | undefined;
   provideContext?: (result: SubagentResult, role: AgentRole) => string | undefined;
@@ -78,10 +82,14 @@ export function createWorkflowSupervisor(options: CreateWorkflowSupervisorOption
           return;
         }
 
+        let skillContext = "";
+        const skillNames = checkpoint.skillNames.length > 0 ? checkpoint.skillNames : REQUIRED_SKILLS;
         if (checkpoint.phase === "bootstrap") {
           save("bootstrap");
-          for (const skill of REQUIRED_SKILLS) await loadSkill(options, skill);
-          save("route", { skillNames: [...REQUIRED_SKILLS] });
+          skillContext = await loadSkillContext(options, skillNames, true);
+          save("route", { skillNames: [...skillNames] });
+        } else {
+          skillContext = await loadSkillContext(options, skillNames, false);
         }
 
         if (checkpoint.phase === "route") {
@@ -110,7 +118,8 @@ export function createWorkflowSupervisor(options: CreateWorkflowSupervisorOption
         }
 
         if (checkpoint.phase === "preflight") {
-          const inconsistency = options.validatePlan?.() ?? options.validateLedger?.();
+          const planError = options.validatePlan?.() ?? validatePlan(options, checkpoint);
+          const inconsistency = planError ?? options.validateLedger?.() ?? validateLedger(options);
           if (inconsistency) {
             yield wait("blocked", inconsistency);
             return;
@@ -119,7 +128,7 @@ export function createWorkflowSupervisor(options: CreateWorkflowSupervisorOption
         }
 
         if (checkpoint.phase === "implement") {
-          const result = yield* dispatch(options, request, checkpoint, save, "implementer", "implement", request.task, event);
+          const result = yield* dispatch(options, request, checkpoint, save, "implementer", "implement", request.task, event, skillContext);
           if (!result) return;
           if (result.status === "NEEDS_CONTEXT" || result.status === "BLOCKED") {
             yield wait("blocked", result.summary);
@@ -129,7 +138,7 @@ export function createWorkflowSupervisor(options: CreateWorkflowSupervisorOption
         }
 
         if (checkpoint.phase === "review") {
-          const review = yield* dispatch(options, request, checkpoint, save, "taskReviewer", "review", `Review: ${request.task}`, event);
+          const review = yield* dispatch(options, request, checkpoint, save, "taskReviewer", "review", `Review: ${request.task}`, event, skillContext);
           if (!review) return;
           if (review.status === "NEEDS_CONTEXT" || review.status === "BLOCKED") {
             yield wait("blocked", review.summary);
@@ -148,14 +157,14 @@ export function createWorkflowSupervisor(options: CreateWorkflowSupervisorOption
         }
 
         if (checkpoint.phase === "fix") {
-          const result = yield* dispatch(options, request, checkpoint, save, "fixer", "fix", `Fix review findings: ${request.task}`, event);
+          const result = yield* dispatch(options, request, checkpoint, save, "fixer", "fix", `Fix review findings: ${request.task}`, event, skillContext);
           if (!result) return;
           if (result.status === "NEEDS_CONTEXT" || result.status === "BLOCKED") {
             yield wait("blocked", result.summary);
             return;
           }
           save("review");
-          const review = yield* dispatch(options, request, checkpoint, save, "taskReviewer", "review", `Re-review: ${request.task}`, event);
+          const review = yield* dispatch(options, request, checkpoint, save, "taskReviewer", "review", `Re-review: ${request.task}`, event, skillContext);
           if (!review) return;
           if (review.status === "NEEDS_CONTEXT" || review.status === "BLOCKED") {
             yield wait("blocked", review.summary);
@@ -170,7 +179,7 @@ export function createWorkflowSupervisor(options: CreateWorkflowSupervisorOption
         }
 
         if (checkpoint.phase === "finalReview") {
-          const finalReview = yield* dispatch(options, request, checkpoint, save, "finalReviewer", "finalReview", `Final review: ${request.task}`, event);
+          const finalReview = yield* dispatch(options, request, checkpoint, save, "finalReviewer", "finalReview", `Final review: ${request.task}`, event, skillContext);
           if (!finalReview) return;
           const decision = reviewResult(finalReview);
           if (finalReview.status !== "DONE" || !decision || !decision.specCompliant || !decision.qualityApproved) {
@@ -206,12 +215,13 @@ async function* dispatch(
   phase: WorkflowPhase,
   task: string,
   event: (message: string) => HostToWebviewMessage,
+  skillContext: string,
 ): AsyncGenerator<HostToWebviewMessage, ReviewReportedSubagentResult | undefined> {
   const agentId = `${role}-${checkpoint.taskIndex + 1}`;
   save(phase, { activeAgentId: agentId });
   yield event(`${role} started`);
   if (request.signal.aborted) throw new Error("Workflow cancelled");
-  let result = await options.agentPool.dispatch({ agentId, role, task, model: options.model, signal: request.signal });
+  let result = await options.agentPool.dispatch({ agentId, role, task, model: options.model, signal: request.signal, context: skillContext });
   if (request.signal.aborted) {
     throw new Error("Workflow cancelled");
   }
@@ -224,6 +234,7 @@ async function* dispatch(
       task: `${task}\n\nAdditional context:\n${context}`,
       model: options.model,
       signal: request.signal,
+      context: skillContext,
     });
     if (request.signal.aborted) {
       throw new Error("Workflow cancelled");
@@ -266,16 +277,55 @@ function reviewResult(result: Awaited<ReturnType<ReviewingAgentPool["dispatch"]>
     : undefined;
 }
 
-async function loadSkill(options: CreateWorkflowSupervisorOptions, name: string): Promise<void> {
-  if (options.loadSkill) {
-    await options.loadSkill(name);
-    return;
+async function loadSkillContext(options: CreateWorkflowSupervisorOptions, names: readonly string[], required: boolean): Promise<string> {
+  if (!options.loadSkill && !options.catalog) {
+    if (required) throw new Error("Required skill loader is unavailable");
+    return "";
   }
-  if (options.catalog) {
-    await options.catalog.load(name);
-    return;
+
+  const sections: string[] = [];
+  for (const name of names) {
+    const loaded = options.loadSkill ? await options.loadSkill(name) : await options.catalog!.load(name);
+    const content = typeof loaded === "string"
+      ? loaded
+      : loaded && typeof loaded === "object" && typeof (loaded as { content?: unknown }).content === "string"
+        ? (loaded as { content: string }).content
+        : "";
+    if (!content.trim()) throw new Error(`Required skill content is empty: ${name}`);
+    sections.push(`## Skill: ${name}\n${content}`);
   }
-  throw new Error(`Required skill is not loaded: ${name}`);
+  return sections.join("\n\n");
+}
+
+function validatePlan(options: CreateWorkflowSupervisorOptions, checkpoint: SuperpowersCheckpoint): string | undefined {
+  if (options.workspaceRoot === undefined) return undefined;
+  return validateWorkspaceFile(options.workspaceRoot, checkpoint.planPath ?? options.planPath, "plan");
+}
+
+function validateLedger(options: CreateWorkflowSupervisorOptions): string | undefined {
+  if (options.workspaceRoot === undefined) return undefined;
+  return validateWorkspaceFile(options.workspaceRoot, ".superpowers/sdd/progress.md", "ledger");
+}
+
+function validateWorkspaceFile(workspaceRoot: string, requestedPath: string | undefined, label: string): string | undefined {
+  if (!workspaceRoot.trim()) return "Superpowers workspace is unavailable";
+  if (!requestedPath?.trim()) return `Superpowers ${label} path is missing`;
+  if (isAbsolute(requestedPath)) return `Superpowers ${label} path must be workspace-relative`;
+
+  const root = resolve(workspaceRoot);
+  const candidate = resolve(root, requestedPath);
+  const relativePath = relative(root, candidate);
+  if (relativePath.startsWith("..") || isAbsolute(relativePath)) return `Superpowers ${label} path is outside the workspace`;
+  if (!existsSync(candidate)) return `Superpowers ${label} file does not exist: ${requestedPath}`;
+
+  try {
+    if (!statSync(candidate).isFile() || !readFileSync(candidate, "utf8").trim()) {
+      return `Superpowers ${label} file is empty: ${requestedPath}`;
+    }
+  } catch (error) {
+    return `Superpowers ${label} file cannot be read: ${error instanceof Error ? error.message : requestedPath}`;
+  }
+  return undefined;
 }
 
 function failure(runId: string, message: string): HostToWebviewMessage {

@@ -74,4 +74,28 @@ describe("AgentPool", () => {
     expect(requests[1]?.messages.some((message) => /reportSubagentResult.*reportReview/s.test(message.content))).toBe(true);
     expect(requests[1]?.requiredToolNames).toEqual(["reportSubagentResult", "reportReview"]);
   });
+
+  it("puts applicable skill bodies into fresh messages", async () => {
+    let messages: Array<{ role: string; content: string }> = [];
+    const pool = createAgentPool({
+      globalConstraints: "constraints",
+      brief: "brief",
+      run: async (request) => {
+        messages = request.messages;
+        return { status: "DONE", summary: "done", reportPath: "report.md", commit: "abc", tests: [] };
+      },
+    });
+
+    await pool.dispatch({
+      agentId: "implementer-1",
+      role: "implementer",
+      task: "implement",
+      model: "model",
+      context: "# using-superpowers\nUse the workflow.\n# brainstorming\nClarify the design.",
+      signal: new AbortController().signal,
+    });
+
+    expect(messages.some((message) => message.content.includes("# using-superpowers"))).toBe(true);
+    expect(messages.some((message) => message.content.includes("# brainstorming"))).toBe(true);
+  });
 });

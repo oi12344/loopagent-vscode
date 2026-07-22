@@ -188,6 +188,43 @@ describe("WorkflowSupervisor", () => {
     expect(store.load("conversation-1")).toMatchObject({ phase: "blocked", waitingFor: "review result is incomplete" });
   });
 
+  it("loads skill bodies into every subagent dispatch context", async () => {
+    const contexts: string[] = [];
+    const supervisor = createWorkflowSupervisor({
+      agentPool: {
+        async dispatch(request) {
+          contexts.push(request.context ?? "");
+          return done();
+        },
+        cancelAll() {},
+      },
+      workflowStore: memoryStore(),
+      model: "model",
+      loadSkill: async (name) => `# ${name}\nSkill body for ${name}`,
+    });
+
+    await collect(supervisor.run(runFrom("preflight")));
+
+    expect(contexts[0]).toContain("# using-superpowers");
+    expect(contexts[0]).toContain("# brainstorming");
+  });
+
+  it("blocks with a clear plan error when the workspace plan is missing", async () => {
+    const store = memoryStore();
+    const supervisor = createWorkflowSupervisor({
+      agentPool: { dispatch: async () => done(), cancelAll() {} },
+      workflowStore: store,
+      model: "model",
+      workspaceRoot: "C:/path-that-does-not-exist",
+      planPath: "docs/superpowers/plans/current-plan.md",
+    });
+
+    await collect(supervisor.run(runFrom("preflight")));
+
+    expect(store.load("conversation-1")).toMatchObject({ phase: "blocked" });
+    expect(store.load("conversation-1")?.waitingFor).toMatch(/plan|workspace|exist/i);
+  });
+
   it("clears the active agent and emits failure when dispatch throws", async () => {
     const store = memoryStore();
     const supervisor = createWorkflowSupervisor({
