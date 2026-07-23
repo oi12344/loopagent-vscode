@@ -1,5 +1,6 @@
 import {
   createWorkspaceIntelligence,
+  type CodeIntelligenceResult,
   type WorkspaceIntelligence,
   type WorkspaceIntelligenceBudgets,
   type WorkspaceSourceFile,
@@ -178,32 +179,9 @@ export function createVsCodeWorkspaceIntelligence(
 
   return {
     async buildCodeIntelligencePrompt(query) {
-      await persistenceReady;
-      // Try SQLite FTS path first (persistent index)
-      let fallbackReason = "no-client";
-      if (persistentClient) {
-        try {
-          const [nodes, chunks] = await Promise.all([
-            persistentClient.searchNodes(query, 12),
-            persistentClient.searchCodeChunks(query, 6),
-          ]);
-          const prompt = renderPersistedCodeIntelligencePrompt(query, nodes, chunks);
-          if (prompt) {
-            console.log(`[vscodeWorkspaceIntelligence] buildCodeIntelligencePrompt: path=sqlite query=${JSON.stringify(query)}`);
-            return prompt;
-          }
-          fallbackReason = "empty";
-        } catch (error) {
-          recordPersistentError(error);
-          fallbackReason = "error";
-        }
-      }
-      // Fallback to in-memory search when persistent index is unavailable or fails.
-      // This handles: (1) no workspace folders, (2) multiple windows (non-writer), (3) startup races,
-      // (4) SQLite initialization failures, (5) query errors in the persistent path.
-      console.log(`[vscodeWorkspaceIntelligence] buildCodeIntelligencePrompt: path=memory reason=${fallbackReason} query=${JSON.stringify(query)}`);
-      return memoryIntelligence.buildCodeIntelligencePrompt(query);
+      return (await buildResult(query)).prompt;
     },
+    buildCodeIntelligenceResult: buildResult,
     getStatus: () => memoryIntelligence.getStatus(),
     getDiagnostics: () => [
       ...memoryIntelligence.getDiagnostics(),
@@ -224,6 +202,38 @@ export function createVsCodeWorkspaceIntelligence(
       return disposePromise;
     },
   };
+
+  async function buildResult(query: string): Promise<CodeIntelligenceResult> {
+      await persistenceReady;
+      let fallbackReason = "no-client";
+      if (persistentClient) {
+        try {
+          const [nodes, chunks] = await Promise.all([
+            persistentClient.searchNodes(query, 12),
+            persistentClient.searchCodeChunks(query, 6),
+          ]);
+          const prompt = renderPersistedCodeIntelligencePrompt(query, nodes, chunks);
+          if (prompt) {
+            console.log(`[vscodeWorkspaceIntelligence] buildCodeIntelligencePrompt: path=sqlite query=${JSON.stringify(query)}`);
+            return {
+              prompt,
+              snippets: chunks.map((chunk) => ({
+                filePath: chunk.filePath,
+                startLine: chunk.startLine ?? 1,
+                endLine: chunk.endLine ?? chunk.startLine ?? 1,
+                text: chunk.sourceText,
+              })),
+            };
+          }
+          fallbackReason = "empty";
+        } catch (error) {
+          recordPersistentError(error);
+          fallbackReason = "error";
+        }
+      }
+      console.log(`[vscodeWorkspaceIntelligence] buildCodeIntelligencePrompt: path=memory reason=${fallbackReason} query=${JSON.stringify(query)}`);
+      return memoryIntelligence.buildCodeIntelligenceResult!(query);
+  }
 
   async function startPersistentIndex(): Promise<void> {
     if (!vscodeApi.Uri || !vscodeApi.workspace.fs.stat) {

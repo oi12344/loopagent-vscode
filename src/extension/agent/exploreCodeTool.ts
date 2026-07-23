@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
+
 import type * as vscode from "vscode";
 import type { WorkspaceIntelligence } from "../intelligence/workspaceIntelligence";
-import type { ReactAgentTool } from "./reactTypes";
+import type { MemoryEvidence } from "../memory/types";
+import type { ReactAgentTool, ReactAgentToolResult } from "./reactTypes";
 
 let outputChannel: vscode.OutputChannel | undefined;
 function getOutputChannel(): vscode.OutputChannel | undefined {
@@ -18,6 +21,7 @@ function getOutputChannel(): vscode.OutputChannel | undefined {
 export const MAX_EXPLORE_CODE_QUERY_LENGTH = 1_000;
 const EMPTY_OBSERVATION = "未命中代码上下文。";
 const FAILED_OBSERVATION = "代码搜索失败，请调整查询后重试。";
+const MAX_EVIDENCE_SNIPPETS = 4;
 
 export function createExploreCodeTool(workspaceIntelligence: WorkspaceIntelligence): ReactAgentTool {
   return {
@@ -36,30 +40,50 @@ export function createExploreCodeTool(workspaceIntelligence: WorkspaceIntelligen
       required: ["query"],
       additionalProperties: false,
     },
-    async invoke({ input, signal }) {
+    async invoke({ input, signal }): Promise<ReactAgentToolResult> {
       const query = parseQuery(input);
       signal.throwIfAborted();
       getOutputChannel()?.appendLine(`[exploreCode] 工具调用开始 query="${query}"`);
 
-      let prompt: string;
+      let content: string;
+      let evidence: MemoryEvidence[] = [];
       try {
-        prompt = await workspaceIntelligence.buildCodeIntelligencePrompt(query);
+        if (workspaceIntelligence.buildCodeIntelligenceResult) {
+          const result = await workspaceIntelligence.buildCodeIntelligenceResult(query);
+          content = result.prompt.length > 0 ? result.prompt : EMPTY_OBSERVATION;
+          evidence = buildSnippetEvidence(result.snippets);
+        } else {
+          const prompt = await workspaceIntelligence.buildCodeIntelligencePrompt(query);
+          content = prompt.length > 0 ? prompt : EMPTY_OBSERVATION;
+        }
       } catch (error) {
         signal.throwIfAborted();
         getOutputChannel()?.appendLine(
           `[exploreCode] buildCodeIntelligencePrompt 失败: ${error instanceof Error ? error.message : String(error)}`,
         );
-        return FAILED_OBSERVATION;
+        return { content: FAILED_OBSERVATION, evidence: [] };
       }
 
       signal.throwIfAborted();
-      const format = prompt.startsWith("##") ? "Markdown" : prompt.startsWith("<") ? "XML/DSML" : "文本";
+      const format = content.startsWith("##") ? "Markdown" : content.startsWith("<") ? "XML/DSML" : "文本";
       getOutputChannel()?.appendLine(
-        `[exploreCode] 工具返回 长度=${prompt.length} 格式=${format} 前100字符="${prompt.slice(0, 100)}"`,
+        `[exploreCode] 工具返回 长度=${content.length} 格式=${format} 前100字符="${content.slice(0, 100)}"`,
       );
-      return prompt.length > 0 ? prompt : EMPTY_OBSERVATION;
+      return { content, evidence };
     },
   };
+}
+
+function buildSnippetEvidence(
+  snippets: readonly { filePath: string; startLine: number; endLine: number; text: string }[],
+): MemoryEvidence[] {
+  return snippets.slice(0, MAX_EVIDENCE_SNIPPETS).map((snippet) => ({
+    filePath: snippet.filePath,
+    startLine: snippet.startLine,
+    endLine: snippet.endLine,
+    sha256: createHash("sha256").update(snippet.text).digest("hex"),
+    required: true,
+  }));
 }
 
 function parseQuery(input: unknown): string {

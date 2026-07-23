@@ -1,7 +1,8 @@
 import type { HostToWebviewMessage } from "../../shared/messages";
 import type { InterruptedRunCheckpoint } from "../../shared/chatTypes";
+import type { MemoryEvidence } from "../memory/types";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
-import type { ReactAgentMessage, ReactAgentTool, ReactAgentToolRequest, ReactModelTurn } from "./reactTypes";
+import type { ReactAgentMessage, ReactAgentRunOutcome, ReactAgentTool, ReactAgentToolRequest, ReactModelTurn } from "./reactTypes";
 import { createToolRegistry } from "./toolRegistry";
 import { createDefaultReactTools } from "./tools";
 
@@ -16,6 +17,7 @@ export type CreateReactAgentRunnerOptions = {
   requiredToolNames?: string[];
   systemPromptProvider?: (request: AgentRunRequest) => string | Promise<string>;
   onCheckpoint?: (checkpoint: InterruptedRunCheckpoint) => void | Promise<void>;
+  recordMemoryRunOutcome?: (outcome: ReactAgentRunOutcome) => void | Promise<void>;
 };
 
 export function createReactAgentRunner({
@@ -27,6 +29,7 @@ export function createReactAgentRunner({
   requiredToolNames: configuredRequiredToolNames = [],
   systemPromptProvider,
   onCheckpoint,
+  recordMemoryRunOutcome,
 }: CreateReactAgentRunnerOptions): AgentRunner {
   const toolRegistry = createToolRegistry(tools);
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
@@ -35,11 +38,13 @@ export function createReactAgentRunner({
     async *run(request) {
       const { runId, task, signal, conversationHistory = [], resumeState } = request;
       const requiredToolNames = request.requiredToolNames ?? configuredRequiredToolNames;
-      if (signal.aborted) {
-        return;
-      }
-
+      let status: ReactAgentRunOutcome["status"] = "cancelled";
+      let finalContent: string | undefined;
+      const evidence: MemoryEvidence[] = [];
       try {
+        if (signal.aborted) {
+          return;
+        }
         yield { type: "runStarted", runId, task } satisfies HostToWebviewMessage;
         yield { type: "assistantStarted", runId, provider: providerName } satisfies HostToWebviewMessage;
 
@@ -130,6 +135,8 @@ export function createReactAgentRunner({
             yield { type: "assistantDelta", runId, content: result.content } satisfies HostToWebviewMessage;
             yield { type: "assistantFinished", runId } satisfies HostToWebviewMessage;
             yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
+            status = "completed";
+            finalContent = result.content;
             return;
           }
 
@@ -142,6 +149,8 @@ export function createReactAgentRunner({
               yield { type: "assistantDelta", runId, content: result.assistantMessage.content } satisfies HostToWebviewMessage;
               yield { type: "assistantFinished", runId } satisfies HostToWebviewMessage;
               yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
+              status = "completed";
+              finalContent = result.assistantMessage.content;
               return;
             }
           }
@@ -170,10 +179,10 @@ export function createReactAgentRunner({
 
             const invoke = async (toolRequest: ReactAgentToolRequest) => {
               if (!toolsByName.has(toolRequest.name)) {
-                return { content: `Tool error: Unknown tool "${toolRequest.name}"`, succeeded: false };
+                return { content: `Tool error: Unknown tool "${toolRequest.name}"`, succeeded: false, evidence: [] as MemoryEvidence[] };
               }
               if (toolRequest.parseError) {
-                return { content: `Tool error: ${toolRequest.parseError}`, succeeded: false };
+                return { content: `Tool error: ${toolRequest.parseError}`, succeeded: false, evidence: [] as MemoryEvidence[] };
               }
               // ponytail: 同批次并发的相同调用会漏判（记录发生在批次结束后），可接受 —— maxToolRequestsPerStep 封顶
               const cached = succeededCalls.get(`${toolRequest.name}:${toolRequest.rawArguments}`);
@@ -181,12 +190,14 @@ export function createReactAgentRunner({
                 return {
                   content: `重复调用：已用相同参数调用过 ${toolRequest.name}，上次结果：${cached}。请改变查询或给出最终答案。`,
                   succeeded: false,
+                  evidence: [] as MemoryEvidence[],
                 };
               }
               try {
-                return { content: await toolRegistry.invoke(toolRequest, signal), succeeded: true };
+                const result = await toolRegistry.invoke(toolRequest, signal);
+                return { content: result.content, succeeded: true, evidence: result.evidence };
               } catch (error) {
-                return { content: `Tool error: ${formatRunError(error)}`, succeeded: false };
+                return { content: `Tool error: ${formatRunError(error)}`, succeeded: false, evidence: [] as MemoryEvidence[] };
               }
             };
             const outcomes = batch.concurrent
@@ -211,6 +222,7 @@ export function createReactAgentRunner({
               if (outcome.succeeded) {
                 succeededCalls.set(`${request.name}:${request.rawArguments}`, content.slice(0, 200));
                 toolFailures.set(request.name, 0);
+                evidence.push(...outcome.evidence);
               } else {
                 yield {
                   type: "agentEvent",
@@ -243,7 +255,16 @@ export function createReactAgentRunner({
           return;
         }
 
+        status = "failed";
         yield { type: "runFailed", runId, message: formatRunError(error) } satisfies HostToWebviewMessage;
+      } finally {
+        if (recordMemoryRunOutcome) {
+          try {
+            await recordMemoryRunOutcome({ runId, task, status, finalContent, evidence });
+          } catch {
+            // Memory persistence is best-effort and must not change the run result.
+          }
+        }
       }
     },
   };

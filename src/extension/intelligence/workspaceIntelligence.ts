@@ -1,4 +1,4 @@
-import { createCodeIntelligenceContext } from "./context/codeIntelligenceContext";
+import { createCodeIntelligenceContext, type CodeIntelligenceSnippet } from "./context/codeIntelligenceContext";
 import { renderCodeIntelligencePrompt } from "./context/codeIntelligencePrompt";
 import type { CodeEdge, ImportBinding, IndexDiagnostic, UnresolvedReference } from "./graph/graphTypes";
 import { createSearchIndex } from "./graph/searchIndex";
@@ -37,8 +37,14 @@ export type WorkspaceIntelligenceDeps = {
 
 export type WorkspaceIntelligence = {
   buildCodeIntelligencePrompt(query: string): Promise<string>;
+  buildCodeIntelligenceResult?(query: string): Promise<CodeIntelligenceResult>;
   getStatus(): CodeIndexStatus;
   getDiagnostics(): IndexDiagnostic[];
+};
+
+export type CodeIntelligenceResult = {
+  prompt: string;
+  snippets: CodeIntelligenceSnippet[];
 };
 
 const DEFAULT_BUDGETS: WorkspaceIntelligenceBudgets = {
@@ -76,7 +82,7 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
   }
 
   return {
-    async buildCodeIntelligencePrompt(query) {
+    async buildCodeIntelligenceResult(query) {
       const graph = createSemanticGraph();
       const searchIndex = createSearchIndex();
       const importBindings: ImportBinding[] = [];
@@ -202,7 +208,7 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
             // Ignore if vscode not available
           }
         }
-        return rendered;
+        return { prompt: rendered, snippets: result.snippets };
       } catch (error) {
         status = "failed";
         diagnostics.push({
@@ -210,7 +216,7 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
           severity: "error",
           message: error instanceof Error ? error.message : String(error),
         });
-        return "";
+        return { prompt: "", snippets: [] };
       }
 
       function addEdgeWithinBudget(edge: CodeEdge, filePath: string): boolean {
@@ -226,6 +232,9 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
         edgeCount += 1;
         return true;
       }
+    },
+    async buildCodeIntelligencePrompt(query) {
+      return (await this.buildCodeIntelligenceResult!(query)).prompt;
     },
     getStatus() {
       return status;
@@ -281,6 +290,9 @@ export function createEmptyWorkspaceIntelligence(): WorkspaceIntelligence {
   return {
     async buildCodeIntelligencePrompt() {
       return "";
+    },
+    async buildCodeIntelligenceResult() {
+      return { prompt: "", snippets: [] };
     },
     getStatus() {
       return "ready";

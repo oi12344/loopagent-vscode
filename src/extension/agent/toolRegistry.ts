@@ -1,7 +1,7 @@
-import type { ReactAgentTool, ReactAgentToolRequest } from "./reactTypes";
+import type { ReactAgentTool, ReactAgentToolRequest, ReactAgentToolResult } from "./reactTypes";
 
 export type ReactAgentToolRegistry = {
-  invoke(request: ReactAgentToolRequest, signal: AbortSignal): Promise<string>;
+  invoke(request: ReactAgentToolRequest, signal: AbortSignal): Promise<ReactAgentToolResult>;
 };
 
 export function createToolRegistry(tools: ReactAgentTool[] = []): ReactAgentToolRegistry {
@@ -15,7 +15,8 @@ export function createToolRegistry(tools: ReactAgentTool[] = []): ReactAgentTool
         throw new Error(`Unknown tool: ${request.name}`);
       }
 
-      return tool.invoke({ request, input: request.input, signal });
+      const result = await tool.invoke({ request, input: request.input, signal });
+      return typeof result === "string" ? { content: result, evidence: [] } : result;
     },
   };
 }

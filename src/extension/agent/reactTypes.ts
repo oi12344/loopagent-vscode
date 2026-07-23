@@ -1,4 +1,7 @@
 import type { ModelToolCall, ModelToolChoice } from "../model/types";
+import type { MemoryEvidence, ReactAgentRunOutcome } from "../memory/types";
+
+export type { ReactAgentRunOutcome } from "../memory/types";
 
 export type ReactAgentMessage =
   | {
@@ -32,13 +35,22 @@ export type ReactAgentToolInvocation = {
   signal: AbortSignal;
 };
 
+/** A tool's normalized result: the bounded text appended to ReAct message history, plus
+ * zero or more local `MemoryEvidence` the runner accumulates for this run's outcome. Tools
+ * may still return a plain string (normalized to `{ content, evidence: [] }` by the
+ * registry) for backward compatibility. */
+export type ReactAgentToolResult = {
+  content: string;
+  evidence: MemoryEvidence[];
+};
+
 export type ReactAgentTool = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
   resultSchema?: Record<string, unknown>;
   isConcurrencySafe?: (input: unknown) => boolean;
-  invoke(invocation: ReactAgentToolInvocation): string | Promise<string>;
+  invoke(invocation: ReactAgentToolInvocation): string | ReactAgentToolResult | Promise<string | ReactAgentToolResult>;
 };
 
 export type ReactModelTurnResult =
