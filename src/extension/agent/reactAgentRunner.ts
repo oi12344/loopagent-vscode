@@ -5,6 +5,8 @@ import type { ReactAgentMessage, ReactAgentTool, ReactAgentToolRequest, ReactMod
 import { createToolRegistry } from "./toolRegistry";
 import { createDefaultReactTools } from "./tools";
 
+const MAX_CONSECUTIVE_TOOL_FAILURES = 3;
+
 export type CreateReactAgentRunnerOptions = {
   modelTurn: ReactModelTurn;
   providerName?: string;
@@ -48,6 +50,8 @@ export function createReactAgentRunner({
         const initialStep = resumedCheckpoint?.step ?? 1;
         const successfulTools = new Set<string>();
         let requiredToolRetries = 0;
+        const succeededCalls = new Map<string, string>(); // 签名 → 结果摘要，用于拦截无意义的重复调用
+        const toolFailures = new Map<string, number>(); // 工具名 → 连续失败数，用于失败熔断
 
         if (!resumedCheckpoint) {
           const systemPrompt = await resolveSystemPrompt(systemPromptProvider, request);
@@ -171,6 +175,14 @@ export function createReactAgentRunner({
               if (toolRequest.parseError) {
                 return { content: `Tool error: ${toolRequest.parseError}`, succeeded: false };
               }
+              // ponytail: 同批次并发的相同调用会漏判（记录发生在批次结束后），可接受 —— maxToolRequestsPerStep 封顶
+              const cached = succeededCalls.get(`${toolRequest.name}:${toolRequest.rawArguments}`);
+              if (cached !== undefined) {
+                return {
+                  content: `重复调用：已用相同参数调用过 ${toolRequest.name}，上次结果：${cached}。请改变查询或给出最终答案。`,
+                  succeeded: false,
+                };
+              }
               try {
                 return { content: await toolRegistry.invoke(toolRequest, signal), succeeded: true };
               } catch (error) {
@@ -196,12 +208,20 @@ export function createReactAgentRunner({
                   message: `Tool exploreCode returned (step ${step}, call ${call}): ${content.length} chars`,
                 } satisfies HostToWebviewMessage;
               }
-              if (!outcome.succeeded) {
+              if (outcome.succeeded) {
+                succeededCalls.set(`${request.name}:${request.rawArguments}`, content.slice(0, 200));
+                toolFailures.set(request.name, 0);
+              } else {
                 yield {
                   type: "agentEvent",
                   runId,
                   message: `Tool ${request.name} failed (step ${step}, call ${call}): ${content}`,
                 } satisfies HostToWebviewMessage;
+                const failures = (toolFailures.get(request.name) ?? 0) + 1;
+                toolFailures.set(request.name, failures);
+                if (failures >= MAX_CONSECUTIVE_TOOL_FAILURES) {
+                  throw new Error(`工具 ${request.name} 连续失败 ${failures} 次，终止运行`);
+                }
               }
 
               messages.push({
