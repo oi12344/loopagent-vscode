@@ -180,7 +180,8 @@ describe("LoopAgent extension workspace intelligence lifecycle", () => {
     expect(capturedRequests[0]?.signal.aborted).toBe(true);
   });
 
-  it("restores a cancelled Edit workflow from its conversation checkpoint after switching back", async () => {
+  // Edit workflow (superpowers) is now disabled, so this test is no longer applicable
+  it.skip("restores a cancelled Edit workflow from its conversation checkpoint after switching back", async () => {
     const capturedRequests: AgentRunRequest[] = [];
     const workflowCheckpoints = new Map<string, SuperpowersCheckpoint>();
     const workflowStore = {

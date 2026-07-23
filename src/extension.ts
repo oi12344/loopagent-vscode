@@ -189,7 +189,6 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.activeRun?.cancel();
     if (this.currentConversationId) {
       this.conversationManager.clearInterruptedRun(this.currentConversationId);
-      this.workflowStore.clear(this.currentConversationId);
     }
     this.currentConversationId = undefined;
     this.conversationManager.clearActiveConversation();
@@ -216,45 +215,29 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
 
   private sendInterruptedRun(webview: vscode.Webview, conversationId: string): void {
     const checkpoint = this.conversationManager.loadInterruptedRun(conversationId);
-    const workflowCheckpoint = this.workflowStore.load(conversationId);
-    const workflowInterrupted = workflowCheckpoint?.conversationId === conversationId
-      ? {
-          runId: workflowCheckpoint.runId,
-          conversationId,
-          task: this.conversationManager.getConversationHistory(conversationId).filter((message) => message.role === "user").at(-1)?.content ?? "",
-        }
-      : undefined;
-    const interrupted = checkpoint ?? workflowInterrupted;
-    if (!interrupted) return;
+    if (!checkpoint) return;
     webview.postMessage({
       type: "runInterrupted",
-      runId: interrupted.runId,
-      conversationId: interrupted.conversationId,
-      task: interrupted.task,
+      runId: checkpoint.runId,
+      conversationId: checkpoint.conversationId,
+      task: checkpoint.task,
     } satisfies HostToWebviewMessage);
   }
 
   private handleStopRun(webview: vscode.Webview): void {
     const run = this.activeRun;
     const conversationId = this.currentConversationId;
-    const runInfo = this.activeRunInfo;
     if (!run || !conversationId) return;
 
     run.cancel();
     void run.done.finally(() => {
       const checkpoint = this.conversationManager.loadInterruptedRun(conversationId);
-      const workflowCheckpoint = this.workflowStore.load(conversationId);
-      const interrupted = checkpoint?.runId === run.runId
-        ? checkpoint
-        : workflowCheckpoint?.runId === run.runId && runInfo
-          ? { runId: workflowCheckpoint.runId, conversationId, task: runInfo.task }
-          : undefined;
-      if (!interrupted) return;
+      if (!checkpoint?.runId || checkpoint.runId !== run.runId) return;
       webview.postMessage({
         type: "runInterrupted",
-        runId: interrupted.runId,
-        conversationId: interrupted.conversationId,
-        task: interrupted.task,
+        runId: checkpoint.runId,
+        conversationId: checkpoint.conversationId,
+        task: checkpoint.task,
       } satisfies HostToWebviewMessage);
     });
   }
@@ -264,8 +247,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     webview: vscode.Webview,
   ): void {
     const checkpoint = this.conversationManager.loadInterruptedRun(message.conversationId);
-    const workflowCheckpoint = this.workflowStore.load(message.conversationId);
-    if (!checkpoint && !workflowCheckpoint) {
+    if (!checkpoint) {
       webview.postMessage({
         type: "runFailed",
         runId: message.runId,
@@ -279,13 +261,13 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.currentConversationId = conversation.conversationId;
     this.executeRun(
       message.runId,
-      checkpoint?.task ?? conversation.messages.filter((item) => item.role === "user").at(-1)?.content ?? "",
-      checkpoint?.mode ?? "edit",
-      checkpoint?.model,
+      checkpoint.task,
+      "ask",
+      checkpoint.model,
       this.conversationManager.getConversationHistory(conversation.conversationId),
       conversation.conversationId,
       webview,
-      checkpoint ?? workflowCheckpoint,
+      checkpoint,
     );
   }
 
@@ -324,7 +306,6 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   ): void {
     this.currentConversationId = message.conversationId;
     this.conversationManager.clearInterruptedRun(message.conversationId);
-    this.workflowStore.clear(message.conversationId);
     this.conversationManager.addUserMessage(message.conversationId, message.userMessage);
     const conversationHistory = this.conversationManager.getConversationHistory(message.conversationId);
     console.log(`[handleContinueConversation] conversationId=${message.conversationId}, history.length=${conversationHistory.length}`);
@@ -333,7 +314,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     }
     this.sendConversationList(webview);
 
-    this.executeRun(message.runId, message.userMessage, message.mode, message.model, conversationHistory, message.conversationId, webview);
+    this.executeRun(message.runId, message.userMessage, "ask", message.model, conversationHistory, message.conversationId, webview);
   }
 
   private executeRun(
@@ -353,11 +334,8 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     const run = startAgentRun({
       runId,
       task,
-      mode: mode ?? "edit",
+      mode: "ask",
       runner: createConfiguredAgentRunner(this.context, model, {
-        superpowersResourceRoot: this.superpowersResourceRoot,
-        validateSuperpowers: () => this.getSuperpowersCatalog().then(() => undefined),
-        superpowersRunner: this.createSuperpowersRunner(model),
         workspaceIntelligence: this.workspaceIntelligence,
         readFileTool: this.readFileTool,
         applyEditTool: this.applyEditTool,
@@ -366,20 +344,12 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
           this.conversationManager.saveInterruptedRun({
             ...checkpoint,
             conversationId,
-            mode: mode ?? checkpoint.mode,
+            mode: "ask",
             model,
           });
         },
-      }, mode ?? "edit"),
+      }, "ask"),
       postMessage: (hostMessage: HostToWebviewMessage) => {
-        if (hostMessage.type === "agentEvent" && (mode ?? "edit") === "edit") {
-          const workflow = this.workflowStore.load(conversationId);
-          if (workflow) {
-            webview.postMessage({ type: "workflowStateChanged", runId: hostMessage.runId, phase: workflow.phase } satisfies HostToWebviewMessage);
-            const match = /^(\\S+) (started|DONE|DONE_WITH_CONCERNS|NEEDS_CONTEXT|BLOCKED)$/.exec(hostMessage.message);
-            if (match) webview.postMessage({ type: "subagentStateChanged", runId: hostMessage.runId, agentId: match[1], status: match[2].toLowerCase() } satisfies HostToWebviewMessage);
-          }
-        }
         // Capture assistant content and reasoning
         if (hostMessage.type === "assistantDelta") {
           const current = assistantMessages.get(hostMessage.runId) ?? { content: "", reasoning: "" };
@@ -397,22 +367,19 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
           }
         } else if (hostMessage.type === "runFinished") {
           this.conversationManager.clearInterruptedRun(conversationId);
-          this.workflowStore.clear(conversationId);
         }
 
         webview.postMessage(hostMessage);
       },
       conversationHistory,
       conversationId,
-      resumeState: resumeCheckpoint
-        ? "phase" in resumeCheckpoint
-          ? { kind: "superpowers", checkpoint: resumeCheckpoint }
-          : { kind: "react", checkpoint: resumeCheckpoint }
+      resumeState: resumeCheckpoint && !("phase" in resumeCheckpoint)
+        ? { kind: "react", checkpoint: resumeCheckpoint }
         : undefined,
     });
 
     this.activeRun = run;
-    this.activeRunInfo = { conversationId, task, mode: mode ?? "edit", model };
+    this.activeRunInfo = { conversationId, task, mode: "ask", model };
     void run.done.finally(() => {
       if (this.activeRun === run) {
         this.activeRun = undefined;
