@@ -394,6 +394,53 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(projectMemory.recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }), 3);
   });
 
+  it("cancels a deferred child in order when the parent finishes after spawning it", async () => {
+    const fixture = createDeferredWorkflowProvider();
+    mockDeferredWorkflowProvider(fixture.provider);
+
+    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
+    const runner = await createConfiguredAgentRunner(
+      {} as never,
+      { provider: "deepseek" },
+      { workspaceIntelligence: { buildCodeIntelligencePrompt: vi.fn(async () => "unused") } },
+    );
+
+    const hostMessages = await collectHostMessages(runner, "Spawn a deferred child and finish.");
+    const statuses = hostMessages
+      .filter((message): message is Extract<HostToWebviewMessage, { type: "subagentStateChanged" }> =>
+        message.type === "subagentStateChanged")
+      .map((message) => message.status);
+
+    expect(statuses).toEqual(["pending", "running", "cancelled"]);
+    expect(fixture.childSignal()?.aborted).toBe(true);
+    expect(fixture.childAbortCount()).toBe(1);
+  }, 2_000);
+
+  it("settles and aborts a deferred child when the parent signal is aborted", async () => {
+    const fixture = createDeferredWorkflowProvider({ waitForParentAbort: true });
+    mockDeferredWorkflowProvider(fixture.provider);
+
+    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
+    const runner = await createConfiguredAgentRunner(
+      {} as never,
+      { provider: "deepseek" },
+      { workspaceIntelligence: { buildCodeIntelligencePrompt: vi.fn(async () => "unused") } },
+    );
+    const controller = new AbortController();
+    const run = collectHostMessages(runner, "Spawn a deferred child and wait.", controller.signal);
+
+    await fixture.childStarted;
+    controller.abort();
+    const hostMessages = await run;
+
+    expect(fixture.childSignal()?.aborted).toBe(true);
+    expect(fixture.childAbortCount()).toBe(1);
+    expect(hostMessages
+      .filter((message) => message.type === "subagentStateChanged")
+      .map((message) => message.status))
+      .toEqual(["pending", "running", "cancelled"]);
+  }, 2_000);
+
   it("wires tree-sitter parser runtime into VS Code workspace intelligence", async () => {
     const fakeVsCodeApi = createFakeVsCodeWorkspaceApi("E:\\work\\repo", new Map());
     const fakeParserRuntime = {
@@ -658,16 +705,103 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
   });
 });
 
-async function collectHostMessages(runner: AgentRunner, task: string): Promise<HostToWebviewMessage[]> {
+async function collectHostMessages(
+  runner: AgentRunner,
+  task: string,
+  signal: AbortSignal = new AbortController().signal,
+): Promise<HostToWebviewMessage[]> {
   const messages: HostToWebviewMessage[] = [];
   for await (const message of runner.run({
     runId: "run-1",
     task,
-    signal: new AbortController().signal,
+    signal,
   })) {
     messages.push(message);
   }
   return messages;
+}
+
+function createDeferredWorkflowProvider(options: { waitForParentAbort?: boolean } = {}) {
+  let parentTurn = 0;
+  let signal: AbortSignal | undefined;
+  let abortCount = 0;
+  let resolveChildStarted!: () => void;
+  const childStarted = new Promise<void>((resolve) => {
+    resolveChildStarted = resolve;
+  });
+  const provider: ModelProvider = {
+    id: "mock",
+    displayName: "Mock model",
+    stream: async function* ({ messages, signal: requestSignal }) {
+      const task = [...messages].reverse().find((message) => message.role === "user")?.content;
+      if (task === "Deferred child task.") {
+        signal = requestSignal;
+        resolveChildStarted();
+        await waitForAbort(requestSignal, () => abortCount++);
+        return;
+      }
+
+      parentTurn++;
+      if (parentTurn === 1) {
+        yield {
+          type: "toolCallDelta",
+          index: 0,
+          id: "spawn-deferred-child",
+          name: "spawnSubagent",
+          argumentsDelta: '{"task":"Deferred child task."}',
+        };
+        yield { type: "finishReason", reason: "tool_calls" };
+        return;
+      }
+      if (options.waitForParentAbort) {
+        await waitForAbort(requestSignal);
+        return;
+      }
+      yield { type: "contentDelta", content: "parent finished" };
+      yield { type: "finishReason", reason: "stop" };
+    },
+  };
+  return {
+    provider,
+    childStarted,
+    childSignal: () => signal,
+    childAbortCount: () => abortCount,
+  };
+}
+
+function mockDeferredWorkflowProvider(provider: ModelProvider): void {
+  vi.resetModules();
+  vi.doMock("../src/extension/model/modelConfig", () => ({
+    getModelRuntimeConfig: async () => ({
+      provider: "deepseek",
+      model: "test-model",
+      baseUrl: "",
+      apiKey: "test-key",
+      thinking: "disabled",
+    }),
+  }));
+  vi.doMock("../src/extension/runtime/vscodeRuntimeContext", () => ({
+    collectVsCodeRuntimeContext: async () => ({}),
+  }));
+  vi.doMock("../src/extension/runtime/contextPrompt", () => ({
+    renderCodeRuntimeContextPrompt: () => "",
+  }));
+  vi.doMock("../src/extension/model/providers/deepseekProvider", () => ({
+    createDeepSeekProvider: () => provider,
+  }));
+}
+
+function waitForAbort(signal: AbortSignal, onAbort?: () => void): Promise<void> {
+  if (signal.aborted) {
+    onAbort?.();
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    signal.addEventListener("abort", () => {
+      onAbort?.();
+      resolve();
+    }, { once: true });
+  });
 }
 
 function createFakeVsCodeWorkspaceApi(workspaceRoot: string, files: Map<string, string>): VsCodeWorkspaceApi {
