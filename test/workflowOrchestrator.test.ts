@@ -217,6 +217,41 @@ describe("workflow orchestrator", () => {
     }
   });
 
+  it("caps a requested timeout at the default workflow limit", async () => {
+    vi.useFakeTimers();
+    const orchestrator = createWorkflowOrchestrator({
+      createRunner: () => runner(async function* ({ signal }) {
+        await aborted(signal);
+      }),
+    });
+    const id = orchestrator.createSubagent({ task: "Slow", timeoutMs: 60_000 }, []);
+    const waiting = orchestrator.waitForSubagents([id]);
+    let settled = false;
+    void waiting.then(() => { settled = true; });
+
+    try {
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(settled).toBe(true);
+      expect((await waiting).get(id)).toEqual({
+        status: "failed",
+        error: "Subagent timed out after 30000ms",
+      });
+    } finally {
+      orchestrator.cancelAll();
+      await waiting;
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns false when cancelling an unknown or completed subagent", async () => {
+    const orchestrator = createWorkflowOrchestrator({ createRunner: () => runner(async function* () {}) });
+
+    expect(orchestrator.cancelSubagent("missing")).toBe(false);
+    const id = orchestrator.createSubagent({ task: "Complete" }, []);
+    await orchestrator.waitForSubagents([id]);
+    expect(orchestrator.cancelSubagent(id)).toBe(false);
+  });
+
   it("cancels every task when the parent signal aborts", async () => {
     const parent = new AbortController();
     const releaseRunners = deferred<void>();

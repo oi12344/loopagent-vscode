@@ -543,6 +543,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       runCommandTool: this.runCommandTool,
       extraTools: tools,
       requiredToolNames: request.requiredToolNames,
+      enableWorkflowTools: false,
     });
     for await (const _ of runner.run({
       runId: request.runId,

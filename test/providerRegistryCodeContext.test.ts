@@ -296,6 +296,24 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
       inputSchema: { type: "object" },
       invoke: vi.fn(async () => "inspection complete"),
     };
+    const readFileTool: ReactAgentTool = {
+      name: "readFile",
+      description: "Read a file.",
+      inputSchema: { type: "object" },
+      invoke: vi.fn(async () => "file content"),
+    };
+    const applyEditTool: ReactAgentTool = {
+      name: "applyEdit",
+      description: "Apply an edit.",
+      inputSchema: { type: "object" },
+      invoke: vi.fn(async () => "edited"),
+    };
+    const runCommandTool: ReactAgentTool = {
+      name: "runCommand",
+      description: "Run a command.",
+      inputSchema: { type: "object" },
+      invoke: vi.fn(async () => "ran"),
+    };
 
     vi.resetModules();
     vi.doMock("../src/extension/model/modelConfig", () => ({
@@ -329,14 +347,16 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
 
           parentTurns.push(messages);
           if (parentTurns.length === 1) {
-            expect(toolNames).toEqual(expect.arrayContaining(["spawnSubagent", "waitForSubagents", "cancelSubagent"]));
+            expect(toolNames).toEqual(expect.arrayContaining([
+              "spawnSubagent", "waitForSubagents", "cancelSubagent", "applyEdit", "runCommand", "inspectRepo",
+            ]));
             yield {
               type: "toolCallDelta",
               index: 0,
               id: "spawn-call",
               name: "spawnSubagent",
               argumentsDelta:
-                '{"task":"Inspect the delegated repository task.","toolHints":["inspectRepo"]}',
+                '{"task":"Inspect the delegated repository task.","toolHints":["readFile"]}',
             };
             yield { type: "finishReason", reason: "tool_calls" };
             return;
@@ -364,6 +384,9 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
       { provider: "deepseek" },
       {
         workspaceIntelligence: { buildCodeIntelligencePrompt: vi.fn(async () => "unused") },
+        readFileTool,
+        applyEditTool,
+        runCommandTool,
         extraTools: [inspectRepoTool],
         onCheckpoint,
         projectMemory: projectMemory as never,
@@ -372,7 +395,7 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
 
     const hostMessages = await collectHostMessages(runner, "Delegate this repository task.");
 
-    expect(childToolNames).toEqual([["inspectRepo"]]);
+    expect(childToolNames).toEqual([["readFile"]]);
     expect(parentTurns.at(-1)).toEqual(expect.arrayContaining([
       expect.objectContaining({
         role: "tool",
@@ -390,8 +413,53 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(hostMessages).not.toContainEqual({ type: "assistantDelta", runId: "run-1", content: "child result" });
     expect(onCheckpoint).toHaveBeenCalled();
     expect(onCheckpoint.mock.calls.every(([checkpoint]) => checkpoint.runId === "run-1")).toBe(true);
+    expect(projectMemory.loadContext).toHaveBeenCalledTimes(1);
+    expect(projectMemory.loadContext).toHaveBeenCalledWith("Delegate this repository task.");
     expect(projectMemory.recordOutcome).toHaveBeenCalledTimes(1);
     expect(projectMemory.recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }), 3);
+  });
+
+  it("keeps workflow tools out of a Superpowers subagent runner", async () => {
+    const capturedToolNames: string[][] = [];
+    const reportResultTool: ReactAgentTool = {
+      name: "reportSubagentResult",
+      description: "Report a structured subagent result.",
+      inputSchema: { type: "object" },
+      invoke: vi.fn(async () => "reported"),
+    };
+
+    vi.resetModules();
+    vi.doMock("../src/extension/model/modelConfig", () => ({
+      getModelRuntimeConfig: async () => ({ provider: "deepseek", model: "test-model", baseUrl: "", apiKey: "test-key", thinking: "disabled" }),
+    }));
+    vi.doMock("../src/extension/runtime/vscodeRuntimeContext", () => ({ collectVsCodeRuntimeContext: async () => ({}) }));
+    vi.doMock("../src/extension/runtime/contextPrompt", () => ({ renderCodeRuntimeContextPrompt: () => "" }));
+    vi.doMock("../src/extension/model/providers/deepseekProvider", () => ({
+      createDeepSeekProvider: (): ModelProvider => ({
+        id: "mock",
+        displayName: "Mock model",
+        stream: async function* ({ tools }) {
+          capturedToolNames.push((tools ?? []).map((tool) => tool.function.name));
+          yield { type: "contentDelta", content: "reported" };
+          yield { type: "finishReason", reason: "stop" };
+        },
+      }),
+    }));
+
+    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
+    const runner = await createConfiguredAgentRunner(
+      {} as never,
+      { provider: "deepseek" },
+      {
+        workspaceIntelligence: { buildCodeIntelligencePrompt: vi.fn(async () => "unused") },
+        extraTools: [reportResultTool],
+        enableWorkflowTools: false,
+      },
+    );
+
+    await collectHostMessages(runner, "Write the subagent report.");
+
+    expect(capturedToolNames).toEqual([["exploreCode", "reportSubagentResult"]]);
   });
 
   it("cancels a deferred child in order when the parent finishes after spawning it", async () => {

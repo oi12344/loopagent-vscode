@@ -22,7 +22,7 @@ export type WorkflowOrchestrator = {
   createSubagent(config: CreateSubagentConfig, availableTools: readonly ReactAgentTool[]): string;
   waitForSubagents(ids: readonly string[]): Promise<ReadonlyMap<string, SubagentResult>>;
   getSubagent(id: string): SubagentContextSnapshot | undefined;
-  cancelSubagent(id: string): void;
+  cancelSubagent(id: string): boolean;
   cancelAll(): void;
   onEvent(listener: WorkflowEventListener): () => void;
 };
@@ -154,11 +154,12 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
     }
   }
 
-  function cancelSubagent(id: string): void {
+  function cancelSubagent(id: string): boolean {
     const entry = entries.get(id);
-    if (!entry || isTerminal(entry.context.snapshot().status)) return;
+    if (!entry || isTerminal(entry.context.snapshot().status)) return false;
     entry.controller?.abort();
     settle(entry, { status: "cancelled" });
+    return true;
   }
 
   function cancelAll(): void {
@@ -192,7 +193,7 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
       });
       const entry: SubagentEntry = {
         context,
-        timeoutMs: config.timeoutMs ?? limits.subagentTimeoutMs,
+        timeoutMs: Math.min(config.timeoutMs ?? limits.subagentTimeoutMs, limits.subagentTimeoutMs),
         messages: [],
         result,
         resolveResult,

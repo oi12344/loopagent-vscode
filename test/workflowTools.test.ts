@@ -16,6 +16,10 @@ describe("workflow tools", () => {
       { task: "Read the project", dependsOn: ["subagent-0"], toolHints: ["readFile"], timeoutMs: 5000 },
       availableTools,
     );
+    expect((toolByName(tools, "spawnSubagent").inputSchema.properties as Record<string, unknown>).timeoutMs).toEqual({
+      type: "integer",
+      minimum: 1,
+    });
     expect(toolByName(tools, "spawnSubagent").isConcurrencySafe?.({ task: "Read the project" })).toBe(true);
   });
 
@@ -30,7 +34,7 @@ describe("workflow tools", () => {
   });
 
   it("cancels a subagent and confirms the cancellation", async () => {
-    const cancelSubagent = vi.fn();
+    const cancelSubagent = vi.fn(() => true);
     const tools = createWorkflowTools({ orchestrator: fakeOrchestrator({ cancelSubagent }), availableTools });
 
     await expect(invoke(tools, "cancelSubagent", { subagentId: "subagent-1" })).resolves.toBe(
@@ -39,11 +43,24 @@ describe("workflow tools", () => {
     expect(cancelSubagent).toHaveBeenCalledWith("subagent-1");
   });
 
+  it("rejects cancellation for an unknown or finished subagent", async () => {
+    const cancelSubagent = vi.fn(() => false);
+    const tools = createWorkflowTools({ orchestrator: fakeOrchestrator({ cancelSubagent }), availableTools });
+
+    await expect(invoke(tools, "cancelSubagent", { subagentId: "subagent-1" })).rejects.toThrow(
+      "Subagent subagent-1 was not found or is already finished",
+    );
+    expect(cancelSubagent).toHaveBeenCalledWith("subagent-1");
+  });
+
   it.each([
     ["spawnSubagent", [], "input must be an object"],
     ["spawnSubagent", { task: "   " }, "task must be a non-empty string"],
     ["spawnSubagent", { task: "work", dependsOn: [" "] }, "dependsOn entries must be non-empty strings"],
-    ["spawnSubagent", { task: "work", timeoutMs: 0 }, "timeoutMs must be a positive finite number"],
+    ["spawnSubagent", { task: "work", timeoutMs: 0 }, "timeoutMs must be a positive safe integer"],
+    ["spawnSubagent", { task: "work", timeoutMs: 1.5 }, "timeoutMs must be a positive safe integer"],
+    ["spawnSubagent", { task: "work", timeoutMs: Number.NaN }, "timeoutMs must be a positive safe integer"],
+    ["spawnSubagent", { task: "work", timeoutMs: Infinity }, "timeoutMs must be a positive safe integer"],
     ["waitForSubagents", { subagentIds: [""] }, "subagentIds entries must be non-empty strings"],
     ["cancelSubagent", { subagentId: "  " }, "subagentId must be a non-empty string"],
   ])("rejects invalid %s input before calling the orchestrator", async (name, input, message) => {
@@ -64,7 +81,7 @@ function fakeOrchestrator(overrides: Partial<WorkflowOrchestrator> = {}): Workfl
     createSubagent: vi.fn(() => "subagent-default"),
     waitForSubagents: vi.fn(async () => new Map()),
     getSubagent: vi.fn(),
-    cancelSubagent: vi.fn(),
+    cancelSubagent: vi.fn(() => true),
     cancelAll: vi.fn(),
     onEvent: vi.fn(() => () => {}),
     ...overrides,

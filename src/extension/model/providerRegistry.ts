@@ -61,6 +61,7 @@ export type CreateConfiguredAgentRunnerDeps = {
   superpowersRunner?: AgentRunner;
   validateSuperpowers?: () => Promise<void>;
   projectMemory?: ProjectMemory;
+  enableWorkflowTools?: boolean;
 };
 
 export async function createConfiguredAgentRunner(
@@ -94,34 +95,60 @@ export async function createConfiguredAgentRunner(
     thinking: config.thinking,
   });
 
-  const baseTools = [
+  const readOnlyTools = [
     createExploreCodeTool(workspaceIntelligence),
     ...(deps.readFileTool ? [deps.readFileTool] : []),
+  ];
+  const parentTools = [
+    ...readOnlyTools,
     ...(deps.applyEditTool ? [deps.applyEditTool] : []),
     ...(deps.runCommandTool ? [deps.runCommandTool] : []),
     ...(deps.extraTools ?? []),
   ];
   const memoryGenerationByRunId = new Map<string, number>();
 
-  const systemPromptProvider = async (request: AgentRunRequest, rememberGeneration: boolean): Promise<string> => {
+  const runtimeSystemPromptProvider = async (): Promise<string> => {
     let runtimePrompt = "";
     try {
       runtimePrompt = renderCodeRuntimeContextPrompt(await collectVsCodeRuntimeContext());
     } catch {
       // Runtime context is useful but must not block the model/tool loop.
     }
+    return [REACT_SYSTEM_PROMPT, runtimePrompt].filter(Boolean).join("\n\n");
+  };
+
+  const systemPromptProvider = async (request: AgentRunRequest): Promise<string> => {
+    const runtimePrompt = await runtimeSystemPromptProvider();
     let memoryPrompt = "";
     try {
       const memoryContext = await deps.projectMemory?.loadContext(request.task);
       if (memoryContext) {
         memoryPrompt = memoryContext.prompt;
-        if (rememberGeneration) memoryGenerationByRunId.set(request.runId, memoryContext.generation);
+        memoryGenerationByRunId.set(request.runId, memoryContext.generation);
       }
     } catch {
       // Project memory is best-effort context and must not block the model/tool loop.
     }
-    return [REACT_SYSTEM_PROMPT, runtimePrompt, memoryPrompt].filter(Boolean).join("\n\n");
+    return [runtimePrompt, memoryPrompt].filter(Boolean).join("\n\n");
   };
+
+  const createParentRunner = (tools: ReactAgentTool[]): AgentRunner => createReactAgentRunner({
+    providerName: provider.displayName,
+    tools,
+    modelTurn: createOpenAiReactModelTurn({ provider, tools }),
+    systemPromptProvider,
+    recordMemoryRunOutcome: async (outcome) => {
+      const expectedGeneration = memoryGenerationByRunId.get(outcome.runId);
+      memoryGenerationByRunId.delete(outcome.runId);
+      if (expectedGeneration !== undefined && deps.projectMemory) {
+        await deps.projectMemory.recordOutcome(outcome, expectedGeneration);
+      }
+    },
+    onCheckpoint: deps.onCheckpoint,
+    requiredToolNames: deps.requiredToolNames,
+  });
+
+  if (deps.enableWorkflowTools === false) return createParentRunner(parentTools);
 
   return {
     async *run(request) {
@@ -134,27 +161,13 @@ export async function createConfiguredAgentRunner(
             providerName: provider.displayName,
             tools: childTools,
             modelTurn: createOpenAiReactModelTurn({ provider, tools: childTools }),
-            systemPromptProvider: (childRequest) => systemPromptProvider(childRequest, false),
+            systemPromptProvider: runtimeSystemPromptProvider,
           });
         },
       });
       const unsubscribe = orchestrator.onEvent((event) => events.push(toHostMessage(event, request.runId)));
-      const tools = [...baseTools, ...createWorkflowTools({ orchestrator, availableTools: baseTools })];
-      const parentRunner = createReactAgentRunner({
-        providerName: provider.displayName,
-        tools,
-        modelTurn: createOpenAiReactModelTurn({ provider, tools }),
-        systemPromptProvider: (parentRequest) => systemPromptProvider(parentRequest, true),
-        recordMemoryRunOutcome: async (outcome) => {
-          const expectedGeneration = memoryGenerationByRunId.get(outcome.runId);
-          memoryGenerationByRunId.delete(outcome.runId);
-          if (expectedGeneration !== undefined && deps.projectMemory) {
-            await deps.projectMemory.recordOutcome(outcome, expectedGeneration);
-          }
-        },
-        onCheckpoint: deps.onCheckpoint,
-        requiredToolNames: deps.requiredToolNames,
-      });
+      const tools = [...parentTools, ...createWorkflowTools({ orchestrator, availableTools: readOnlyTools })];
+      const parentRunner = createParentRunner(tools);
 
       let parentError: unknown;
       const parentDone = (async () => {

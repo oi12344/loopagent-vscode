@@ -18,7 +18,7 @@ export function createWorkflowTools({ orchestrator, availableTools }: WorkflowTo
           task: { type: "string", minLength: 1 },
           dependsOn: { type: "array", items: { type: "string", minLength: 1 } },
           toolHints: { type: "array", items: { type: "string", minLength: 1 } },
-          timeoutMs: { type: "number", exclusiveMinimum: 0 },
+          timeoutMs: { type: "integer", minimum: 1 },
         },
         required: ["task"],
       },
@@ -54,7 +54,9 @@ export function createWorkflowTools({ orchestrator, availableTools }: WorkflowTo
       isConcurrencySafe: () => true,
       invoke({ input }) {
         const subagentId = parseStringProperty(input, "subagentId");
-        orchestrator.cancelSubagent(subagentId);
+        if (!orchestrator.cancelSubagent(subagentId)) {
+          throw new Error(`Subagent ${subagentId} was not found or is already finished`);
+        }
         return JSON.stringify({ subagentId, cancelled: true });
       },
     },
@@ -100,8 +102,8 @@ function requireStringArray(value: unknown, property: string): string[] {
 }
 
 function requireTimeout(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
-    throw new Error("timeoutMs must be a positive finite number");
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("timeoutMs must be a positive safe integer");
   }
   return value;
 }
