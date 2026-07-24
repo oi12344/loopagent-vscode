@@ -46,6 +46,20 @@ describe("subagent context", () => {
     vi.useRealTimers();
   });
 
+  it("preserves an immutable terminal result", () => {
+    const context = createSubagentContext({ id: "implement", task: "Implement the change" });
+    const result = { status: "completed" as const, content: "done" };
+
+    context.finish(result);
+    result.content = "mutated";
+    const snapshot = context.snapshot();
+    expect(() => {
+      (snapshot.result as { content?: string }).content = "mutated again";
+    }).toThrow();
+
+    expect(context.snapshot().result).toEqual({ status: "completed", content: "done" });
+  });
+
   it("appends messages without exposing mutable history", () => {
     const context = createSubagentContext({ id: "review", task: "Review" });
     const message = { role: "user" as const, content: "Check the diff" };

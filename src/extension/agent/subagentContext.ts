@@ -44,7 +44,7 @@ export function createSubagentContext({ id, task, dependsOn = [], tools = [] }: 
         dependsOn: dependencies,
         tools: assignedTools,
         status,
-        result,
+        result: result && copyResult(result),
         startedAt: startedAt && new Date(startedAt),
         finishedAt: finishedAt && new Date(finishedAt),
         messages: Object.freeze(messages.map(copyMessage)),
@@ -58,7 +58,7 @@ export function createSubagentContext({ id, task, dependsOn = [], tools = [] }: 
     finish(nextResult) {
       if (finishedAt) return;
       status = nextResult.status;
-      result = nextResult;
+      result = copyResult(nextResult);
       finishedAt = new Date();
     },
     appendMessage(message) {
@@ -69,6 +69,10 @@ export function createSubagentContext({ id, task, dependsOn = [], tools = [] }: 
 
 function copyMessage(message: ReactAgentMessage): ReactAgentMessage {
   return deepFreeze(structuredClone(message));
+}
+
+function copyResult(result: SubagentResult): SubagentResult {
+  return deepFreeze(structuredClone(result));
 }
 
 function deepFreeze<T>(value: T): T {
