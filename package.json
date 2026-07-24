@@ -34,6 +34,18 @@
       {
         "command": "loopagent.clearModelApiKey",
         "title": "LoopAgent: Clear Model API Key"
+      },
+      {
+        "command": "loopagent.rememberProjectMemory",
+        "title": "LoopAgent: Remember Project Memory"
+      },
+      {
+        "command": "loopagent.showProjectMemory",
+        "title": "LoopAgent: Show Project Memory"
+      },
+      {
+        "command": "loopagent.forgetProjectMemory",
+        "title": "LoopAgent: Forget Project Memory"
       }
     ],
     "viewsContainers": {

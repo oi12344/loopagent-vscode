@@ -145,6 +145,27 @@ describe("createVsCodeWorkspaceIntelligence", () => {
     await intelligence.dispose();
   });
 
+  it("returns structured snippets from persisted SQLite chunks", async () => {
+    const workspaceRoot = "E:\\work\\repo";
+    const files = new Map([[`${workspaceRoot}\\src\\memoryOnly.ts`, "export function memoryOnly() {}"]]);
+    const client = createFakeIndexClient({
+      chunks: [{ filePath: "src/persisted.ts", startLine: 3, endLine: 3, sourceText: "export function persistedHit() {}" }],
+    });
+    const storagePath = mkdtempSync(join(tmpdir(), "loopagent-vscode-index-"));
+    temporaryDirectories.push(storagePath);
+    const intelligence = createVsCodeWorkspaceIntelligence(
+      createFakeVsCodeWorkspaceApi(workspaceRoot, files),
+      { storageUri: { fsPath: storagePath }, createIndexClient: () => client },
+    );
+
+    await vi.waitFor(() => expect(client.initialize).toHaveBeenCalled());
+    await expect(intelligence.buildCodeIntelligenceResult!("persistedHit")).resolves.toMatchObject({
+      prompt: expect.stringContaining("src/persisted.ts"),
+      snippets: [{ filePath: "src/persisted.ts", startLine: 3, endLine: 3, text: "export function persistedHit() {}" }],
+    });
+    await intelligence.dispose();
+  });
+
   it("logs path=sqlite when the persistent index serves the prompt", async () => {
     const workspaceRoot = "E:\\work\\repo";
     const files = new Map([[`${workspaceRoot}\\src\\memoryOnly.ts`, "export function memoryOnly() {}"]]);

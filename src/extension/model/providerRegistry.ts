@@ -4,11 +4,12 @@ import { createExploreCodeTool } from "../agent/exploreCodeTool";
 import type { ReactAgentTool } from "../agent/reactTypes";
 import { createOpenAiReactModelTurn } from "../agent/openAiReactModelTurn";
 import { createReactAgentRunner } from "../agent/reactAgentRunner";
-import type { AgentRunner } from "../agentRunner";
+import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import type { ParserRuntime } from "../intelligence/parser/parserRuntime";
 import { createTreeSitterParserRuntime } from "../intelligence/parser/treeSitterRuntime";
 import type { WorkspaceIntelligence } from "../intelligence/workspaceIntelligence";
 import { createVsCodeWorkspaceIntelligence, type VsCodeWorkspaceApi } from "../intelligence/vscodeWorkspaceIntelligence";
+import type { ProjectMemory } from "../memory/projectMemory";
 import { renderCodeRuntimeContextPrompt } from "../runtime/contextPrompt";
 import { collectVsCodeRuntimeContext } from "../runtime/vscodeRuntimeContext";
 import type { RunModelSelection } from "../../shared/messages";
@@ -57,6 +58,7 @@ export type CreateConfiguredAgentRunnerDeps = {
   superpowersResourceRoot?: string;
   superpowersRunner?: AgentRunner;
   validateSuperpowers?: () => Promise<void>;
+  projectMemory?: ProjectMemory;
 };
 
 export async function createConfiguredAgentRunner(
@@ -97,18 +99,36 @@ export async function createConfiguredAgentRunner(
     ...(deps.runCommandTool ? [deps.runCommandTool] : []),
     ...(deps.extraTools ?? []),
   ];
+  const memoryGenerationByRunId = new Map<string, number>();
   return createReactAgentRunner({
     providerName: provider.displayName,
     tools,
     modelTurn: createOpenAiReactModelTurn({ provider, tools }),
-    systemPromptProvider: async () => {
+    systemPromptProvider: async (request: AgentRunRequest) => {
       let runtimePrompt = "";
       try {
         runtimePrompt = renderCodeRuntimeContextPrompt(await collectVsCodeRuntimeContext());
       } catch {
         // Runtime context is useful but must not block the model/tool loop.
       }
-      return [REACT_SYSTEM_PROMPT, runtimePrompt].filter(Boolean).join("\n\n");
+      let memoryPrompt = "";
+      try {
+        const memoryContext = await deps.projectMemory?.loadContext(request.task);
+        if (memoryContext) {
+          memoryPrompt = memoryContext.prompt;
+          memoryGenerationByRunId.set(request.runId, memoryContext.generation);
+        }
+      } catch {
+        // Project memory is best-effort context and must not block the model/tool loop.
+      }
+      return [REACT_SYSTEM_PROMPT, runtimePrompt, memoryPrompt].filter(Boolean).join("\n\n");
+    },
+    recordMemoryRunOutcome: async (outcome) => {
+      const expectedGeneration = memoryGenerationByRunId.get(outcome.runId);
+      memoryGenerationByRunId.delete(outcome.runId);
+      if (expectedGeneration !== undefined && deps.projectMemory) {
+        await deps.projectMemory.recordOutcome(outcome, expectedGeneration);
+      }
     },
     onCheckpoint: deps.onCheckpoint,
     requiredToolNames: deps.requiredToolNames,
