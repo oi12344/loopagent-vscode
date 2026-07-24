@@ -4,6 +4,8 @@ import { createExploreCodeTool } from "../agent/exploreCodeTool";
 import type { ReactAgentTool } from "../agent/reactTypes";
 import { createOpenAiReactModelTurn } from "../agent/openAiReactModelTurn";
 import { createReactAgentRunner } from "../agent/reactAgentRunner";
+import { createWorkflowOrchestrator, type WorkflowEvent } from "../agent/workflowOrchestrator";
+import { createWorkflowTools } from "../agent/workflowTools";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import type { ParserRuntime } from "../intelligence/parser/parserRuntime";
 import { createTreeSitterParserRuntime } from "../intelligence/parser/treeSitterRuntime";
@@ -12,7 +14,7 @@ import { createVsCodeWorkspaceIntelligence, type VsCodeWorkspaceApi } from "../i
 import type { ProjectMemory } from "../memory/projectMemory";
 import { renderCodeRuntimeContextPrompt } from "../runtime/contextPrompt";
 import { collectVsCodeRuntimeContext } from "../runtime/vscodeRuntimeContext";
-import type { RunModelSelection } from "../../shared/messages";
+import type { HostToWebviewMessage, RunModelSelection } from "../../shared/messages";
 import type { InterruptedRunCheckpoint } from "../../shared/chatTypes";
 import { createSkillCatalog } from "../superpowers/skillCatalog";
 import { getModelRuntimeConfig } from "./modelConfig";
@@ -92,7 +94,7 @@ export async function createConfiguredAgentRunner(
     thinking: config.thinking,
   });
 
-  const tools = [
+  const baseTools = [
     createExploreCodeTool(workspaceIntelligence),
     ...(deps.readFileTool ? [deps.readFileTool] : []),
     ...(deps.applyEditTool ? [deps.applyEditTool] : []),
@@ -100,39 +102,126 @@ export async function createConfiguredAgentRunner(
     ...(deps.extraTools ?? []),
   ];
   const memoryGenerationByRunId = new Map<string, number>();
-  return createReactAgentRunner({
-    providerName: provider.displayName,
-    tools,
-    modelTurn: createOpenAiReactModelTurn({ provider, tools }),
-    systemPromptProvider: async (request: AgentRunRequest) => {
-      let runtimePrompt = "";
-      try {
-        runtimePrompt = renderCodeRuntimeContextPrompt(await collectVsCodeRuntimeContext());
-      } catch {
-        // Runtime context is useful but must not block the model/tool loop.
+
+  const systemPromptProvider = async (request: AgentRunRequest, rememberGeneration: boolean): Promise<string> => {
+    let runtimePrompt = "";
+    try {
+      runtimePrompt = renderCodeRuntimeContextPrompt(await collectVsCodeRuntimeContext());
+    } catch {
+      // Runtime context is useful but must not block the model/tool loop.
+    }
+    let memoryPrompt = "";
+    try {
+      const memoryContext = await deps.projectMemory?.loadContext(request.task);
+      if (memoryContext) {
+        memoryPrompt = memoryContext.prompt;
+        if (rememberGeneration) memoryGenerationByRunId.set(request.runId, memoryContext.generation);
       }
-      let memoryPrompt = "";
-      try {
-        const memoryContext = await deps.projectMemory?.loadContext(request.task);
-        if (memoryContext) {
-          memoryPrompt = memoryContext.prompt;
-          memoryGenerationByRunId.set(request.runId, memoryContext.generation);
+    } catch {
+      // Project memory is best-effort context and must not block the model/tool loop.
+    }
+    return [REACT_SYSTEM_PROMPT, runtimePrompt, memoryPrompt].filter(Boolean).join("\n\n");
+  };
+
+  return {
+    async *run(request) {
+      const events = createAsyncQueue<HostToWebviewMessage>();
+      const orchestrator = createWorkflowOrchestrator({
+        signal: request.signal,
+        createRunner: ({ tools }) => {
+          const childTools = [...tools];
+          return createReactAgentRunner({
+            providerName: provider.displayName,
+            tools: childTools,
+            modelTurn: createOpenAiReactModelTurn({ provider, tools: childTools }),
+            systemPromptProvider: (childRequest) => systemPromptProvider(childRequest, false),
+          });
+        },
+      });
+      const unsubscribe = orchestrator.onEvent((event) => events.push(toHostMessage(event, request.runId)));
+      const tools = [...baseTools, ...createWorkflowTools({ orchestrator, availableTools: baseTools })];
+      const parentRunner = createReactAgentRunner({
+        providerName: provider.displayName,
+        tools,
+        modelTurn: createOpenAiReactModelTurn({ provider, tools }),
+        systemPromptProvider: (parentRequest) => systemPromptProvider(parentRequest, true),
+        recordMemoryRunOutcome: async (outcome) => {
+          const expectedGeneration = memoryGenerationByRunId.get(outcome.runId);
+          memoryGenerationByRunId.delete(outcome.runId);
+          if (expectedGeneration !== undefined && deps.projectMemory) {
+            await deps.projectMemory.recordOutcome(outcome, expectedGeneration);
+          }
+        },
+        onCheckpoint: deps.onCheckpoint,
+        requiredToolNames: deps.requiredToolNames,
+      });
+
+      let parentError: unknown;
+      const parentDone = (async () => {
+        try {
+          for await (const message of parentRunner.run(request)) events.push(message);
+        } catch (error) {
+          parentError = error;
+        } finally {
+          orchestrator.cancelAll();
+          unsubscribe();
+          events.close();
         }
-      } catch {
-        // Project memory is best-effort context and must not block the model/tool loop.
-      }
-      return [REACT_SYSTEM_PROMPT, runtimePrompt, memoryPrompt].filter(Boolean).join("\n\n");
+      })();
+
+      for await (const message of events) yield message;
+      await parentDone;
+      if (parentError) throw parentError;
     },
-    recordMemoryRunOutcome: async (outcome) => {
-      const expectedGeneration = memoryGenerationByRunId.get(outcome.runId);
-      memoryGenerationByRunId.delete(outcome.runId);
-      if (expectedGeneration !== undefined && deps.projectMemory) {
-        await deps.projectMemory.recordOutcome(outcome, expectedGeneration);
-      }
+  };
+}
+
+function toHostMessage(event: WorkflowEvent, runId: string): HostToWebviewMessage {
+  if (event.type === "SubagentCreated") {
+    return { type: "subagentStateChanged", runId, agentId: event.subagentId, status: "pending" };
+  }
+  if (event.type === "SubagentStatusChanged") {
+    return { type: "subagentStateChanged", runId, agentId: event.subagentId, status: event.status };
+  }
+  return {
+    type: "agentEvent",
+    runId,
+    message: `[${event.subagentId}] ${summarizeMessage(event.message)}`,
+  };
+}
+
+function summarizeMessage(message: HostToWebviewMessage): string {
+  const summary = "message" in message ? message.message : "content" in message ? message.content : message.type;
+  return summary.replace(/\s+/g, " ").trim().slice(0, 500) || message.type;
+}
+
+function createAsyncQueue<T>() {
+  const values: T[] = [];
+  const waiters: Array<(result: IteratorResult<T>) => void> = [];
+  let closed = false;
+
+  return {
+    push(value: T): void {
+      if (closed) return;
+      const waiter = waiters.shift();
+      if (waiter) waiter({ value, done: false });
+      else values.push(value);
     },
-    onCheckpoint: deps.onCheckpoint,
-    requiredToolNames: deps.requiredToolNames,
-  });
+    close(): void {
+      if (closed) return;
+      closed = true;
+      for (const waiter of waiters.splice(0)) waiter({ value: undefined, done: true });
+    },
+    [Symbol.asyncIterator](): AsyncIterator<T> {
+      return {
+        next(): Promise<IteratorResult<T>> {
+          if (values.length > 0) return Promise.resolve({ value: values.shift()!, done: false });
+          if (closed) return Promise.resolve({ value: undefined, done: true });
+          return new Promise((resolve) => waiters.push(resolve));
+        },
+      };
+    },
+  };
 }
 
 function requireVsCodeApi(): VsCodeWorkspaceApi {

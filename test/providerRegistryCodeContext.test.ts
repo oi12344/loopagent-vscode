@@ -278,6 +278,122 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     }));
   });
 
+  it("runs workflow subagents with routed base tools and streams their progress", async () => {
+    const parentTurns: ModelMessage[][] = [];
+    const childToolNames: string[][] = [];
+    const onCheckpoint = vi.fn(async () => undefined);
+    const projectMemory = {
+      loadContext: vi.fn(async () => ({
+        generation: 3,
+        prompt: "",
+        trace: { candidateCount: 0, includedIds: [], excluded: [] },
+      })),
+      recordOutcome: vi.fn(async () => undefined),
+    };
+    const inspectRepoTool: ReactAgentTool = {
+      name: "inspectRepo",
+      description: "Inspect repository files for a delegated task.",
+      inputSchema: { type: "object" },
+      invoke: vi.fn(async () => "inspection complete"),
+    };
+
+    vi.resetModules();
+    vi.doMock("../src/extension/model/modelConfig", () => ({
+      getModelRuntimeConfig: async () => ({
+        provider: "deepseek",
+        model: "test-model",
+        baseUrl: "",
+        apiKey: "test-key",
+        thinking: "disabled",
+      }),
+    }));
+    vi.doMock("../src/extension/runtime/vscodeRuntimeContext", () => ({
+      collectVsCodeRuntimeContext: async () => ({}),
+    }));
+    vi.doMock("../src/extension/runtime/contextPrompt", () => ({
+      renderCodeRuntimeContextPrompt: () => "",
+    }));
+    vi.doMock("../src/extension/model/providers/deepseekProvider", () => ({
+      createDeepSeekProvider: (): ModelProvider => ({
+        id: "mock",
+        displayName: "Mock model",
+        stream: async function* ({ messages, tools }) {
+          const task = [...messages].reverse().find((message) => message.role === "user")?.content;
+          const toolNames = (tools ?? []).map((tool) => tool.function.name);
+          if (task === "Inspect the delegated repository task.") {
+            childToolNames.push(toolNames);
+            yield { type: "contentDelta", content: "child result" };
+            yield { type: "finishReason", reason: "stop" };
+            return;
+          }
+
+          parentTurns.push(messages);
+          if (parentTurns.length === 1) {
+            expect(toolNames).toEqual(expect.arrayContaining(["spawnSubagent", "waitForSubagents", "cancelSubagent"]));
+            yield {
+              type: "toolCallDelta",
+              index: 0,
+              id: "spawn-call",
+              name: "spawnSubagent",
+              argumentsDelta:
+                '{"task":"Inspect the delegated repository task.","toolHints":["inspectRepo"]}',
+            };
+            yield { type: "finishReason", reason: "tool_calls" };
+            return;
+          }
+          if (parentTurns.length === 2) {
+            yield {
+              type: "toolCallDelta",
+              index: 0,
+              id: "wait-call",
+              name: "waitForSubagents",
+              argumentsDelta: '{"subagentIds":["subagent-1"]}',
+            };
+            yield { type: "finishReason", reason: "tool_calls" };
+            return;
+          }
+          yield { type: "contentDelta", content: "parent done" };
+          yield { type: "finishReason", reason: "stop" };
+        },
+      }),
+    }));
+
+    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
+    const runner = await createConfiguredAgentRunner(
+      {} as never,
+      { provider: "deepseek" },
+      {
+        workspaceIntelligence: { buildCodeIntelligencePrompt: vi.fn(async () => "unused") },
+        extraTools: [inspectRepoTool],
+        onCheckpoint,
+        projectMemory: projectMemory as never,
+      },
+    );
+
+    const hostMessages = await collectHostMessages(runner, "Delegate this repository task.");
+
+    expect(childToolNames).toEqual([["inspectRepo"]]);
+    expect(parentTurns.at(-1)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "tool",
+        name: "waitForSubagents",
+        content: expect.stringContaining('"content":"child result"'),
+      }),
+    ]));
+    expect(hostMessages).toEqual(expect.arrayContaining([
+      { type: "subagentStateChanged", runId: "run-1", agentId: "subagent-1", status: "pending" },
+      { type: "subagentStateChanged", runId: "run-1", agentId: "subagent-1", status: "running" },
+      { type: "subagentStateChanged", runId: "run-1", agentId: "subagent-1", status: "completed" },
+      { type: "agentEvent", runId: "run-1", message: "[subagent-1] child result" },
+      { type: "assistantDelta", runId: "run-1", content: "parent done" },
+    ]));
+    expect(hostMessages).not.toContainEqual({ type: "assistantDelta", runId: "run-1", content: "child result" });
+    expect(onCheckpoint).toHaveBeenCalled();
+    expect(onCheckpoint.mock.calls.every(([checkpoint]) => checkpoint.runId === "run-1")).toBe(true);
+    expect(projectMemory.recordOutcome).toHaveBeenCalledTimes(1);
+    expect(projectMemory.recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }), 3);
+  });
+
   it("wires tree-sitter parser runtime into VS Code workspace intelligence", async () => {
     const fakeVsCodeApi = createFakeVsCodeWorkspaceApi("E:\\work\\repo", new Map());
     const fakeParserRuntime = {
