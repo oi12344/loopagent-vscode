@@ -15,7 +15,7 @@ const REQUIRED_ENTRIES = [
 ];
 
 const FORBIDDEN_PATH =
-  /^extension\/(?:dist\/test|test|src|scripts|docs|\.local-vscode-[^/]*|\.artifacts)(?:\/|$)/i;
+  /^extension\/(?:dist\/test|test|src|scripts|docs|resources\/superpowers|\.local-vscode-[^/]*|\.artifacts)(?:\/|$)/i;
 const FORBIDDEN_SOURCE_MAP = /^extension\/dist\/.*\.map$/i;
 const SENSITIVE_TOKENS = new Set(["secret", "secrets", "token", "tokens", "apikey"]);
 

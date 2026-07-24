@@ -6,17 +6,11 @@ import { resolve } from "node:path";
 
 const require = createRequire(import.meta.url);
 const { assertVsixContents } = require("./vsixContents.js");
-const { listSuperpowersResourcePaths } = require("./superpowersResources.js");
 
 const root = resolve(import.meta.dirname, "..");
 const artifactPath = resolve(root, ".artifacts", "loopagent-vscode-0.0.1.vsix");
 const vscePath = resolve(root, "node_modules", ".bin", process.platform === "win32" ? "vsce.cmd" : "vsce");
 const vsceArgs = ["package", "--no-dependencies", "--out", artifactPath, ...process.argv.slice(2)];
-const superpowersResourceRoot = resolve(root, "resources", "superpowers");
-const requiredSuperpowersEntries = listSuperpowersResourcePaths(superpowersResourceRoot).map(
-  (path) => `extension/resources/superpowers/${path}`,
-);
-
 await mkdir(resolve(root, ".artifacts"), { recursive: true });
 rmSync(resolve(root, "dist"), { recursive: true, force: true });
 
@@ -72,13 +66,5 @@ if (result.exitCode !== 0) {
   process.exitCode = result.exitCode ?? 1;
 } else {
   const entries = await assertVsixContents(artifactPath);
-  const missingSuperpowersEntries = requiredSuperpowersEntries.filter(
-    (entry) => !entries.includes(entry),
-  );
-  if (missingSuperpowersEntries.length > 0) {
-    throw new Error(
-      `VSIX is missing vendored Superpowers resources: ${JSON.stringify(missingSuperpowersEntries)}`,
-    );
-  }
   console.log(JSON.stringify({ artifactPath, entryCount: entries.length }));
 }

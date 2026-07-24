@@ -213,4 +213,46 @@ describe("createPersistentConversationStore", () => {
     reopened.clearInterruptedRun(context.conversationId);
     expect(reopened.loadInterruptedRun(context.conversationId)).toBeUndefined();
   });
+
+  it("preserves an obsolete Superpowers table while ordinary checkpoints remain usable", () => {
+    const directory = mkdtempSync(join(tmpdir(), "loopagent-conversation-"));
+    directories.push(directory);
+    const databasePath = join(directory, "conversation.sqlite");
+    const raw = new DatabaseSync(databasePath);
+    raw.exec(`
+      CREATE TABLE superpowers_workflow (
+        conversation_id TEXT PRIMARY KEY,
+        checkpoint_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    raw.prepare(
+      "INSERT INTO superpowers_workflow (conversation_id, checkpoint_json, updated_at) VALUES (?, ?, ?)",
+    ).run("legacy-conv", '{"phase":"finished"}', 10);
+    raw.close();
+
+    const store = createPersistentConversationStore(databasePath);
+    const checkpoint: InterruptedRunCheckpoint = {
+      version: 1,
+      conversationId: "current-conv",
+      runId: "run-current",
+      task: "Continue current work",
+      step: 1,
+      messages: [],
+      updatedAt: 20,
+    };
+    store.saveInterruptedRun(checkpoint);
+    store.close();
+
+    const reopenedRaw = new DatabaseSync(databasePath);
+    expect(
+      reopenedRaw.prepare("SELECT checkpoint_json FROM superpowers_workflow WHERE conversation_id = ?")
+        .get("legacy-conv"),
+    ).toEqual({ checkpoint_json: '{"phase":"finished"}' });
+    reopenedRaw.close();
+
+    const reopenedStore = createPersistentConversationStore(databasePath);
+    openStores.push(reopenedStore);
+    expect(reopenedStore.loadInterruptedRun("current-conv")).toEqual(checkpoint);
+  });
 });

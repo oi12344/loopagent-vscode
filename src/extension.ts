@@ -20,13 +20,8 @@ import { createConversationStore } from "./extension/conversation/conversationSt
 import type { ConversationStore } from "./extension/conversation/conversationStore";
 import { createPersistentConversationStore } from "./extension/conversation/persistentConversationStore";
 import { createConversationManager, type ConversationManager } from "./extension/conversation/conversationManager";
-import { createAgentPool, type SubagentRunRequest, type SubagentResult } from "./extension/superpowers/agentPool";
-import { createSkillCatalog } from "./extension/superpowers/skillCatalog";
-import { createReviewResultBridge, createSuperpowersAgentRunner, createSuperpowersAgentTools } from "./extension/superpowers/superpowersAgentRunner";
-import { createWorkflowStore } from "./extension/superpowers/workflowStore";
-import { createWorkflowSupervisor } from "./extension/superpowers/workflowSupervisor";
 import type { WebviewToHostMessage, HostToWebviewMessage, TaskMode, RunModelSelection } from "./shared/messages";
-import type { ChatMessage, InterruptedRunCheckpoint, SuperpowersCheckpoint } from "./shared/chatTypes";
+import type { ChatMessage, InterruptedRunCheckpoint } from "./shared/chatTypes";
 
 const chatViewId = "loopagent.chat";
 const viewContainerId = "workbench.view.extension.loopagent";
@@ -213,11 +208,6 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private readonly runCommandTool;
   private readonly conversationStore: ConversationStore & { close?(): void };
   private readonly conversationManager: ConversationManager;
-  private readonly superpowersResourceRoot: string;
-  private superpowersCatalog: ReturnType<typeof createSkillCatalog> | undefined;
-  private readonly workflowStore;
-  private readonly reviewBridge = createReviewResultBridge();
-  private readonly superpowersAgentPool;
   private activeRunInfo: { conversationId: string; task: string; mode: TaskMode; model?: RunModelSelection } | undefined;
   private currentConversationId: string | undefined;
 
@@ -236,13 +226,6 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       ? createConversationStoreForWorkspace(workspaceRoot)
       : createConversationStore();
     this.conversationManager = createConversationManager(this.conversationStore);
-    this.superpowersResourceRoot = join(context.extensionUri.fsPath, "resources", "superpowers");
-    this.workflowStore = createWorkflowStore(this.conversationStore);
-    this.superpowersAgentPool = createAgentPool({
-      brief: "Complete the requested workspace change.",
-      globalConstraints: "Follow the task brief and project rules. Use the supplied tools for workspace changes and commands.",
-      run: (request) => this.runSuperpowersSubagent(request),
-    });
   }
 
   async dispose(): Promise<void> {
@@ -452,7 +435,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     conversationHistory: ChatMessage[],
     conversationId: string,
     webview: vscode.Webview,
-    resumeCheckpoint?: InterruptedRunCheckpoint | SuperpowersCheckpoint,
+    resumeCheckpoint?: InterruptedRunCheckpoint,
   ): void {
     this.activeRun?.cancel();
 
@@ -475,7 +458,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
             model,
           });
         },
-      }, "ask"),
+      }),
       postMessage: (hostMessage: HostToWebviewMessage) => {
         // Capture assistant content and reasoning
         if (hostMessage.type === "assistantDelta") {
@@ -500,7 +483,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       },
       conversationHistory,
       conversationId,
-      resumeState: resumeCheckpoint && !("phase" in resumeCheckpoint)
+      resumeState: resumeCheckpoint
         ? { kind: "react", checkpoint: resumeCheckpoint }
         : undefined,
     });
@@ -515,52 +498,6 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private createSuperpowersRunner(model: RunModelSelection | undefined): import("./extension/agentRunner").AgentRunner {
-    return createSuperpowersAgentRunner(createWorkflowSupervisor({
-      agentPool: this.reviewBridge.wrap(this.superpowersAgentPool),
-      workflowStore: this.workflowStore,
-      model,
-      catalog: undefined,
-      loadSkill: async (name) => (await this.getSuperpowersCatalog()).load(name),
-      workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "",
-    }));
-  }
-
-  private async runSuperpowersSubagent(request: SubagentRunRequest): Promise<SubagentResult> {
-    const catalog = await this.getSuperpowersCatalog();
-    let result: SubagentResult | undefined;
-    const tools = createSuperpowersAgentTools({
-      agentId: request.agentId,
-      reviewBridge: this.reviewBridge,
-      catalog,
-      resourceRoot: this.superpowersResourceRoot,
-      onSubagentResult: (reported) => { result = reported; },
-    });
-    const runner = await createConfiguredAgentRunner(this.context, request.model as RunModelSelection | undefined, {
-      workspaceIntelligence: this.workspaceIntelligence,
-      readFileTool: this.readFileTool,
-      applyEditTool: this.applyEditTool,
-      runCommandTool: this.runCommandTool,
-      extraTools: tools,
-      requiredToolNames: request.requiredToolNames,
-      enableWorkflowTools: false,
-    });
-    for await (const _ of runner.run({
-      runId: request.runId,
-      task: request.task,
-      signal: request.signal,
-      initialMessages: request.messages,
-      requiredToolNames: request.requiredToolNames,
-    })) {
-      // The parent workflow is the user-visible progress channel; tool callbacks retain the structured outcome.
-    }
-    return result ?? { status: "BLOCKED", summary: "Subagent did not report a structured result", reportPath: "", commit: "", tests: [] };
-  }
-
-  private getSuperpowersCatalog(): ReturnType<typeof createSkillCatalog> {
-    this.superpowersCatalog ??= createSkillCatalog(this.superpowersResourceRoot);
-    return this.superpowersCatalog;
-  }
 }
 
 async function promptForModelApiKey(context: vscode.ExtensionContext): Promise<void> {

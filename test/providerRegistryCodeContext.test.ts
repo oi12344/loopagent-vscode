@@ -7,7 +7,7 @@ import type { ModelMessage, ModelProvider } from "../src/extension/model/types";
 import type { HostToWebviewMessage } from "../src/shared/messages";
 
 describe("createConfiguredAgentRunner code intelligence context", () => {
-  it("keeps Ask on the React runner when Superpowers resources are unavailable", async () => {
+  it("creates the React runner without legacy Superpowers resources", async () => {
     vi.resetModules();
     vi.doMock("../src/extension/model/modelConfig", () => ({
       getModelRuntimeConfig: async () => ({ provider: "deepseek", model: "test-model", baseUrl: "", apiKey: "test-key", thinking: "disabled" }),
@@ -17,19 +17,15 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     }));
 
     const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
-    const runner = await createConfiguredAgentRunner({} as never, { provider: "deepseek" }, { superpowersResourceRoot: "E:\\missing-superpowers", workspaceIntelligence: { buildCodeIntelligencePrompt: async () => "" } } as never, "ask");
+    const runner = await createConfiguredAgentRunner(
+      {} as never,
+      { provider: "deepseek" },
+      { workspaceIntelligence: { buildCodeIntelligencePrompt: async () => "" } } as never,
+    );
 
     await expect(collectHostMessages(runner, "Explain this code")).resolves.toContainEqual({
       type: "assistantDelta", runId: "run-1", content: "ask works",
     });
-  });
-
-  it("reports the Superpowers resource path when Edit cannot initialize it", async () => {
-    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
-
-    await expect(
-      createConfiguredAgentRunner({} as never, { provider: "deepseek" }, { superpowersResourceRoot: "E:\\missing-superpowers" } as never, "edit"),
-    ).rejects.toThrow("E:\\missing-superpowers");
   });
 
   it("runs native exploreCode tool calls and returns observations to the next model turn", async () => {
@@ -419,7 +415,7 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(projectMemory.recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }), 3);
   });
 
-  it("keeps workflow tools out of a Superpowers subagent runner", async () => {
+  it("keeps workflow tools out when workflow support is disabled", async () => {
     const capturedToolNames: string[][] = [];
     const reportResultTool: ReactAgentTool = {
       name: "reportSubagentResult",

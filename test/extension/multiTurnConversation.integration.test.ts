@@ -7,7 +7,6 @@ import { startAgentRun, type AgentRunner, type AgentRunRequest } from "../../src
 import { createConversationStore } from "../../src/extension/conversation/conversationStore";
 import { createPersistentConversationStore } from "../../src/extension/conversation/persistentConversationStore";
 import { createConversationManager } from "../../src/extension/conversation/conversationManager";
-import type { SuperpowersCheckpoint } from "../../src/shared/chatTypes";
 
 describe("Multi-turn conversation integration", () => {
   const directories: string[] = [];
@@ -68,27 +67,6 @@ describe("Multi-turn conversation integration", () => {
     await handle.done;
 
     expect(capturedRequest?.conversationHistory).toEqual(conversationHistory);
-  });
-
-  it("passes a Superpowers checkpoint through startAgentRun for the same conversation", async () => {
-    let capturedRequest: AgentRunRequest | undefined;
-    const checkpoint: SuperpowersCheckpoint = {
-      version: 1, conversationId: "conversation-1", runId: "stopped-run", phase: "implement", skillNames: [], taskIndex: 0, updatedAt: 1,
-    };
-    const runner: AgentRunner = {
-      run: async function* (request) {
-        capturedRequest = request;
-        yield { type: "runFinished", runId: request.runId };
-      },
-    };
-
-    const handle = startAgentRun({
-      task: "Resume implementation", runner, postMessage: () => undefined, conversationId: "conversation-1",
-      resumeState: { kind: "superpowers", checkpoint },
-    });
-    await handle.done;
-
-    expect(capturedRequest?.resumeState).toEqual({ kind: "superpowers", checkpoint });
   });
 
   it("maintains separate conversations independently", () => {

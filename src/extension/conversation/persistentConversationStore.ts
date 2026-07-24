@@ -1,14 +1,12 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { isSuperpowersCheckpoint } from "../../shared/chatTypes";
 
 import type {
   ChatMessage,
   ConversationContext,
   ConversationSummary,
   InterruptedRunCheckpoint,
-  SuperpowersCheckpoint,
 } from "../../shared/chatTypes";
 import type { ConversationStore } from "./conversationStore";
 
@@ -82,11 +80,6 @@ export function createPersistentConversationStore(
   }
   database.exec(`
     CREATE TABLE IF NOT EXISTS interrupted_run (
-      conversation_id TEXT PRIMARY KEY,
-      checkpoint_json TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS superpowers_workflow (
       conversation_id TEXT PRIMARY KEY,
       checkpoint_json TEXT NOT NULL,
       updated_at INTEGER NOT NULL
@@ -166,23 +159,6 @@ export function createPersistentConversationStore(
     }
   }
 
-  function readSuperpowersCheckpoint(conversationId: string): SuperpowersCheckpoint | undefined {
-    const row = database
-      .prepare("SELECT checkpoint_json FROM superpowers_workflow WHERE conversation_id = ?")
-      .get(conversationId) as { checkpoint_json: string } | undefined;
-    if (!row) return undefined;
-    let checkpoint: unknown;
-    try {
-      checkpoint = JSON.parse(row.checkpoint_json);
-    } catch {
-      throw new Error(`Invalid workflow checkpoint for conversation ${conversationId}`);
-    }
-    if (!isSuperpowersCheckpoint(checkpoint, conversationId)) {
-      throw new Error(`Invalid workflow checkpoint for conversation ${conversationId}`);
-    }
-    return checkpoint;
-  }
-
   if (!hadActiveConversationTable) {
     const legacy = database
       .prepare("SELECT conversation_id FROM conversation ORDER BY updated_at DESC, rowid DESC LIMIT 1")
@@ -251,24 +227,6 @@ export function createPersistentConversationStore(
 
     clearInterruptedRun(conversationId: string): void {
       database.prepare("DELETE FROM interrupted_run WHERE conversation_id = ?").run(conversationId);
-    },
-
-    saveSuperpowersCheckpoint(checkpoint: SuperpowersCheckpoint): void {
-      database
-        .prepare(
-          `INSERT INTO superpowers_workflow (conversation_id, checkpoint_json, updated_at)
-           VALUES (?, ?, ?)
-           ON CONFLICT(conversation_id) DO UPDATE SET checkpoint_json = excluded.checkpoint_json, updated_at = excluded.updated_at`,
-        )
-        .run(checkpoint.conversationId, JSON.stringify(checkpoint), checkpoint.updatedAt);
-    },
-
-    loadSuperpowersCheckpoint(conversationId: string): SuperpowersCheckpoint | undefined {
-      return readSuperpowersCheckpoint(conversationId);
-    },
-
-    clearSuperpowersCheckpoint(conversationId: string): void {
-      database.prepare("DELETE FROM superpowers_workflow WHERE conversation_id = ?").run(conversationId);
     },
 
     listConversations(): ConversationSummary[] {

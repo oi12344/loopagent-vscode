@@ -3,7 +3,6 @@ import type {
   ChatMessage,
   ConversationSummary,
   InterruptedRunCheckpoint,
-  SuperpowersCheckpoint,
 } from "../../shared/chatTypes";
 
 /**
@@ -72,12 +71,6 @@ export type ConversationStore = {
   loadInterruptedRun(conversationId: string): InterruptedRunCheckpoint | undefined;
 
   clearInterruptedRun(conversationId: string): void;
-
-  saveSuperpowersCheckpoint(checkpoint: SuperpowersCheckpoint): void;
-
-  loadSuperpowersCheckpoint(conversationId: string): SuperpowersCheckpoint | undefined;
-
-  clearSuperpowersCheckpoint(conversationId: string): void;
 };
 
 function summarize(context: ConversationContext): ConversationSummary {
@@ -97,7 +90,6 @@ function summarize(context: ConversationContext): ConversationSummary {
 export function createConversationStore(): ConversationStore {
   const conversations = new Map<string, ConversationContext>();
   const interruptedRuns = new Map<string, InterruptedRunCheckpoint>();
-  const superpowersCheckpoints = new Map<string, SuperpowersCheckpoint>();
 
   /**
    * 生成唯一的对话ID
@@ -174,18 +166,6 @@ export function createConversationStore(): ConversationStore {
 
     clearInterruptedRun(conversationId: string): void {
       interruptedRuns.delete(conversationId);
-    },
-
-    saveSuperpowersCheckpoint(checkpoint: SuperpowersCheckpoint): void {
-      superpowersCheckpoints.set(checkpoint.conversationId, checkpoint);
-    },
-
-    loadSuperpowersCheckpoint(conversationId: string): SuperpowersCheckpoint | undefined {
-      return superpowersCheckpoints.get(conversationId);
-    },
-
-    clearSuperpowersCheckpoint(conversationId: string): void {
-      superpowersCheckpoints.delete(conversationId);
     },
   };
 }

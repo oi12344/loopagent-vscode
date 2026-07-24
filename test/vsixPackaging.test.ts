@@ -15,8 +15,6 @@ import {
   readVsixEntries,
   validateVsixEntries,
 } from "../scripts/vsixContents";
-import { listSuperpowersResourcePaths } from "../scripts/superpowersResources";
-
 const root = process.cwd();
 const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 
@@ -78,13 +76,12 @@ describe("VSIX packaging contract", () => {
     expect(packageScript).toContain("process.stderr.write(result.stderr)");
   });
 
-  it("requires every vendored Superpowers support file", () => {
+  it("packages without legacy Superpowers resources", () => {
     const packageScript = readFileSync(resolve(root, "scripts/package-vsix.mjs"), "utf8");
 
-    expect(listSuperpowersResourcePaths(resolve(root, "resources", "superpowers"))).toContain(
-      "skills/brainstorming/visual-companion.md",
-    );
-    expect(packageScript).toContain("listSuperpowersResourcePaths");
+    expect(existsSync(resolve(root, "resources", "superpowers"))).toBe(false);
+    expect(existsSync(resolve(root, "scripts", "superpowersResources.js"))).toBe(false);
+    expect(packageScript).not.toContain("Superpowers");
   });
 
   it("accepts the complete production payload", () => {
@@ -121,6 +118,7 @@ describe("VSIX packaging contract", () => {
     "extension/src/extension.ts",
     "extension/scripts/package-vsix.mjs",
     "extension/docs/development.md",
+    "extension/resources/superpowers/manifest.json",
     "extension/.env",
     "extension/.env.local",
     "extension/.envrc",
