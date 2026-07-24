@@ -125,6 +125,75 @@ describe("workflow orchestrator", () => {
     );
   });
 
+  it("keeps a cancelled runner in the concurrency slot until it exits", async () => {
+    const abortObserved = deferred<void>();
+    const releaseCancelledRunner = deferred<void>();
+    const started: string[] = [];
+    const orchestrator = createWorkflowOrchestrator({
+      createRunner: ({ subagentId }) => runner(async function* ({ signal }) {
+        started.push(subagentId);
+        if (subagentId === "subagent-1") {
+          await aborted(signal);
+          abortObserved.resolve();
+          await releaseCancelledRunner.promise;
+        }
+      }),
+      limits: { maxConcurrentSubagents: 1 },
+    });
+    const firstId = orchestrator.createSubagent({ task: "First" }, []);
+    const secondId = orchestrator.createSubagent({ task: "Second" }, []);
+    await vi.waitFor(() => expect(started).toEqual([firstId]));
+
+    orchestrator.cancelSubagent(firstId);
+
+    expect((await orchestrator.waitForSubagents([firstId])).get(firstId)).toEqual({ status: "cancelled" });
+    await abortObserved.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(started).toEqual([firstId]);
+
+    releaseCancelledRunner.resolve();
+    await orchestrator.waitForSubagents([secondId]);
+    expect(started).toEqual([firstId, secondId]);
+  });
+
+  it("isolates listener errors from creation, scheduling, and other listeners", async () => {
+    const observed: WorkflowEvent[] = [];
+    const orchestrator = createWorkflowOrchestrator({
+      createRunner: () => runner(async function* () {}),
+      limits: { maxConcurrentSubagents: 1 },
+    });
+    orchestrator.onEvent(() => {
+      throw new Error("listener failed");
+    });
+    orchestrator.onEvent((event) => observed.push(event));
+
+    let firstId = "";
+    expect(() => {
+      firstId = orchestrator.createSubagent({ task: "First" }, []);
+    }).not.toThrow();
+    const secondId = orchestrator.createSubagent({ task: "Second" }, []);
+
+    const results = await orchestrator.waitForSubagents([firstId, secondId]);
+    expect([...results.values()].map((result) => result.status)).toEqual(["completed", "completed"]);
+    expect(observed.filter((event) => event.type === "SubagentCreated")).toHaveLength(2);
+    expect(observed.filter((event) => event.type === "SubagentStatusChanged")).toHaveLength(4);
+  });
+
+  it("does not create a runner when a running listener cancels the task", async () => {
+    const createRunner = vi.fn(() => runner(async function* () {}));
+    const orchestrator = createWorkflowOrchestrator({ createRunner });
+    orchestrator.onEvent((event) => {
+      if (event.type === "SubagentStatusChanged" && event.status === "running") {
+        orchestrator.cancelSubagent(event.subagentId);
+      }
+    });
+
+    const id = orchestrator.createSubagent({ task: "Cancel during start" }, []);
+
+    expect((await orchestrator.waitForSubagents([id])).get(id)).toEqual({ status: "cancelled" });
+    expect(createRunner).not.toHaveBeenCalled();
+  });
+
   it("fails a task that exceeds its timeout", async () => {
     vi.useFakeTimers();
     try {

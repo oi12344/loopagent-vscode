@@ -54,7 +54,13 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
   let cancellingAll = false;
 
   function emit(event: WorkflowEvent): void {
-    for (const listener of listeners) listener(event);
+    for (const listener of listeners) {
+      try {
+        listener(event);
+      } catch {
+        continue;
+      }
+    }
   }
 
   function settle(entry: SubagentEntry, result: SubagentResult): void {
@@ -62,13 +68,11 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
     if (isTerminal(snapshot.status)) return;
 
     if (entry.timeout) clearTimeout(entry.timeout);
-    running.delete(snapshot.id);
     entry.context.finish(result);
     entry.resolveResult(result);
     emit({ type: "SubagentStatusChanged", subagentId: snapshot.id, status: result.status });
 
     if (result.status !== "completed") cancelPendingDependents(snapshot.id);
-    if (!cancellingAll) schedule();
   }
 
   function cancelPendingDependents(dependencyId: string): void {
@@ -99,16 +103,16 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
     const snapshot = entry.context.snapshot();
     entry.context.start();
     running.add(snapshot.id);
-    emit({ type: "SubagentStatusChanged", subagentId: snapshot.id, status: "running" });
-
     const controller = new AbortController();
     entry.controller = controller;
-    entry.timeout = setTimeout(() => {
-      controller.abort();
-      settle(entry, { status: "failed", error: `Subagent timed out after ${entry.timeoutMs}ms` });
-    }, entry.timeoutMs);
 
     try {
+      emit({ type: "SubagentStatusChanged", subagentId: snapshot.id, status: "running" });
+      if (controller.signal.aborted || entry.context.snapshot().status !== "running") return;
+      entry.timeout = setTimeout(() => {
+        controller.abort();
+        settle(entry, { status: "failed", error: `Subagent timed out after ${entry.timeoutMs}ms` });
+      }, entry.timeoutMs);
       const runner = await options.createRunner({
         subagentId: snapshot.id,
         task: snapshot.task,
@@ -144,6 +148,9 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
       if (entry.context.snapshot().status === "running") {
         settle(entry, { status: "failed", error: formatError(error) });
       }
+    } finally {
+      running.delete(snapshot.id);
+      if (!cancellingAll) schedule();
     }
   }
 
