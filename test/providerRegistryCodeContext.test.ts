@@ -127,14 +127,18 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
       },
     ]);
     expect(hostMessages).toContainEqual({
-      type: "agentEvent",
+      type: "toolCallStarted",
       runId: "run-1",
-      message: "Running tool exploreCode (step 1, call 1): provider registry model context",
+      callId: "1-1",
+      toolName: "exploreCode",
+      input: "provider registry model context",
     });
     expect(hostMessages).toContainEqual({
-      type: "agentEvent",
+      type: "toolCallFinished",
       runId: "run-1",
-      message: "Tool exploreCode returned (step 1, call 1): 28 chars",
+      callId: "1-1",
+      succeeded: true,
+      output: "代码语义索引上下文\nsrc/modelAccess.ts",
     });
     expect(hostMessages).toContainEqual({
       type: "assistantDelta",
@@ -413,6 +417,74 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(projectMemory.loadContext).toHaveBeenCalledWith("Delegate this repository task.");
     expect(projectMemory.recordOutcome).toHaveBeenCalledTimes(1);
     expect(projectMemory.recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }), 3);
+  });
+
+  it("uses the role system prompt for child runners", async () => {
+    const childMessages: ModelMessage[][] = [];
+    let parentTurn = 0;
+
+    vi.resetModules();
+    vi.doMock("../src/extension/model/modelConfig", () => ({
+      getModelRuntimeConfig: async () => ({ provider: "deepseek", model: "test-model", baseUrl: "", apiKey: "test-key", thinking: "disabled" }),
+    }));
+    vi.doMock("../src/extension/runtime/vscodeRuntimeContext", () => ({
+      collectVsCodeRuntimeContext: async () => ({}),
+    }));
+    vi.doMock("../src/extension/runtime/contextPrompt", () => ({
+      renderCodeRuntimeContextPrompt: () => "",
+    }));
+    vi.doMock("../src/extension/model/providers/deepseekProvider", () => ({
+      createDeepSeekProvider: (): ModelProvider => ({
+        id: "mock",
+        displayName: "Mock model",
+        stream: async function* ({ messages }) {
+          const task = [...messages].reverse().find((m) => m.role === "user")?.content;
+          if (task === "Review the code.") {
+            childMessages.push(messages);
+            yield { type: "contentDelta", content: "reviewed" };
+            yield { type: "finishReason", reason: "stop" };
+            return;
+          }
+          parentTurn++;
+          if (parentTurn === 1) {
+            yield {
+              type: "toolCallDelta", index: 0, id: "spawn-1", name: "spawnSubagent",
+              argumentsDelta: '{"task":"Review the code.","role":"reviewer"}',
+            };
+            yield { type: "finishReason", reason: "tool_calls" };
+            return;
+          }
+          if (parentTurn === 2) {
+            yield {
+              type: "toolCallDelta", index: 0, id: "wait-1", name: "waitForSubagents",
+              argumentsDelta: '{"subagentIds":["subagent-1"]}',
+            };
+            yield { type: "finishReason", reason: "tool_calls" };
+            return;
+          }
+          yield { type: "contentDelta", content: "done" };
+          yield { type: "finishReason", reason: "stop" };
+        },
+      }),
+    }));
+
+    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
+    const runner = await createConfiguredAgentRunner(
+      {} as never,
+      { provider: "deepseek" },
+      { workspaceIntelligence: { buildCodeIntelligencePrompt: vi.fn(async () => "unused") } },
+    );
+
+    await collectHostMessages(runner, "Please review this code.");
+
+    const childSystemPrompt = childMessages[0]
+      ?.filter((m) => m.role === "system")
+      .map((m) => m.content)
+      .join("\n") ?? "";
+
+    expect(childSystemPrompt).toContain("reviewer role");
+    expect(childSystemPrompt).toContain("defects");
+    expect(childSystemPrompt).not.toContain("LoopAgent");
   });
 
   it("keeps workflow tools out when workflow support is disabled", async () => {

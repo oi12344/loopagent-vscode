@@ -36,7 +36,7 @@ describe("workflow orchestrator", () => {
     await vi.waitFor(() => expect(started).toEqual([firstId, secondId]));
     expect(factoryInputs).toEqual([
       { subagentId: firstId, toolNames: ["readFile"] },
-      { subagentId: secondId, toolNames: ["writeFile"] },
+      { subagentId: secondId, toolNames: ["readFile"] },
     ]);
     first.resolve();
     second.resolve();
@@ -241,6 +241,56 @@ describe("workflow orchestrator", () => {
       await waiting;
       vi.useRealTimers();
     }
+  });
+
+  it("passes the resolved role to the runner factory", async () => {
+    const factoryInputs: Array<{ subagentId: string; role: string }> = [];
+    const orchestrator = createWorkflowOrchestrator({
+      createRunner(input) {
+        factoryInputs.push({ subagentId: input.subagentId, role: input.role });
+        return runner(async function* () {});
+      },
+    });
+
+    const explorerId = orchestrator.createSubagent({ task: "Find symbols" }, []);
+    const reviewerId = orchestrator.createSubagent({ task: "Review code", role: "reviewer" }, []);
+    await orchestrator.waitForSubagents([explorerId, reviewerId]);
+
+    expect(factoryInputs[0]).toMatchObject({ subagentId: explorerId, role: "explorer" });
+    expect(factoryInputs[1]).toMatchObject({ subagentId: reviewerId, role: "reviewer" });
+  });
+
+  it("stores the resolved role in the subagent snapshot", () => {
+    const orchestrator = createWorkflowOrchestrator({
+      createRunner: () => runner(async function* () {}),
+    });
+    const id = orchestrator.createSubagent({ task: "Plan steps", role: "planner" }, []);
+    expect(orchestrator.getSubagent(id)?.role).toBe("planner");
+  });
+
+  it("rejects creation when an unknown role is requested", () => {
+    const orchestrator = createWorkflowOrchestrator({
+      createRunner: () => runner(async function* () {}),
+    });
+    expect(() => orchestrator.createSubagent({ task: "Task", role: "unknown" as never }, [])).toThrow(/unknown/i);
+  });
+
+  it("restricts tools to the role whitelist when selecting for a subagent", async () => {
+    const factoryInputs: Array<{ subagentId: string; toolNames: string[] }> = [];
+    const allTools: ReactAgentTool[] = [
+      { name: "exploreCode", description: "Search code", inputSchema: {}, invoke: () => "" },
+      { name: "readFile", description: "Read files", inputSchema: {}, invoke: () => "" },
+      { name: "applyEdit", description: "Apply edit", inputSchema: {}, invoke: () => "" },
+    ];
+    const orchestrator = createWorkflowOrchestrator({
+      createRunner(input) {
+        factoryInputs.push({ subagentId: input.subagentId, toolNames: input.tools.map((t) => t.name) });
+        return runner(async function* () {});
+      },
+    });
+    const id = orchestrator.createSubagent({ task: "Explore the codebase", role: "explorer" }, allTools);
+    await orchestrator.waitForSubagents([id]);
+    expect(factoryInputs[0]?.toolNames).not.toContain("applyEdit");
   });
 
   it("returns false when cancelling an unknown or completed subagent", async () => {

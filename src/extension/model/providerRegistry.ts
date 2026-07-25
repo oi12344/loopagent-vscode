@@ -18,6 +18,9 @@ import type { HostToWebviewMessage, RunModelSelection } from "../../shared/messa
 import type { InterruptedRunCheckpoint } from "../../shared/chatTypes";
 import { getModelRuntimeConfig } from "./modelConfig";
 import { createDeepSeekProvider } from "./providers/deepseekProvider";
+import { resolveRole } from "../agent/workflow/roleRegistry";
+import type { ImageAnalysisService } from "../vision/imageAnalysisService";
+import type { ImageAnalysisContext } from "../vision/imageAnalysisService";
 
 const REACT_SYSTEM_PROMPT = [
   "You are LoopAgent, a coding assistant working in the current VS Code workspace.",
@@ -58,6 +61,7 @@ export type CreateConfiguredAgentRunnerDeps = {
   requiredToolNames?: string[];
   projectMemory?: ProjectMemory;
   enableWorkflowTools?: boolean;
+  imageAnalysisService?: ImageAnalysisService;
 };
 
 export async function createConfiguredAgentRunner(
@@ -100,7 +104,7 @@ export async function createConfiguredAgentRunner(
     return [REACT_SYSTEM_PROMPT, runtimePrompt].filter(Boolean).join("\n\n");
   };
 
-  const systemPromptProvider = async (request: AgentRunRequest): Promise<string> => {
+  const systemPromptProvider = async (request: AgentRunRequest, imageAnalyses?: ImageAnalysisContext[]): Promise<string> => {
     const runtimePrompt = await runtimeSystemPromptProvider();
     let memoryPrompt = "";
     try {
@@ -112,7 +116,14 @@ export async function createConfiguredAgentRunner(
     } catch {
       // Project memory is best-effort context and must not block the model/tool loop.
     }
-    return [runtimePrompt, memoryPrompt].filter(Boolean).join("\n\n");
+
+    // 如果有图片分析结果，添加到系统提示词
+    let imagePrompt = "";
+    if (imageAnalyses && imageAnalyses.length > 0 && deps.imageAnalysisService) {
+      imagePrompt = deps.imageAnalysisService.buildSystemPromptFragment(imageAnalyses);
+    }
+
+    return [runtimePrompt, memoryPrompt, imagePrompt].filter(Boolean).join("\n\n");
   };
 
   const createParentRunner = (tools: ReactAgentTool[]): AgentRunner => createReactAgentRunner({
@@ -129,6 +140,15 @@ export async function createConfiguredAgentRunner(
     },
     onCheckpoint: deps.onCheckpoint,
     requiredToolNames: deps.requiredToolNames,
+    analyzeImages: deps.imageAnalysisService
+      ? async (request) => {
+          return await deps.imageAnalysisService!.analyzeAttachments(
+            request.attachments,
+            request.task,
+            request.signal,
+          );
+        }
+      : undefined,
   });
 
   if (deps.enableWorkflowTools === false) return createParentRunner(parentTools);
@@ -138,13 +158,22 @@ export async function createConfiguredAgentRunner(
       const events = createAsyncQueue<HostToWebviewMessage>();
       const orchestrator = createWorkflowOrchestrator({
         signal: request.signal,
-        createRunner: ({ tools }) => {
+        createRunner: ({ tools, role }) => {
           const childTools = [...tools];
+          const childProfile = resolveRole(role);
           return createReactAgentRunner({
             providerName: provider.displayName,
             tools: childTools,
             modelTurn: createOpenAiReactModelTurn({ provider, tools: childTools }),
-            systemPromptProvider: runtimeSystemPromptProvider,
+            systemPromptProvider: async () => {
+              let runtimePrompt = "";
+              try {
+                runtimePrompt = renderCodeRuntimeContextPrompt(await collectVsCodeRuntimeContext());
+              } catch {
+                // Runtime context is useful but must not block the model/tool loop.
+              }
+              return [childProfile.systemPrompt, runtimePrompt].filter(Boolean).join("\n\n");
+            },
           });
         },
       });

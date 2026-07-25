@@ -8,3 +8,5 @@ debug.log
 .worktrees/
 .artifacts/
 .loopagent/
+.claude/
+graphify-out/

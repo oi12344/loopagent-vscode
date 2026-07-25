@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { HostToWebviewMessage, ModelThinkingMode, RunModelSelection, TaskMode } from "../shared/messages";
+import type { EditFileStat, HostToWebviewMessage, ModelThinkingMode, RunModelSelection, TaskMode } from "../shared/messages";
 import type { ConversationSummary } from "../shared/chatTypes";
 import { createDefaultVsCodeApi, type VsCodeApi } from "./vscodeApi";
 import "./styles.css";
@@ -16,6 +16,14 @@ type UserTurn = {
   pending?: boolean;
 };
 
+type ToolCallEntry = {
+  callId: string;
+  toolName: string;
+  input: string;
+  output?: string;
+  status: "running" | "succeeded" | "failed";
+};
+
 type AssistantTurn = {
   id: string;
   role: "assistant";
@@ -25,11 +33,14 @@ type AssistantTurn = {
   content: string;
   status: "thinking" | "streaming" | "done" | "error" | "interrupted";
   error?: string;
+  toolCalls: ToolCallEntry[];
 };
 
 type ChatTurn = UserTurn | AssistantTurn;
 type InterruptedRun = { runId: string; conversationId: string; task: string };
 type WorkflowProgress = { phase?: string; agents: string[] };
+type PendingCommandApproval = { approvalId: string; command: string; cwd: string };
+type AppliedEditNotification = { notificationId: string; files: string[]; fileStats: EditFileStat[] };
 
 type AssistantUpdate = (turn: AssistantTurn) => AssistantTurn;
 
@@ -83,6 +94,8 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [conversations, setConversations] = React.useState<ConversationSummary[]>([]);
   const [interruptedRun, setInterruptedRun] = React.useState<InterruptedRun | undefined>();
   const [workflowProgress, setWorkflowProgress] = React.useState<Record<string, WorkflowProgress>>({});
+  const [pendingApprovals, setPendingApprovals] = React.useState<PendingCommandApproval[]>([]);
+  const [appliedEdits, setAppliedEdits] = React.useState<AppliedEditNotification[]>([]);
   const nextTurnId = React.useRef(0);
   const composerToolsRef = React.useRef<HTMLDivElement | null>(null);
   const historyMenuRef = React.useRef<HTMLDivElement | null>(null);
@@ -106,6 +119,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       reasoning: "",
       content: "",
       status: "thinking",
+      toolCalls: [],
     };
   }
 
@@ -205,6 +219,50 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           return;
         }
 
+        case "toolCallStarted": {
+          updateAssistantTurn(hostMessage.runId, (turn) => ({
+            ...turn,
+            toolCalls: [
+              ...turn.toolCalls,
+              {
+                callId: hostMessage.callId,
+                toolName: hostMessage.toolName,
+                input: hostMessage.input,
+                status: "running",
+              },
+            ],
+          }));
+          return;
+        }
+
+        case "toolCallFinished": {
+          updateAssistantTurn(hostMessage.runId, (turn) => ({
+            ...turn,
+            toolCalls: turn.toolCalls.map((entry) =>
+              entry.callId === hostMessage.callId
+                ? { ...entry, status: hostMessage.succeeded ? "succeeded" : "failed", output: hostMessage.output }
+                : entry,
+            ),
+          }));
+          return;
+        }
+
+        case "commandApprovalRequested": {
+          setPendingApprovals((current) => [
+            ...current,
+            { approvalId: hostMessage.approvalId, command: hostMessage.command, cwd: hostMessage.cwd },
+          ]);
+          return;
+        }
+
+        case "editApplied": {
+          setAppliedEdits((current) => [
+            ...current,
+            { notificationId: hostMessage.notificationId, files: hostMessage.files, fileStats: hostMessage.fileStats },
+          ]);
+          return;
+        }
+
         case "workflowStateChanged": {
           setWorkflowProgress((current) => ({
             ...current,
@@ -275,6 +333,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
                     reasoning: chatMessage.reasoning ?? "",
                     content: chatMessage.content,
                     status: "done",
+                    toolCalls: [],
                   },
             ),
           );
@@ -363,6 +422,41 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   function handleStop() {
     interruptActiveRun();
     vscodeApi.postMessage({ type: "stopRun" });
+  }
+
+  function resolveApproval(approvalId: string, approved: boolean) {
+    setPendingApprovals((current) => current.filter((approval) => approval.approvalId !== approvalId));
+    vscodeApi.postMessage({ type: "commandApprovalResolved", approvalId, approved });
+  }
+
+  function dismissAppliedEdit(notificationId: string) {
+    setAppliedEdits((current) => current.filter((notification) => notification.notificationId !== notificationId));
+  }
+
+  function revertEditFile(notificationId: string, path: string) {
+    setAppliedEdits((current) =>
+      current
+        .map((notification) =>
+          notification.notificationId === notificationId
+            ? {
+                ...notification,
+                files: notification.files.filter((file) => file !== path),
+                fileStats: notification.fileStats.filter((stat) => stat.path !== path),
+              }
+            : notification,
+        )
+        .filter((notification) => notification.files.length > 0),
+    );
+    vscodeApi.postMessage({ type: "editRevertRequested", notificationId, paths: [path] });
+  }
+
+  function revertAllEditFiles(notificationId: string) {
+    dismissAppliedEdit(notificationId);
+    vscodeApi.postMessage({ type: "editRevertRequested", notificationId, paths: [] });
+  }
+
+  function openEditFile(notificationId: string, path: string) {
+    vscodeApi.postMessage({ type: "editFileOpened", notificationId, path });
   }
 
   function resumeInterruptedRun() {
@@ -507,6 +601,29 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           })
         )}
       </section>
+
+      {pendingApprovals.length > 0 ? (
+        <div className="command-approvals" aria-label="Pending command approvals">
+          {pendingApprovals.map((approval) => (
+            <CommandApprovalCard key={approval.approvalId} approval={approval} onResolve={resolveApproval} />
+          ))}
+        </div>
+      ) : null}
+
+      {appliedEdits.length > 0 ? (
+        <div className="edit-approvals" aria-label="Applied code changes">
+          {appliedEdits.map((notification) => (
+            <EditApprovalCard
+              key={notification.notificationId}
+              notification={notification}
+              onDismiss={dismissAppliedEdit}
+              onRevertFile={revertEditFile}
+              onRevertAll={revertAllEditFiles}
+              onOpenFile={openEditFile}
+            />
+          ))}
+        </div>
+      ) : null}
 
       <form className="chat-composer" aria-label="Chat composer" onSubmit={handleSubmit}>
         <label htmlFor="message-input">Message</label>
@@ -660,6 +777,162 @@ function HistoryMenu({
   );
 }
 
+function CommandApprovalCard({
+  approval,
+  onResolve,
+}: {
+  approval: PendingCommandApproval;
+  onResolve(approvalId: string, approved: boolean): void;
+}) {
+  return (
+    <div className="command-approval-card" role="alertdialog" aria-label="LoopAgent wants to run a command">
+      <p className="command-approval-title">LoopAgent wants to run a command</p>
+      <pre className="command-approval-command">{approval.command}</pre>
+      <p className="command-approval-cwd">Working directory: {approval.cwd}</p>
+      <div className="command-approval-actions">
+        <button type="button" className="chip-button" onClick={() => onResolve(approval.approvalId, false)}>
+          Reject
+        </button>
+        <button type="button" className="chip-button chip-button-primary" onClick={() => onResolve(approval.approvalId, true)}>
+          Run
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const FILE_EXTENSION_ICONS: Record<string, { label: string; color: string }> = {
+  ts: { label: "TS", color: "#3178c6" },
+  tsx: { label: "TS", color: "#3178c6" },
+  js: { label: "JS", color: "#e8c547" },
+  jsx: { label: "JS", color: "#e8c547" },
+  json: { label: "{}", color: "#9aa0a6" },
+  css: { label: "#", color: "#a855f7" },
+  md: { label: "M", color: "#9aa0a6" },
+  py: { label: "PY", color: "#4b8bbe" },
+  java: { label: "J", color: "#e76f00" },
+  go: { label: "Go", color: "#00add8" },
+  rs: { label: "RS", color: "#dea584" },
+};
+
+function getFileIcon(path: string): { label: string; color: string } {
+  const extension = path.split(".").pop()?.toLowerCase() ?? "";
+  return FILE_EXTENSION_ICONS[extension] ?? { label: extension.slice(0, 2).toUpperCase() || "?", color: "#9aa0a6" };
+}
+
+function splitFilePath(path: string): { name: string; dir: string } {
+  const lastSlash = path.lastIndexOf("/");
+  if (lastSlash === -1) return { name: path, dir: "" };
+  return { name: path.slice(lastSlash + 1), dir: path.slice(0, lastSlash) };
+}
+
+function EditApprovalCard({
+  notification,
+  onDismiss,
+  onRevertFile,
+  onRevertAll,
+  onOpenFile,
+}: {
+  notification: AppliedEditNotification;
+  onDismiss(notificationId: string): void;
+  onRevertFile(notificationId: string, path: string): void;
+  onRevertAll(notificationId: string): void;
+  onOpenFile(notificationId: string, path: string): void;
+}) {
+  const [query, setQuery] = React.useState("");
+
+  const statByPath = React.useMemo(() => {
+    const map = new Map<string, EditFileStat>();
+    for (const stat of notification.fileStats) map.set(stat.path, stat);
+    return map;
+  }, [notification.fileStats]);
+
+  const totals = React.useMemo(
+    () =>
+      notification.fileStats.reduce(
+        (acc, stat) => ({ added: acc.added + stat.added, removed: acc.removed + stat.removed }),
+        { added: 0, removed: 0 },
+      ),
+    [notification.fileStats],
+  );
+
+  const visibleFiles = React.useMemo(() => {
+    const trimmed = query.trim().toLowerCase();
+    if (trimmed === "") {
+      return notification.files;
+    }
+    return notification.files.filter((path) => path.toLowerCase().includes(trimmed));
+  }, [notification.files, query]);
+
+  return (
+    <div className="edit-approval-card" role="status" aria-label="LoopAgent applied code changes">
+      <div className="edit-approval-header">
+        <span className="edit-approval-title">已更改 {notification.files.length} 个文件</span>
+        <span className="edit-approval-total-stat">
+          <span className="edit-approval-stat-added">+{totals.added}</span>
+          <span className="edit-approval-stat-removed">-{totals.removed}</span>
+        </span>
+        <div className="edit-approval-header-actions">
+          <button type="button" className="chip-button chip-button-primary" onClick={() => onDismiss(notification.notificationId)}>
+            保留
+          </button>
+          <button type="button" className="chip-button" onClick={() => onRevertAll(notification.notificationId)}>
+            撤销
+          </button>
+        </div>
+      </div>
+
+      <input
+        type="text"
+        className="edit-approval-search"
+        placeholder="Search files..."
+        aria-label="Search changed files"
+        value={query}
+        onChange={(event) => setQuery(event.currentTarget.value)}
+      />
+
+      <ul className="edit-approval-file-list">
+        {visibleFiles.map((path) => {
+          const stat = statByPath.get(path);
+          const icon = getFileIcon(path);
+          const { name, dir } = splitFilePath(path);
+
+          return (
+            <li key={path} className="edit-approval-file-row">
+              <span className="edit-approval-file-icon" style={{ color: icon.color }} aria-hidden="true">
+                {icon.label}
+              </span>
+              <button
+                type="button"
+                className="edit-approval-file-button"
+                aria-label={path}
+                onClick={() => onOpenFile(notification.notificationId, path)}
+              >
+                <span className="edit-approval-file-name">{name}</span>
+                {dir ? <span className="edit-approval-file-dir">{dir}</span> : null}
+              </button>
+              {stat ? (
+                <span className="edit-approval-file-stat" aria-label={`${stat.added} added, ${stat.removed} removed`}>
+                  <span className="edit-approval-stat-added">+{stat.added}</span>
+                  <span className="edit-approval-stat-removed">-{stat.removed}</span>
+                </span>
+              ) : null}
+              <button
+                type="button"
+                className="edit-approval-file-revert"
+                aria-label={`Revert ${path}`}
+                onClick={() => onRevertFile(notification.notificationId, path)}
+              >
+                ✕
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function UserMessage({ turn }: { turn: UserTurn }) {
   return (
     <article className="message message-user message-user-right">
@@ -695,6 +968,35 @@ function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; w
         >
           <summary>思考过程</summary>
           <div className="reasoning-content">{turn.reasoning}</div>
+        </details>
+      ) : null}
+
+      {turn.toolCalls.length > 0 ? (
+        <details
+          className="tool-calls-details"
+          open={isProcessOpen}
+          onToggle={(event) => setIsProcessOpen(event.currentTarget.open)}
+        >
+          <summary>工具调用</summary>
+          <ul className="tool-calls-list">
+            {turn.toolCalls.map((entry) => (
+              <li key={entry.callId} className={`tool-call-entry tool-call-${entry.status}`}>
+                <div className="tool-call-header">
+                  <span className="tool-call-status-icon" aria-hidden="true">
+                    {entry.status === "running" ? "⏳" : entry.status === "succeeded" ? "✓" : "✗"}
+                  </span>
+                  <span className="tool-call-name">{entry.toolName}</span>
+                  <span className="tool-call-input">{entry.input}</span>
+                </div>
+                {entry.output !== undefined ? (
+                  <details className="tool-call-output-details">
+                    <summary>输出</summary>
+                    <pre className="tool-call-output">{entry.output}</pre>
+                  </details>
+                ) : null}
+              </li>
+            ))}
+          </ul>
         </details>
       ) : null}
 

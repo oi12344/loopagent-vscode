@@ -3,11 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import { createSubagentContext } from "../src/extension/agent/subagentContext";
 
 describe("subagent context", () => {
-  it("keeps the configured task, dependencies, and assigned tools in its initial snapshot", () => {
+  it("keeps the configured task, dependencies, assigned tools and role in its initial snapshot", () => {
     const tool = { name: "read", description: "Read files", inputSchema: {}, invoke: () => "" };
     const context = createSubagentContext({
       id: "research",
       task: "Inspect the repository",
+      role: "explorer",
       dependsOn: ["prepare"],
       tools: [tool],
     });
@@ -15,6 +16,7 @@ describe("subagent context", () => {
     expect(context.snapshot()).toMatchObject({
       id: "research",
       task: "Inspect the repository",
+      role: "explorer",
       dependsOn: ["prepare"],
       tools: [tool],
       status: "pending",
@@ -23,6 +25,11 @@ describe("subagent context", () => {
       finishedAt: undefined,
       result: undefined,
     });
+  });
+
+  it("defaults role to explorer when not provided", () => {
+    const context = createSubagentContext({ id: "x", task: "Do something" });
+    expect(context.snapshot().role).toBe("explorer");
   });
 
   it("records only the first start and terminal result", () => {

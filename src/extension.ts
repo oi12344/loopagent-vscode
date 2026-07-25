@@ -8,6 +8,7 @@ import { createApplyEditTool } from "./extension/agent/applyEditTool";
 import { createEditPreviewService } from "./extension/agent/editPreviewService";
 import { createReadFileTool } from "./extension/agent/readFileTool";
 import { createRunCommandTool } from "./extension/agent/runCommandTool";
+import { createCommandApprovalBroker, type CommandApprovalBroker } from "./extension/agent/commandApprovalBroker";
 import { startAgentRun, type AgentRunHandle } from "./extension/agentRunner";
 import { createTreeSitterParserRuntime } from "./extension/intelligence/parser/treeSitterRuntime";
 import { createVsCodeWorkspaceIntelligence } from "./extension/intelligence/vscodeWorkspaceIntelligence";
@@ -22,6 +23,8 @@ import { createPersistentConversationStore } from "./extension/conversation/pers
 import { createConversationManager, type ConversationManager } from "./extension/conversation/conversationManager";
 import type { WebviewToHostMessage, HostToWebviewMessage, TaskMode, RunModelSelection } from "./shared/messages";
 import type { ChatMessage, InterruptedRunCheckpoint } from "./shared/chatTypes";
+import { LocalVisionService } from "./extension/vision/localVisionService";
+import { ImageAnalysisService } from "./extension/vision/imageAnalysisService";
 
 const chatViewId = "loopagent.chat";
 const viewContainerId = "workbench.view.extension.loopagent";
@@ -66,6 +69,11 @@ export function activate(context: vscode.ExtensionContext): void {
     await runForgetProjectMemory(projectMemory);
   });
 
+  const undoLastEditCommand = vscode.commands.registerCommand("loopagent.undoLastEdit", async () => {
+    const result = await chatProvider.undoLastEdit();
+    vscode.window.showInformationMessage(result);
+  });
+
   context.subscriptions.push(
     helloCommand,
     focusChatCommand,
@@ -75,6 +83,7 @@ export function activate(context: vscode.ExtensionContext): void {
     rememberProjectMemoryCommand,
     showProjectMemoryCommand,
     forgetProjectMemoryCommand,
+    undoLastEditCommand,
     { dispose: () => projectMemory?.dispose() },
   );
 }
@@ -206,20 +215,54 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private readonly readFileTool;
   private readonly applyEditTool;
   private readonly runCommandTool;
+  private readonly commandApprovalBroker: CommandApprovalBroker;
+  private activeWebviewView: vscode.WebviewView | undefined;
   private readonly conversationStore: ConversationStore & { close?(): void };
   private readonly conversationManager: ConversationManager;
   private activeRunInfo: { conversationId: string; task: string; mode: TaskMode; model?: RunModelSelection } | undefined;
   private currentConversationId: string | undefined;
+  private readonly visionService: LocalVisionService;
+  private readonly imageAnalysisService: ImageAnalysisService;
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.workspaceIntelligence = createVsCodeWorkspaceIntelligence(vscode, {
       parserRuntime: createTreeSitterParserRuntime(),
       storageUri: context.storageUri,
     });
-    this.editPreviewService = createEditPreviewService(vscode);
+    this.commandApprovalBroker = createCommandApprovalBroker({
+      isWebviewVisible: () => this.activeWebviewView?.visible ?? false,
+      postMessage: (message) => {
+        this.activeWebviewView?.webview.postMessage(message);
+      },
+      fallbackApprove: async ({ command, cwd }) => {
+        const approved = await vscode.window.showWarningMessage(
+          "LoopAgent wants to run a command.",
+          { modal: true, detail: `Command:\n${command}\n\nWorking directory:\n${cwd}` },
+          "Run",
+        );
+        return approved === "Run";
+      },
+    });
+    this.editPreviewService = createEditPreviewService(vscode, {
+      notify: (notice) => {
+        this.activeWebviewView?.webview.postMessage({
+          type: "editApplied",
+          notificationId: notice.notificationId,
+          files: notice.files,
+          fileStats: notice.fileStats,
+        } satisfies HostToWebviewMessage);
+      },
+    });
     this.readFileTool = createReadFileTool(vscode);
     this.applyEditTool = createApplyEditTool(this.editPreviewService);
-    this.runCommandTool = createRunCommandTool(vscode);
+    this.runCommandTool = createRunCommandTool(vscode, { approve: this.commandApprovalBroker.approve });
+
+    // 初始化视觉服务
+    this.visionService = new LocalVisionService({
+      pythonPath: vscode.workspace.getConfiguration("loopagent").get("pythonPath"),
+      port: 8765,
+    });
+    this.imageAnalysisService = new ImageAnalysisService(this.visionService);
 
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     this.conversationStore = workspaceRoot
@@ -232,10 +275,16 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.activeRun?.cancel();
     this.editPreviewService.dispose();
     await this.workspaceIntelligence.dispose();
+    await this.visionService.dispose();
     this.conversationStore.close?.();
   }
 
+  undoLastEdit(): Promise<string> {
+    return this.editPreviewService.undoLast();
+  }
+
   resolveWebviewView(webviewView: vscode.WebviewView): void {
+    this.activeWebviewView = webviewView;
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, "dist")],
@@ -271,12 +320,21 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
         this.handleResumeRun(message, webviewView.webview);
       } else if (message.type === "webviewReady") {
         this.handleWebviewReady(webviewView.webview);
+      } else if (message.type === "commandApprovalResolved") {
+        this.commandApprovalBroker.resolve(message.approvalId, message.approved);
+      } else if (message.type === "editRevertRequested") {
+        void this.editPreviewService.revertFiles(message.notificationId, message.paths);
+      } else if (message.type === "editFileOpened") {
+        void this.editPreviewService.openFilePreview(message.notificationId, message.path);
       }
     });
 
     webviewView.onDidDispose(() => {
       this.activeRun?.cancel();
       messageSubscription.dispose();
+      if (this.activeWebviewView === webviewView) {
+        this.activeWebviewView = undefined;
+      }
     });
   }
 
@@ -407,7 +465,17 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
 
     this.sendConversationList(webview);
 
-    this.executeRun(message.runId, message.task, message.mode, message.model, conversationHistory, conversation.conversationId, webview);
+    this.executeRun(
+      message.runId,
+      message.task,
+      message.mode,
+      message.model,
+      conversationHistory,
+      conversation.conversationId,
+      webview,
+      undefined,
+      message.attachments,
+    );
   }
 
   private handleContinueConversation(
@@ -424,7 +492,17 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     }
     this.sendConversationList(webview);
 
-    this.executeRun(message.runId, message.userMessage, "ask", message.model, conversationHistory, message.conversationId, webview);
+    this.executeRun(
+      message.runId,
+      message.userMessage,
+      "ask",
+      message.model,
+      conversationHistory,
+      message.conversationId,
+      webview,
+      undefined,
+      message.attachments,
+    );
   }
 
   private executeRun(
@@ -436,6 +514,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     conversationId: string,
     webview: vscode.Webview,
     resumeCheckpoint?: InterruptedRunCheckpoint,
+    attachments?: MessageAttachment[],
   ): void {
     this.activeRun?.cancel();
 
@@ -445,11 +524,13 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       runId,
       task,
       mode: "ask",
+      attachments,
       runner: createConfiguredAgentRunner(this.context, model, {
         workspaceIntelligence: this.workspaceIntelligence,
         readFileTool: this.readFileTool,
         applyEditTool: this.applyEditTool,
         runCommandTool: this.runCommandTool,
+        imageAnalysisService: this.imageAnalysisService,
         onCheckpoint: (checkpoint) => {
           this.conversationManager.saveInterruptedRun({
             ...checkpoint,

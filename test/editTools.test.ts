@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createApplyEditTool } from "../src/extension/agent/applyEditTool";
-import { createEditPreviewService, type VsCodeEditApi } from "../src/extension/agent/editPreviewService";
+import { computeLineStats, createEditPreviewService, type VsCodeEditApi } from "../src/extension/agent/editPreviewService";
 import { createReadFileTool } from "../src/extension/agent/readFileTool";
 
 type FakeUri = {
@@ -44,11 +44,11 @@ class FakeWorkspaceEdit {
 function createFakeVsCodeApi(
   initialFiles: Record<string, string>,
   options: {
-    beforePreview?: () => void;
     symbolicLinkPaths?: string[];
     dirtyPaths?: string[];
     dirtyContents?: Record<string, string>;
     renderSideBySide?: boolean;
+    extraRoots?: string[];
   } = {},
 ): {
   api: VsCodeEditApi;
@@ -74,11 +74,11 @@ function createFakeVsCodeApi(
   });
   const applyEdit = vi.fn(async () => true);
   let contentProvider: { provideTextDocumentContent(uri: FakeUri): string } | undefined;
-  let previewTriggered = false;
-  const executeCommand = vi.fn(async (command: string) => {
-    if (command !== "vscode.diff" || previewTriggered) return;
-    previewTriggered = true;
-    options.beforePreview?.();
+  type FakeTab = { input: { original?: FakeUri; modified?: FakeUri } };
+  const openTabs: FakeTab[] = [];
+  const executeCommand = vi.fn(async (command: string, original?: FakeUri, modified?: FakeUri) => {
+    if (command !== "vscode.diff") return;
+    openTabs.push({ input: { original, modified } });
   });
   const stat = vi.fn(async (uri: FakeUri) => {
     if (symbolicLinks.has(uri.fsPath)) return { type: 1 | 64 };
@@ -86,6 +86,7 @@ function createFakeVsCodeApi(
     if ([...files.keys(), ...symbolicLinks].some((path) => path.startsWith(`${uri.fsPath}\\`))) return { type: 2 };
     throw new Error("FileNotFound");
   });
+  const extraRoots = (options.extraRoots ?? []).map((path) => ({ uri: createUri("file", path) }));
 
   return {
     api: {
@@ -103,8 +104,16 @@ function createFakeVsCodeApi(
       commands: {
         executeCommand,
       },
+      window: {
+        tabGroups: {
+          get all() {
+            return [{ tabs: openTabs }];
+          },
+          close: vi.fn(async () => true),
+        },
+      },
       workspace: {
-        workspaceFolders: [{ uri: root }],
+        workspaceFolders: [{ uri: root }, ...extraRoots],
         getConfiguration: () => ({
           get: (_section: string, defaultValue: boolean) => options.renderSideBySide ?? defaultValue,
         }),
@@ -201,20 +210,11 @@ describe("code generation edit tools", () => {
       ),
     ).resolves.toContain("applied");
 
-    expect(fake.executeCommand).toHaveBeenCalledWith(
-      "vscode.diff",
-      expect.anything(),
-      expect.anything(),
-      "LoopAgent: src/example.ts",
-    );
-    const original = fake.executeCommand.mock.calls[0]?.[1] as FakeUri;
-    const target = fake.executeCommand.mock.calls[0]?.[2] as FakeUri;
-    expect(fake.previewText(original)).toBe("before");
-    expect(fake.previewText(target)).toBe("after");
-    expect(fake.executeCommand).toHaveBeenNthCalledWith(2, "toggle.diff.renderSideBySide", target);
+    expect(fake.applyEdit).toHaveBeenCalledOnce();
+    expect(fake.executeCommand).not.toHaveBeenCalled();
   });
 
-  it("opens code diff previews for every change before applying", async () => {
+  it("applies multiple changes without opening any diff preview upfront", async () => {
     const fake = createFakeVsCodeApi({ "src/first.ts": "before", "src/second.ts": "old" });
     const service = createEditPreviewService(fake.api);
 
@@ -227,24 +227,35 @@ describe("code generation edit tools", () => {
         new AbortController().signal,
       ),
     ).resolves.toContain("applied");
-    expect(fake.executeCommand).toHaveBeenCalledTimes(4);
-    expect(fake.executeCommand).toHaveBeenNthCalledWith(
-      1,
+    expect(fake.executeCommand).not.toHaveBeenCalled();
+    expect(fake.applyEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens a diff preview on demand for a file from a past applied edit", async () => {
+    const fake = createFakeVsCodeApi({ "src/first.ts": "before" });
+    let captured: { notificationId: string } | undefined;
+    const notify = vi.fn((notice: { notificationId: string }) => {
+      captured = notice;
+    });
+    const service = createEditPreviewService(fake.api, { notify });
+
+    await service.apply(
+      [{ kind: "replace", path: "src/first.ts", oldText: "before", newText: "after" }],
+      new AbortController().signal,
+    );
+
+    await service.openFilePreview(captured!.notificationId, "src/first.ts");
+
+    expect(fake.executeCommand).toHaveBeenCalledWith(
       "vscode.diff",
       expect.anything(),
       expect.anything(),
       "LoopAgent: src/first.ts",
     );
-    expect(fake.executeCommand).toHaveBeenNthCalledWith(
-      3,
-      "vscode.diff",
-      expect.anything(),
-      expect.anything(),
-      "LoopAgent: src/second.ts",
-    );
-    expect(fake.executeCommand).toHaveBeenNthCalledWith(2, "toggle.diff.renderSideBySide", expect.anything());
-    expect(fake.executeCommand).toHaveBeenNthCalledWith(4, "toggle.diff.renderSideBySide", expect.anything());
-    expect(fake.applyEdit).toHaveBeenCalledTimes(1);
+    const original = fake.executeCommand.mock.calls[0]?.[1] as FakeUri;
+    const target = fake.executeCommand.mock.calls[0]?.[2] as FakeUri;
+    expect(fake.previewText(original)).toBe("before");
+    expect(fake.previewText(target)).toBe("after");
   });
 
   it("applies confirmed create, replace, rename and delete operations once", async () => {
@@ -275,7 +286,7 @@ describe("code generation edit tools", () => {
     ]);
   });
 
-  it("rejects invalid replacements, snapshot conflicts, and cancellation without writing", async () => {
+  it("rejects invalid replacements and unsaved-document conflicts without writing", async () => {
     const invalid = createFakeVsCodeApi({ "src/example.ts": "duplicate duplicate" });
     const invalidService = createEditPreviewService(invalid.api);
     for (const oldText of ["", "missing", "duplicate"]) {
@@ -295,51 +306,12 @@ describe("code generation edit tools", () => {
       dirtyService.apply([{ kind: "rename", from: "src/EXAMPLE.ts", to: "src/other.ts" }], new AbortController().signal),
     ).rejects.toThrow("unsaved changes");
     expect(dirty.executeCommand).not.toHaveBeenCalled();
+  });
 
-    const sourceSymlink = createFakeVsCodeApi(
-      { "src/example.ts": "before" },
-      { beforePreview: () => sourceSymlink.symbolicLinks.add("E:\\work\\repo\\src\\example.ts") },
-    );
-    const sourceSymlinkService = createEditPreviewService(sourceSymlink.api);
-    await expect(
-      sourceSymlinkService.apply([{ kind: "replace", path: "src/example.ts", oldText: "before", newText: "after" }], new AbortController().signal),
-    ).resolves.toContain("changed since the preview");
-    expect(sourceSymlink.applyEdit).not.toHaveBeenCalled();
-
-    const conflict = createFakeVsCodeApi(
-      { "src/example.ts": "before" },
-      { beforePreview: () => conflict.files.set("E:\\work\\repo\\src\\example.ts", "changed") },
-    );
-    const conflictService = createEditPreviewService(conflict.api);
-    await expect(
-      conflictService.apply([{ kind: "replace", path: "src/example.ts", oldText: "before", newText: "after" }], new AbortController().signal),
-    ).resolves.toContain("changed since the preview");
-    expect(conflict.applyEdit).not.toHaveBeenCalled();
-
-    const createConflict = createFakeVsCodeApi(
-      { "src/placeholder.ts": "placeholder" },
-      { beforePreview: () => createConflict.files.set("E:\\work\\repo\\src\\new.ts", "other") },
-    );
-    const createConflictService = createEditPreviewService(createConflict.api);
-    await expect(
-      createConflictService.apply([{ kind: "create", path: "src/new.ts", content: "new" }], new AbortController().signal),
-    ).resolves.toContain("changed since the preview");
-    expect(createConflict.applyEdit).not.toHaveBeenCalled();
-
-    const renameTargetSymlink = createFakeVsCodeApi(
-      { "src/from.ts": "before" },
-      { beforePreview: () => renameTargetSymlink.symbolicLinks.add("E:\\work\\repo\\src\\to.ts") },
-    );
-    const renameTargetSymlinkService = createEditPreviewService(renameTargetSymlink.api);
-    await expect(
-      renameTargetSymlinkService.apply([{ kind: "rename", from: "src/from.ts", to: "src/to.ts" }], new AbortController().signal),
-    ).resolves.toContain("changed since the preview");
-    expect(renameTargetSymlink.applyEdit).not.toHaveBeenCalled();
-
+  it("does not write when the caller's signal is already aborted", async () => {
     const controller = new AbortController();
-    const cancelled = createFakeVsCodeApi({ "src/example.ts": "before" }, {
-      beforePreview: () => controller.abort(),
-    });
+    controller.abort();
+    const cancelled = createFakeVsCodeApi({ "src/example.ts": "before" });
     const cancelledService = createEditPreviewService(cancelled.api);
     await expect(
       cancelledService.apply([{ kind: "replace", path: "src/example.ts", oldText: "before", newText: "after" }], controller.signal),
@@ -378,5 +350,175 @@ describe("code generation edit tools", () => {
     await expect(
       service2.apply([{ kind: "replace", path: "src/dup.ts", oldText: "dup", newText: "changed" }], new AbortController().signal),
     ).rejects.toThrow("matches 3 times");
+  });
+
+  it("writes the change to disk and notifies with every changed file's path", async () => {
+    const fake = createFakeVsCodeApi({ "src/first.ts": "before", "src/second.ts": "old" });
+    const notify = vi.fn();
+    const service = createEditPreviewService(fake.api, { notify });
+
+    await expect(
+      service.apply(
+        [
+          { kind: "replace", path: "src/first.ts", oldText: "before", newText: "after" },
+          { kind: "replace", path: "src/second.ts", oldText: "old", newText: "new" },
+        ],
+        new AbortController().signal,
+      ),
+    ).resolves.toContain("applied");
+
+    expect(fake.applyEdit).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ files: ["src/first.ts", "src/second.ts"], notificationId: expect.any(String) }),
+    );
+  });
+
+  it("opens a diff preview for a specific file from a past applied edit on demand", async () => {
+    const fake = createFakeVsCodeApi({ "src/first.ts": "before", "src/second.ts": "old" });
+    let captured: { notificationId: string } | undefined;
+    const notify = vi.fn((notice: { notificationId: string }) => {
+      captured = notice;
+    });
+    const service = createEditPreviewService(fake.api, { notify });
+
+    await service.apply(
+      [
+        { kind: "replace", path: "src/first.ts", oldText: "before", newText: "after" },
+        { kind: "replace", path: "src/second.ts", oldText: "old", newText: "new" },
+      ],
+      new AbortController().signal,
+    );
+
+    await service.openFilePreview(captured!.notificationId, "src/second.ts");
+
+    expect(fake.executeCommand).toHaveBeenCalledWith(
+      "vscode.diff",
+      expect.anything(),
+      expect.anything(),
+      "LoopAgent: src/second.ts",
+    );
+  });
+
+  it("silently ignores openFilePreview for an unknown notification or file", async () => {
+    const fake = createFakeVsCodeApi({ "src/example.ts": "before" });
+    const service = createEditPreviewService(fake.api);
+
+    await expect(service.openFilePreview("missing-notification", "src/example.ts")).resolves.toBeUndefined();
+    expect(fake.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it("computes added/removed line stats and passes them to the notifier", async () => {
+    const fake = createFakeVsCodeApi({ "src/example.ts": "one\ntwo\nthree" });
+    const notify = vi.fn();
+    const service = createEditPreviewService(fake.api, { notify });
+
+    await service.apply(
+      [{ kind: "replace", path: "src/example.ts", oldText: "two", newText: "TWO\nBONUS" }],
+      new AbortController().signal,
+    );
+
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fileStats: [{ path: "src/example.ts", added: 2, removed: 1 }],
+      }),
+    );
+  });
+
+  it("reverts only the requested file, leaving the other applied file intact", async () => {
+    const fake = createFakeVsCodeApi({ "src/first.ts": "before", "src/second.ts": "old" });
+    let captured: { notificationId: string } | undefined;
+    const notify = vi.fn((notice: { notificationId: string }) => {
+      captured = notice;
+    });
+    const service = createEditPreviewService(fake.api, { notify });
+
+    await service.apply(
+      [
+        { kind: "replace", path: "src/first.ts", oldText: "before", newText: "after" },
+        { kind: "replace", path: "src/second.ts", oldText: "old", newText: "new" },
+      ],
+      new AbortController().signal,
+    );
+    fake.applyEdit.mockClear();
+
+    await expect(service.revertFiles(captured!.notificationId, ["src/first.ts"])).resolves.toContain("undone");
+
+    expect(fake.applyEdit).toHaveBeenCalledOnce();
+    const edit = fake.applyEdit.mock.calls[0]?.[0] as FakeWorkspaceEdit;
+    expect(edit.entries).toEqual([{ kind: "replace", path: "E:\\work\\repo\\src\\first.ts", text: "before" }]);
+
+    await expect(service.revertFiles(captured!.notificationId, ["src/second.ts"])).resolves.toContain("undone");
+  });
+
+  it("reports nothing to undo for an unknown notification id", async () => {
+    const fake = createFakeVsCodeApi({ "src/example.ts": "before" });
+    const service = createEditPreviewService(fake.api);
+
+    await expect(service.revertFiles("missing-notification", [])).resolves.toContain("Nothing to undo");
+    expect(fake.applyEdit).not.toHaveBeenCalled();
+  });
+
+  it("undoes the last applied edit by restoring original content", async () => {
+    const fake = createFakeVsCodeApi({ "src/example.ts": "before" });
+    const service = createEditPreviewService(fake.api);
+
+    await expect(
+      service.apply(
+        [{ kind: "replace", path: "src/example.ts", oldText: "before", newText: "after" }],
+        new AbortController().signal,
+      ),
+    ).resolves.toContain("applied");
+
+    await expect(service.undoLast()).resolves.toContain("undone");
+    const undoEdit = fake.applyEdit.mock.calls[1]?.[0] as FakeWorkspaceEdit;
+    expect(undoEdit.entries).toEqual([{ kind: "replace", path: "E:\\work\\repo\\src\\example.ts", text: "before" }]);
+  });
+
+  it("reports nothing to undo when no edit has been applied yet", async () => {
+    const fake = createFakeVsCodeApi({ "src/example.ts": "before" });
+    const service = createEditPreviewService(fake.api);
+
+    await expect(service.undoLast()).resolves.toContain("Nothing to undo");
+    expect(fake.applyEdit).not.toHaveBeenCalled();
+  });
+
+  it("resolves a replace path against whichever workspace folder actually has the file", async () => {
+    const fake = createFakeVsCodeApi(
+      { "src/example.ts": "before" },
+      { extraRoots: ["E:\\work\\other-repo"] },
+    );
+    const service = createEditPreviewService(fake.api);
+
+    await expect(
+      service.apply(
+        [{ kind: "replace", path: "src/example.ts", oldText: "before", newText: "after" }],
+        new AbortController().signal,
+      ),
+    ).resolves.toContain("applied");
+    expect(fake.applyEdit).toHaveBeenCalledOnce();
+  });
+
+  it("creates a new file under the first workspace folder when multiple roots are open", async () => {
+    const fake = createFakeVsCodeApi(
+      { "src/placeholder.ts": "placeholder" },
+      { extraRoots: ["E:\\work\\other-repo"] },
+    );
+    const service = createEditPreviewService(fake.api);
+
+    await expect(
+      service.apply([{ kind: "create", path: "src/new.ts", content: "new file" }], new AbortController().signal),
+    ).resolves.toContain("applied");
+
+    const edit = fake.applyEdit.mock.calls[0]?.[0] as FakeWorkspaceEdit;
+    expect(edit.entries[0]).toEqual({ kind: "create", path: "E:\\work\\repo\\src\\new.ts" });
+  });
+});
+
+describe("computeLineStats", () => {
+  it("counts pure additions, pure removals, and mixed edits", () => {
+    expect(computeLineStats("", "a\nb")).toEqual({ added: 2, removed: 0 });
+    expect(computeLineStats("a\nb", "")).toEqual({ added: 0, removed: 2 });
+    expect(computeLineStats("a\nb\nc", "a\nX\nc")).toEqual({ added: 1, removed: 1 });
+    expect(computeLineStats("same", "same")).toEqual({ added: 0, removed: 0 });
   });
 });

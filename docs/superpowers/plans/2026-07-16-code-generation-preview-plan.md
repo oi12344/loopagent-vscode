@@ -1,5 +1,7 @@
 # 代码生成与编辑预览实施计划
 
+> **⚠️ 已被取代（2026-07-25）**：本计划实现的"打开 Diff → 阻塞等待用户 Apply all/Cancel → 应用"流程已被替换为"直接应用 → 事后通知卡片 → 用户可按文件撤销"架构。详见 [2026-07-25-diff-view-enhancements-plan.md](2026-07-25-diff-view-enhancements-plan.md)。本文档保留作历史记录。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **目标：** 让模型通过 `readFile` 和经用户确认的 `applyEdit` 读取、生成、预览并应用工作区代码变更。

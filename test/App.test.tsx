@@ -325,6 +325,27 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
 
+  it("renders concurrent tool calls with input and output in a collapsed timeline", () => {
+    render(<App />);
+
+    postHostMessage({ type: "runStarted", runId: "run-1", task: "Run some commands" });
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "DeepSeek" });
+    postHostMessage({ type: "toolCallStarted", runId: "run-1", callId: "1-1", toolName: "runCommand", input: "echo first" });
+    postHostMessage({ type: "toolCallStarted", runId: "run-1", callId: "1-2", toolName: "runCommand", input: "echo second" });
+    postHostMessage({ type: "toolCallFinished", runId: "run-1", callId: "1-1", succeeded: true, output: "first" });
+    postHostMessage({ type: "toolCallFinished", runId: "run-1", callId: "1-2", succeeded: false, output: "boom" });
+
+    expect(screen.getByText("工具调用")).toBeInTheDocument();
+    expect(screen.getAllByText("runCommand")).toHaveLength(2);
+    expect(screen.getByText("echo first")).toBeInTheDocument();
+    expect(screen.getByText("echo second")).toBeInTheDocument();
+    expect(screen.getByText("first")).toBeInTheDocument();
+    expect(screen.getByText("boom")).toBeInTheDocument();
+
+    postHostMessage({ type: "runFinished", runId: "run-1" });
+    expect(screen.getByText("工具调用").closest("details")).not.toHaveAttribute("open");
+  });
+
   it("does not render legacy agent events as Process", () => {
     render(<App />);
 
@@ -392,5 +413,111 @@ describe("LoopAgent webview app", () => {
     await user.click(screen.getByRole("menuitem", { name: "And Rust?" }));
 
     expect(postMessage).toHaveBeenCalledWith({ type: "switchConversation", conversationId: "conv-1" });
+  });
+
+  it("shows an applied-edit card and filters its file list by search query", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    postHostMessage({
+      type: "editApplied",
+      notificationId: "notification-1",
+      files: ["src/first.ts", "src/second.ts", "test/first.test.ts"],
+      fileStats: [],
+    });
+
+    expect(screen.getByRole("button", { name: "src/first.ts" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "src/second.ts" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "test/first.test.ts" })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Search changed files"), "second");
+
+    expect(screen.queryByRole("button", { name: "src/first.ts" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "src/second.ts" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "test/first.test.ts" })).not.toBeInTheDocument();
+  });
+
+  it("opens a file's diff preview when clicked in the applied-edit list", async () => {
+    const user = userEvent.setup();
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    render(<App vscodeApi={{ postMessage }} />);
+
+    postHostMessage({
+      type: "editApplied",
+      notificationId: "notification-1",
+      files: ["src/first.ts"],
+      fileStats: [],
+    });
+
+    await user.click(screen.getByRole("button", { name: "src/first.ts" }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: "editFileOpened",
+      notificationId: "notification-1",
+      path: "src/first.ts",
+    });
+  });
+
+  it("dismisses the applied-edit card on 保留 without reverting anything", async () => {
+    const user = userEvent.setup();
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    render(<App vscodeApi={{ postMessage }} />);
+
+    postHostMessage({
+      type: "editApplied",
+      notificationId: "notification-1",
+      files: ["src/first.ts"],
+      fileStats: [{ path: "src/first.ts", added: 3, removed: 1 }],
+    });
+
+    await user.click(screen.getByRole("button", { name: "保留" }));
+
+    expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "editRevertRequested" }));
+    expect(screen.queryByRole("button", { name: "src/first.ts" })).not.toBeInTheDocument();
+  });
+
+  it("reverts all files when clicking 撤销 in the applied-edit card", async () => {
+    const user = userEvent.setup();
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    render(<App vscodeApi={{ postMessage }} />);
+
+    postHostMessage({
+      type: "editApplied",
+      notificationId: "notification-1",
+      files: ["src/first.ts"],
+      fileStats: [{ path: "src/first.ts", added: 3, removed: 1 }],
+    });
+
+    await user.click(screen.getByRole("button", { name: "撤销" }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: "editRevertRequested",
+      notificationId: "notification-1",
+      paths: [],
+    });
+    expect(screen.queryByRole("button", { name: "src/first.ts" })).not.toBeInTheDocument();
+  });
+
+  it("reverts a single file when clicking its own revert button", async () => {
+    const user = userEvent.setup();
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    render(<App vscodeApi={{ postMessage }} />);
+
+    postHostMessage({
+      type: "editApplied",
+      notificationId: "notification-1",
+      files: ["src/first.ts", "src/second.ts"],
+      fileStats: [],
+    });
+
+    await user.click(screen.getByRole("button", { name: "Revert src/first.ts" }));
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: "editRevertRequested",
+      notificationId: "notification-1",
+      paths: ["src/first.ts"],
+    });
+    expect(screen.queryByRole("button", { name: "src/first.ts" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "src/second.ts" })).toBeInTheDocument();
   });
 });

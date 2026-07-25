@@ -20,6 +20,7 @@
 
 - 先在 `test/workflow/toolRouter.test.ts` 编写显式提示、高成本工具和兜底选择的失败用例。
 - 根据任务文本、工具描述和显式提示选择已有工具。
+- `HIGH_COST_TOOLS`（当前含 `exploreCode`）在关键词匹配阶段被排除，仅在显式 `toolHints` 命中或作为兜底首选时才会分配给子代理，避免默认全量继承高成本索引查询。
 
 ### Task 4: `src/extension/agent/subagentContext.ts`（已完成）
 

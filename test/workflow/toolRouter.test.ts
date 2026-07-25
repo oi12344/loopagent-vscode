@@ -34,6 +34,24 @@ describe("ToolRouter", () => {
   it("returns no tools when none are available", () => {
     expect(selectTools("read a file", [])).toEqual([]);
   });
+
+  it("restricts selection to the role whitelist before applying hints", () => {
+    expect(names(selectTools("read the settings file", tools, ["exploreCode", "applyEdit"], ["exploreCode", "readFile"]))).toEqual([
+      "exploreCode",
+    ]);
+  });
+
+  it("falls back within the role whitelist when the task only matches an excluded tool", () => {
+    expect(names(selectTools("propose an edit", tools, undefined, ["exploreCode", "readFile"]))).toEqual(["readFile"]);
+  });
+
+  it("restricts the fallback tool to the role whitelist", () => {
+    expect(names(selectTools("xyz abc 123", tools, undefined, ["exploreCode", "readFile"]))).toEqual(["readFile"]);
+  });
+
+  it("returns no tools when the role whitelist excludes everything available", () => {
+    expect(selectTools("read a file", tools, undefined, ["nonexistentTool"])).toEqual([]);
+  });
 });
 
 function names(selected: ReactAgentTool[]): string[] {

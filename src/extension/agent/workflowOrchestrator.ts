@@ -2,6 +2,7 @@ import type { HostToWebviewMessage } from "../../shared/messages";
 import { createSubagentContext, type SubagentContext, type SubagentContextSnapshot } from "./subagentContext";
 import type { ReactAgentTool } from "./reactTypes";
 import { validateDAG } from "./workflow/dagValidator";
+import { resolveRole } from "./workflow/roleRegistry";
 import { selectTools } from "./workflow/toolRouter";
 import type { CreateSubagentConfig, SubagentResult, SubagentRunnerFactory, SubagentStatus, WorkflowLimits } from "./workflow/types";
 
@@ -116,6 +117,7 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
       const runner = await options.createRunner({
         subagentId: snapshot.id,
         task: snapshot.task,
+        role: snapshot.role,
         signal: controller.signal,
         tools: snapshot.tools,
       });
@@ -185,11 +187,13 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
       const result = new Promise<SubagentResult>((resolve) => {
         resolveResult = resolve;
       });
+      const profile = resolveRole(config.role);
       const context = createSubagentContext({
         id,
         task: config.task,
+        role: profile.id,
         dependsOn: dependencies,
-        tools: selectTools(config.task, availableTools, config.toolHints),
+        tools: selectTools(config.task, availableTools, config.toolHints, profile.allowedTools),
       });
       const entry: SubagentEntry = {
         context,

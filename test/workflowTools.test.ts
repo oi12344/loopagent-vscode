@@ -9,11 +9,11 @@ describe("workflow tools", () => {
     const createSubagent = vi.fn(() => "subagent-1");
     const tools = createWorkflowTools({ orchestrator: fakeOrchestrator({ createSubagent }), availableTools });
 
-    await expect(invoke(tools, "spawnSubagent", { task: "Read the project", dependsOn: ["subagent-0"], toolHints: ["readFile"], timeoutMs: 5000 })).resolves.toBe(
+    await expect(invoke(tools, "spawnSubagent", { task: "Read the project", role: "reviewer", dependsOn: ["subagent-0"], toolHints: ["readFile"], timeoutMs: 5000 })).resolves.toBe(
       JSON.stringify({ subagentId: "subagent-1" }),
     );
     expect(createSubagent).toHaveBeenCalledWith(
-      { task: "Read the project", dependsOn: ["subagent-0"], toolHints: ["readFile"], timeoutMs: 5000 },
+      { task: "Read the project", role: "reviewer", dependsOn: ["subagent-0"], toolHints: ["readFile"], timeoutMs: 5000 },
       availableTools,
     );
     expect((toolByName(tools, "spawnSubagent").inputSchema.properties as Record<string, unknown>).timeoutMs).toEqual({
@@ -21,6 +21,26 @@ describe("workflow tools", () => {
       minimum: 1,
     });
     expect(toolByName(tools, "spawnSubagent").isConcurrencySafe?.({ task: "Read the project" })).toBe(true);
+  });
+
+  it("passes role to the orchestrator", async () => {
+    const createSubagent = vi.fn(() => "subagent-2");
+    const tools = createWorkflowTools({ orchestrator: fakeOrchestrator({ createSubagent }), availableTools });
+
+    await invoke(tools, "spawnSubagent", { task: "Plan the work", role: "planner" });
+    expect(createSubagent).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "planner" }),
+      availableTools,
+    );
+  });
+
+  it("omits role when not provided (orchestrator defaults to explorer)", async () => {
+    const createSubagent = vi.fn(() => "subagent-3");
+    const tools = createWorkflowTools({ orchestrator: fakeOrchestrator({ createSubagent }), availableTools });
+
+    await invoke(tools, "spawnSubagent", { task: "Explore the repo" });
+    const config = createSubagent.mock.calls[0]![0];
+    expect(config.role).toBeUndefined();
   });
 
   it("waits for requested subagents and serializes their results", async () => {

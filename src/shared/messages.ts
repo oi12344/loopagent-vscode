@@ -1,5 +1,26 @@
 import type { ChatMessage, ConversationSummary } from "./chatTypes";
 
+/** 单个文件的增删行统计 */
+export type EditFileStat = {
+  path: string;
+  added: number;
+  removed: number;
+};
+
+/** 消息附件（图片、文件等） */
+export type MessageAttachment = {
+  /** 附件类型 */
+  type: "image" | "file";
+  /** 本地文件系统路径 */
+  path: string;
+  /** 文件名 */
+  name: string;
+  /** 文件大小（字节） */
+  sizeBytes: number;
+  /** MIME 类型（可选） */
+  mimeType?: string;
+};
+
 /** AI 模型提供商标识 */
 export type ModelProviderId = "deepseek";
 
@@ -26,6 +47,7 @@ export type WebviewToHostMessage =
       task: string;
       mode?: TaskMode;
       model?: RunModelSelection;
+      attachments?: MessageAttachment[];
     }
   | {
       type: "continueConversation";
@@ -34,6 +56,7 @@ export type WebviewToHostMessage =
       userMessage: string;
       mode?: TaskMode;
       model?: RunModelSelection;
+      attachments?: MessageAttachment[];
     }
   | {
       /** Webview 挂载完成，可以安全接收恢复消息了 */
@@ -56,6 +79,24 @@ export type WebviewToHostMessage =
       type: "resumeRun";
       runId: string;
       conversationId: string;
+    }
+  | {
+      /** 用户在审批卡片上做出的选择，approvalId 对应 commandApprovalRequested 携带的 id */
+      type: "commandApprovalResolved";
+      approvalId: string;
+      approved: boolean;
+    }
+  | {
+      /** 用户在改动已应用的卡片上请求撤销部分或全部文件；paths 为要撤销的文件路径集合 */
+      type: "editRevertRequested";
+      notificationId: string;
+      paths: string[];
+    }
+  | {
+      /** 用户点击了改动列表里的某个文件，请求 host 打开该文件的 diff 预览 */
+      type: "editFileOpened";
+      notificationId: string;
+      path: string;
     };
 
 export type HostToWebviewMessage =
@@ -70,6 +111,37 @@ export type HostToWebviewMessage =
       type: "agentEvent";
       runId: string;
       message: string;
+    }
+  | {
+      /** 工具调用开始：携带工具名和人类可读的输入摘要，用于并发工具调用的时间线展示 */
+      type: "toolCallStarted";
+      runId: string;
+      callId: string;
+      toolName: string;
+      input: string;
+    }
+  | {
+      /** 工具调用结束：按 callId 匹配上面的 toolCallStarted，携带截断后的输出 */
+      type: "toolCallFinished";
+      runId: string;
+      callId: string;
+      succeeded: boolean;
+      output: string;
+    }
+  | {
+      /** 请求用户审批一次命令执行；面板不可见时由 host 侧回退到原生弹窗，不会发出此消息 */
+      type: "commandApprovalRequested";
+      approvalId: string;
+      command: string;
+      cwd: string;
+    }
+  | {
+      /** 一次代码改动已直接写入工作区（可能涉及多个文件）；用户可在此卡片上撤销部分或全部文件 */
+      type: "editApplied";
+      notificationId: string;
+      files: string[];
+      /** 每个文件的增删行统计，与 files 一一对应 */
+      fileStats: EditFileStat[];
     }
   | {
       type: "workflowStateChanged";

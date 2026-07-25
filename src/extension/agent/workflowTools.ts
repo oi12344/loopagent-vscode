@@ -1,6 +1,6 @@
 import type { ReactAgentTool } from "./reactTypes";
 import type { WorkflowOrchestrator } from "./workflowOrchestrator";
-import type { CreateSubagentConfig, SubagentResult } from "./workflow/types";
+import type { CreateSubagentConfig, SubagentResult, SubagentRoleId } from "./workflow/types";
 
 type WorkflowToolsOptions = {
   orchestrator: WorkflowOrchestrator;
@@ -16,6 +16,7 @@ export function createWorkflowTools({ orchestrator, availableTools }: WorkflowTo
         type: "object",
         properties: {
           task: { type: "string", minLength: 1 },
+          role: { type: "string", enum: ["explorer", "reviewer", "planner"] },
           dependsOn: { type: "array", items: { type: "string", minLength: 1 } },
           toolHints: { type: "array", items: { type: "string", minLength: 1 } },
           timeoutMs: { type: "integer", minimum: 1 },
@@ -66,10 +67,11 @@ export function createWorkflowTools({ orchestrator, availableTools }: WorkflowTo
 function parseCreateSubagentInput(input: unknown): CreateSubagentConfig {
   const record = requireRecord(input);
   const task = requireString(record.task, "task");
+  const role = record.role === undefined ? undefined : requireRole(record.role);
   const dependsOn = record.dependsOn === undefined ? undefined : requireStringArray(record.dependsOn, "dependsOn");
   const toolHints = record.toolHints === undefined ? undefined : requireStringArray(record.toolHints, "toolHints");
   const timeoutMs = record.timeoutMs === undefined ? undefined : requireTimeout(record.timeoutMs);
-  return { task, ...(dependsOn && { dependsOn }), ...(toolHints && { toolHints }), ...(timeoutMs && { timeoutMs }) };
+  return { task, ...(role && { role }), ...(dependsOn && { dependsOn }), ...(toolHints && { toolHints }), ...(timeoutMs && { timeoutMs }) };
 }
 
 function parseStringArray(input: unknown, property: string): string[] {
@@ -106,4 +108,13 @@ function requireTimeout(value: unknown): number {
     throw new Error("timeoutMs must be a positive safe integer");
   }
   return value;
+}
+
+const VALID_ROLES: ReadonlySet<string> = new Set(["explorer", "reviewer", "planner"]);
+
+function requireRole(value: unknown): SubagentRoleId {
+  if (typeof value !== "string" || !VALID_ROLES.has(value)) {
+    throw new Error(`role must be one of: ${[...VALID_ROLES].join(", ")}`);
+  }
+  return value as SubagentRoleId;
 }

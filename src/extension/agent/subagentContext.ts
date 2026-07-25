@@ -1,9 +1,11 @@
 import type { ReactAgentMessage, ReactAgentTool } from "./reactTypes";
-import type { SubagentResult, SubagentStatus } from "./workflow/types";
+import type { SubagentResult, SubagentRoleId, SubagentStatus } from "./workflow/types";
+import { DEFAULT_ROLE } from "./workflow/roleRegistry";
 
 export type CreateSubagentContextInput = {
   id: string;
   task: string;
+  role?: SubagentRoleId;
   dependsOn?: readonly string[];
   tools?: readonly ReactAgentTool[];
 };
@@ -11,6 +13,7 @@ export type CreateSubagentContextInput = {
 export type SubagentContextSnapshot = {
   readonly id: string;
   readonly task: string;
+  readonly role: SubagentRoleId;
   readonly dependsOn: readonly string[];
   readonly tools: readonly ReactAgentTool[];
   readonly status: SubagentStatus;
@@ -27,7 +30,7 @@ export type SubagentContext = {
   appendMessage(message: ReactAgentMessage): void;
 };
 
-export function createSubagentContext({ id, task, dependsOn = [], tools = [] }: CreateSubagentContextInput): SubagentContext {
+export function createSubagentContext({ id, task, role = DEFAULT_ROLE, dependsOn = [], tools = [] }: CreateSubagentContextInput): SubagentContext {
   let status: SubagentStatus = "pending";
   let result: SubagentResult | undefined;
   let startedAt: Date | undefined;
@@ -41,6 +44,7 @@ export function createSubagentContext({ id, task, dependsOn = [], tools = [] }: 
       return Object.freeze({
         id,
         task,
+        role,
         dependsOn: dependencies,
         tools: assignedTools,
         status,

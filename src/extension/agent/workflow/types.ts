@@ -3,8 +3,17 @@ import type { ReactAgentTool } from "../reactTypes";
 
 export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
+export type SubagentRoleId = "explorer" | "reviewer" | "planner";
+
+export type SubagentRoleProfile = {
+  id: SubagentRoleId;
+  systemPrompt: string;
+  allowedTools: readonly string[];
+};
+
 export type CreateSubagentConfig = {
   task: string;
+  role?: SubagentRoleId;
   dependsOn?: string[];
   toolHints?: string[];
   timeoutMs?: number;
@@ -27,6 +36,7 @@ export type WorkflowLimits = {
 export type SubagentRunnerFactoryInput = {
   subagentId: string;
   task: string;
+  role: SubagentRoleId;
   signal: AbortSignal;
   tools: readonly ReactAgentTool[];
 };

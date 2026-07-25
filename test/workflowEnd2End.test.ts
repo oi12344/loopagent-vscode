@@ -37,7 +37,7 @@ describe("workflow end to end", () => {
     await vi.waitFor(() => expect(started).toEqual([firstId, secondId]));
     expect(runnerInputs).toEqual([
       { subagentId: firstId, toolNames: ["readFile"] },
-      { subagentId: secondId, toolNames: ["writeFile"] },
+      { subagentId: secondId, toolNames: ["readFile"] },
     ]);
     releases[0].resolve();
     await vi.waitFor(() => expect(started).toEqual([firstId, secondId, dependentId]));
@@ -62,6 +62,34 @@ describe("workflow end to end", () => {
     expect(events.filter((event) => event.type === "SubagentCreated")).toHaveLength(3);
     expect(events.filter((event) => event.type === "SubagentStatusChanged" && event.status === "running")).toHaveLength(3);
     expect(events.filter((event) => event.type === "SubagentStatusChanged" && event.status === "completed")).toHaveLength(3);
+  });
+
+  it("routes tools by role whitelist and passes the resolved role to each runner", async () => {
+    const runnerInputs: Array<{ role: string; toolNames: string[] }> = [];
+    const allTools: ReactAgentTool[] = [
+      ...availableTools,
+      { name: "exploreCode", description: "Search code", inputSchema: {}, invoke: () => "" },
+    ];
+    const orchestrator = createWorkflowOrchestrator({
+      createRunner({ role, tools }) {
+        runnerInputs.push({ role, toolNames: tools.map((t) => t.name) });
+        return runner(async function* ({ runId }) {
+          yield { type: "assistantDelta", runId, content: "done" };
+        });
+      },
+    });
+    const workflowTools = createWorkflowTools({ orchestrator, availableTools: allTools });
+
+    const explorerId = await spawn(workflowTools, { task: "Explore the codebase", role: "explorer" });
+    const reviewerId = await spawn(workflowTools, { task: "Review the code", role: "reviewer" });
+    await wait(workflowTools, [explorerId, reviewerId]);
+
+    expect(runnerInputs[0]).toMatchObject({ role: "explorer" });
+    expect(runnerInputs[1]).toMatchObject({ role: "reviewer" });
+    for (const { toolNames } of runnerInputs) {
+      expect(toolNames).not.toContain("writeFile");
+      expect(toolNames).not.toContain("runCommand");
+    }
   });
 });
 

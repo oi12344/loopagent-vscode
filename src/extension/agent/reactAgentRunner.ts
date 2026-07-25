@@ -5,6 +5,7 @@ import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import type { ReactAgentMessage, ReactAgentRunOutcome, ReactAgentTool, ReactAgentToolRequest, ReactModelTurn } from "./reactTypes";
 import { createToolRegistry } from "./toolRegistry";
 import { createDefaultReactTools } from "./tools";
+import type { ImageAnalysisContext } from "../vision/imageAnalysisService";
 
 const MAX_CONSECUTIVE_TOOL_FAILURES = 3;
 
@@ -15,9 +16,11 @@ export type CreateReactAgentRunnerOptions = {
   maxSteps?: number;
   maxToolRequestsPerStep?: number;
   requiredToolNames?: string[];
-  systemPromptProvider?: (request: AgentRunRequest) => string | Promise<string>;
+  systemPromptProvider?: (request: AgentRunRequest, imageAnalyses?: ImageAnalysisContext[]) => string | Promise<string>;
   onCheckpoint?: (checkpoint: InterruptedRunCheckpoint) => void | Promise<void>;
   recordMemoryRunOutcome?: (outcome: ReactAgentRunOutcome) => void | Promise<void>;
+  /** 图片分析结果注入函数（由外部 extension.ts 提供） */
+  analyzeImages?: (request: AgentRunRequest) => Promise<ImageAnalysisContext[]>;
 };
 
 export function createReactAgentRunner({
@@ -30,6 +33,7 @@ export function createReactAgentRunner({
   systemPromptProvider,
   onCheckpoint,
   recordMemoryRunOutcome,
+  analyzeImages,
 }: CreateReactAgentRunnerOptions): AgentRunner {
   const toolRegistry = createToolRegistry(tools);
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
@@ -59,7 +63,20 @@ export function createReactAgentRunner({
         const toolFailures = new Map<string, number>(); // 工具名 → 连续失败数，用于失败熔断
 
         if (!resumedCheckpoint) {
-          const systemPrompt = await resolveSystemPrompt(systemPromptProvider, request);
+          // 分析用户上传的图片（如果有）
+          let imageAnalyses: ImageAnalysisContext[] = [];
+          if (analyzeImages && request.attachments && request.attachments.length > 0) {
+            try {
+              yield { type: "assistantThinking", runId, message: "分析上传的图片..." } satisfies HostToWebviewMessage;
+              imageAnalyses = await analyzeImages(request);
+              console.log(`[ReactAgent] Analyzed ${imageAnalyses.length} image(s)`);
+            } catch (error) {
+              console.error("[ReactAgent] Image analysis failed:", error);
+              // 图片分析失败不应阻塞对话，继续执行
+            }
+          }
+
+          const systemPrompt = await resolveSystemPrompt(systemPromptProvider, request, imageAnalyses);
 
           if (systemPrompt) {
             messages.push({ role: "system", content: systemPrompt });
@@ -166,11 +183,13 @@ export function createReactAgentRunner({
                 return;
               }
 
-              const requestMessage =
-                request.name === "exploreCode"
-                  ? `Running tool exploreCode (step ${step}, call ${call}): ${getExploreCodeQueryPreview(request.input)}`
-                  : `Running tool ${request.name}`;
-              yield { type: "agentEvent", runId, message: requestMessage } satisfies HostToWebviewMessage;
+              yield {
+                type: "toolCallStarted",
+                runId,
+                callId: `${step}-${call}`,
+                toolName: request.name,
+                input: getToolInputPreview(request.name, request.input),
+              } satisfies HostToWebviewMessage;
             }
 
             if (signal.aborted) {
@@ -212,23 +231,18 @@ export function createReactAgentRunner({
               const outcome = outcomes[index]!;
               const content = outcome.content;
               if (outcome.succeeded) successfulTools.add(request.name);
-              if (request.name === "exploreCode") {
-                yield {
-                  type: "agentEvent",
-                  runId,
-                  message: `Tool exploreCode returned (step ${step}, call ${call}): ${content.length} chars`,
-                } satisfies HostToWebviewMessage;
-              }
+              yield {
+                type: "toolCallFinished",
+                runId,
+                callId: `${step}-${call}`,
+                succeeded: outcome.succeeded,
+                output: getToolOutputPreview(content),
+              } satisfies HostToWebviewMessage;
               if (outcome.succeeded) {
                 succeededCalls.set(`${request.name}:${request.rawArguments}`, content.slice(0, 200));
                 toolFailures.set(request.name, 0);
                 evidence.push(...outcome.evidence);
               } else {
-                yield {
-                  type: "agentEvent",
-                  runId,
-                  message: `Tool ${request.name} failed (step ${step}, call ${call}): ${content}`,
-                } satisfies HostToWebviewMessage;
                 const failures = (toolFailures.get(request.name) ?? 0) + 1;
                 toolFailures.set(request.name, failures);
                 if (failures >= MAX_CONSECUTIVE_TOOL_FAILURES) {
@@ -314,6 +328,48 @@ function isConcurrencySafe(
   }
 }
 
+const MAX_TOOL_OUTPUT_PREVIEW_LENGTH = 2_000;
+
+function getToolInputPreview(toolName: string, input: unknown): string {
+  if (toolName === "exploreCode") {
+    return getExploreCodeQueryPreview(input);
+  }
+  if (toolName === "runCommand") {
+    return getRunCommandInputPreview(input);
+  }
+  return getGenericInputPreview(input);
+}
+
+function getToolOutputPreview(content: string): string {
+  return content.length > MAX_TOOL_OUTPUT_PREVIEW_LENGTH
+    ? `${content.slice(0, MAX_TOOL_OUTPUT_PREVIEW_LENGTH)}\n...(输出已截断)`
+    : content;
+}
+
+function getRunCommandInputPreview(input: unknown): string {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return "<invalid command>";
+  }
+
+  const command = (input as Record<string, unknown>).command;
+  if (typeof command !== "string") {
+    return "<invalid command>";
+  }
+
+  const cwd = (input as Record<string, unknown>).cwd;
+  const normalized = command.trim();
+  return typeof cwd === "string" && cwd.trim().length > 0 ? `${normalized} (cwd: ${cwd.trim()})` : normalized;
+}
+
+function getGenericInputPreview(input: unknown): string {
+  try {
+    const serialized = JSON.stringify(input) ?? "<empty input>";
+    return serialized.length > 200 ? `${serialized.slice(0, 200)}...` : serialized;
+  } catch {
+    return "<unserializable input>";
+  }
+}
+
 function getExploreCodeQueryPreview(input: unknown): string {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     return "<invalid query>";
@@ -343,13 +399,14 @@ function getExploreCodeQueryPreview(input: unknown): string {
 async function resolveSystemPrompt(
   provider: CreateReactAgentRunnerOptions["systemPromptProvider"],
   request: AgentRunRequest,
+  imageAnalyses?: ImageAnalysisContext[],
 ): Promise<string | undefined> {
   if (!provider) {
     return undefined;
   }
 
   try {
-    const prompt = await provider(request);
+    const prompt = await provider(request, imageAnalyses);
     return prompt.trim().length > 0 ? prompt : undefined;
   } catch {
     return undefined;

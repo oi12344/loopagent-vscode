@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createReactAgentRunner } from "../src/extension/agent/reactAgentRunner";
+import { createRunCommandTool } from "../src/extension/agent/runCommandTool";
 import type { AgentRunner } from "../src/extension/agentRunner";
 import type { InterruptedRunCheckpoint } from "../src/shared/chatTypes";
 import type { HostToWebviewMessage } from "../src/shared/messages";
@@ -289,7 +290,8 @@ describe("createReactAgentRunner", () => {
       { type: "runStarted", runId: "run-1", task: "Inspect workspace" },
       { type: "assistantStarted", runId: "run-1", provider: "ReAct Agent" },
       { type: "assistantThinking", runId: "run-1", message: "Planning step 1" },
-      { type: "agentEvent", runId: "run-1", message: "Running tool echoObservation" },
+      { type: "toolCallStarted", runId: "run-1", callId: "1-1", toolName: "echoObservation", input: '"workspace"' },
+      { type: "toolCallFinished", runId: "run-1", callId: "1-1", succeeded: true, output: "observed workspace" },
       { type: "assistantThinking", runId: "run-1", message: "Planning step 2" },
       { type: "assistantDelta", runId: "run-1", content: "Used observation." },
       { type: "assistantFinished", runId: "run-1" },
@@ -378,7 +380,7 @@ describe("createReactAgentRunner", () => {
       },
     });
 
-    const messages = await collectRunnerMessages(runner);
+    await collectRunnerMessages(runner);
 
     expect(invoke).toHaveBeenCalledTimes(2);
     expect(otherInvoke).toHaveBeenCalledTimes(1);
@@ -417,7 +419,6 @@ describe("createReactAgentRunner", () => {
         content: "other context",
       },
     ]);
-    expect(messages.some((message) => message.type === "agentEvent" && message.message.includes("Combined"))).toBe(false);
   });
 
   it("executes ten same-name safe tool requests", async () => {
@@ -529,6 +530,52 @@ describe("createReactAgentRunner", () => {
     release();
 
     await expect(run).resolves.toContainEqual({ type: "runFinished", runId: "run-1" });
+  });
+
+  it("runs concurrent runCommand requests through the real tool", async () => {
+    const approve = vi.fn(async () => "Run");
+    const runCommandTool = createRunCommandTool(
+      {
+        workspace: { workspaceFolders: [{ uri: { fsPath: process.cwd() } }] },
+        window: { showWarningMessage: approve },
+      } as never,
+      { timeoutMs: 5_000 },
+    );
+    let turn = 0;
+    const runner = createReactAgentRunner({
+      tools: [runCommandTool],
+      modelTurn: async () => {
+        turn += 1;
+        if (turn > 1) return { kind: "final", content: "Ran both commands." };
+        return {
+          kind: "toolRequests",
+          assistantMessage: {
+            role: "assistant",
+            content: "",
+            toolCalls: [
+              { id: "tool-1", type: "function", function: { name: "runCommand", arguments: '{"command":"echo first"}' } },
+              { id: "tool-2", type: "function", function: { name: "runCommand", arguments: '{"command":"echo second"}' } },
+            ],
+          },
+          requests: [
+            { id: "tool-1", name: "runCommand", rawArguments: '{"command":"echo first"}', input: { command: "echo first" } },
+            { id: "tool-2", name: "runCommand", rawArguments: '{"command":"echo second"}', input: { command: "echo second" } },
+          ],
+        };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(approve).toHaveBeenCalledTimes(2);
+    expect(messages.filter((message) => message.type === "toolCallStarted")).toEqual([
+      { type: "toolCallStarted", runId: "run-1", callId: "1-1", toolName: "runCommand", input: "echo first" },
+      { type: "toolCallStarted", runId: "run-1", callId: "1-2", toolName: "runCommand", input: "echo second" },
+    ]);
+    expect(messages.filter((message) => message.type === "toolCallFinished")).toEqual([
+      expect.objectContaining({ type: "toolCallFinished", runId: "run-1", callId: "1-1", succeeded: true }),
+      expect.objectContaining({ type: "toolCallFinished", runId: "run-1", callId: "1-2", succeeded: true }),
+    ]);
   });
 
   it("runs requests without a concurrency declaration serially", async () => {
@@ -939,19 +986,23 @@ describe("createReactAgentRunner", () => {
 
     const messages = await collectRunnerMessages(runner);
 
-    expect(messages.filter((message) => message.type === "agentEvent")).toEqual(
+    expect(messages.filter((message) => message.type === "toolCallStarted" || message.type === "toolCallFinished")).toEqual(
       expectedPreviews.flatMap((preview, index) => {
         const step = index + 1;
         return [
           {
-            type: "agentEvent",
+            type: "toolCallStarted",
             runId: "run-1",
-            message: `Running tool exploreCode (step ${step}, call 1): ${preview}`,
+            callId: `${step}-1`,
+            toolName: "exploreCode",
+            input: preview,
           },
           {
-            type: "agentEvent",
+            type: "toolCallFinished",
             runId: "run-1",
-            message: `Tool exploreCode returned (step ${step}, call 1): 12 chars`,
+            callId: `${step}-1`,
+            succeeded: true,
+            output: "code context",
           },
         ];
       }),
@@ -1016,8 +1067,20 @@ describe("createReactAgentRunner", () => {
 
     const messages = await collectRunnerMessages(runner);
 
-    expect(messages).toContainEqual({ type: "agentEvent", runId: "run-1", message: "Running tool missingTool" });
-    expect(messages).toContainEqual({ type: "agentEvent", runId: "run-1", message: "Tool missingTool failed (step 1, call 1): Tool error: Unknown tool \"missingTool\"" });
+    expect(messages).toContainEqual({
+      type: "toolCallStarted",
+      runId: "run-1",
+      callId: "1-1",
+      toolName: "missingTool",
+      input: '"workspace"',
+    });
+    expect(messages).toContainEqual({
+      type: "toolCallFinished",
+      runId: "run-1",
+      callId: "1-1",
+      succeeded: false,
+      output: 'Tool error: Unknown tool "missingTool"',
+    });
     expect(messages).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "Unable to use unknown tool, proceeding with what I know." });
     expect(messages).toContainEqual({ type: "runFinished", runId: "run-1" });
   });
@@ -1151,7 +1214,7 @@ describe("createReactAgentRunner", () => {
     await iterator.next();
     await iterator.next();
     await expect(iterator.next()).resolves.toEqual({
-      value: { type: "agentEvent", runId: "run-1", message: "Running tool exploreCode (step 1, call 1): first" },
+      value: { type: "toolCallStarted", runId: "run-1", callId: "1-1", toolName: "exploreCode", input: "first" },
       done: false,
     });
     controller.abort();

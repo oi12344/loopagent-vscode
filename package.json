@@ -46,6 +46,10 @@
       {
         "command": "loopagent.forgetProjectMemory",
         "title": "LoopAgent: Forget Project Memory"
+      },
+      {
+        "command": "loopagent.undoLastEdit",
+        "title": "LoopAgent: Undo Last Edit"
       }
     ],
     "viewsContainers": {

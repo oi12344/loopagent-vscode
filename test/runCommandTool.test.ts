@@ -32,6 +32,47 @@ describe("runCommand tool", () => {
     await rm(temporaryRoot, { recursive: true, force: true });
   });
 
+  it("declares itself safe for concurrent execution", () => {
+    const tool = createTool(workspaceRoot, approve);
+    expect(tool.isConcurrencySafe?.({ command: "echo hi" })).toBe(true);
+  });
+
+  it("uses an injected approver instead of the native modal when provided", async () => {
+    const injectedApprove = vi.fn(async () => true);
+    const tool = createRunCommandTool(
+      {
+        workspace: { workspaceFolders: [{ uri: { fsPath: workspaceRoot } }] },
+        window: { showWarningMessage: approve },
+      } as never,
+      { timeoutMs: 5_000, approve: injectedApprove },
+    );
+
+    const result = await invoke(tool, { command: nodeCommand("process.stdout.write('ok')") });
+
+    expect(injectedApprove).toHaveBeenCalledWith(
+      expect.objectContaining({ command: nodeCommand("process.stdout.write('ok')"), cwd: workspaceRoot }),
+    );
+    expect(approve).not.toHaveBeenCalled();
+    expect(result).toContain("stdout:\nok");
+  });
+
+  it("rejects the command when the injected approver returns false", async () => {
+    const marker = join(workspaceRoot, "should-not-exist.txt");
+    const injectedApprove = vi.fn(async () => false);
+    const tool = createRunCommandTool(
+      {
+        workspace: { workspaceFolders: [{ uri: { fsPath: workspaceRoot } }] },
+        window: { showWarningMessage: approve },
+      } as never,
+      { timeoutMs: 5_000, approve: injectedApprove },
+    );
+
+    await expect(
+      invoke(tool, { command: nodeCommand(`require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`) }),
+    ).resolves.toBe("Command rejected by user");
+    await expect(access(marker)).rejects.toThrow();
+  });
+
   it("requires approval and returns cwd, exit code, stdout and stderr", async () => {
     const tool = createTool(workspaceRoot, approve);
     const result = await invoke(tool, {

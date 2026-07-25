@@ -1,4 +1,4 @@
-import type { HostToWebviewMessage, TaskMode } from "../shared/messages";
+import type { HostToWebviewMessage, TaskMode, MessageAttachment } from "../shared/messages";
 import type { ChatMessage, InterruptedRunCheckpoint } from "../shared/chatTypes";
 import type { ReactAgentMessage } from "./agent/reactTypes";
 
@@ -12,6 +12,8 @@ export type AgentRunRequest = {
   requiredToolNames?: string[];
   conversationId?: string;
   resumeState?: AgentResumeState;
+  /** 用户上传的附件（图片、文件等） */
+  attachments?: MessageAttachment[];
 };
 
 export type AgentResumeState = { kind: "react"; checkpoint: InterruptedRunCheckpoint };
@@ -31,6 +33,7 @@ export type StartAgentRunOptions = {
   conversationHistory?: ChatMessage[];
   conversationId?: string;
   resumeState?: AgentResumeState;
+  attachments?: MessageAttachment[];
 };
 
 export type AgentRunHandle = {
@@ -48,6 +51,7 @@ export function startAgentRun({
   conversationHistory,
   conversationId,
   resumeState,
+  attachments,
 }: StartAgentRunOptions): AgentRunHandle {
   const abortController = new AbortController();
   const request: AgentRunRequest = {
@@ -58,6 +62,7 @@ export function startAgentRun({
     conversationHistory,
     conversationId,
     resumeState,
+    attachments,
   };
 
   const done = pumpRunMessages(runner, request, postMessage);

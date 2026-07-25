@@ -1,0 +1,26 @@
+{
+  "name": "loopagent-vscode",
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "jest",
+
+    "download:model": "python scripts/download_model.py",
+    "build:vision:linux": "bash scripts/build-vision-bundle.sh linux",
+    "build:vision:windows": "bash scripts/build-vision-bundle.sh windows",
+    "build:vision:macos": "bash scripts/build-vision-bundle.sh macos",
+    "build:vision": "bash scripts/build-vision-bundle.sh",
+
+    "package:lite": "vsce package --out dist/loopagent-lite.vsix",
+    "package:full": "npm run build:vision && npm run copy:binaries && vsce package --out dist/loopagent-full.vsix",
+    "copy:binaries": "node scripts/copy-binaries.js",
+
+    "clean": "rm -rf dist build models/moondream2 *.spec"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.0.0",
+    "vsce": "^2.15.0"
+  }
+}

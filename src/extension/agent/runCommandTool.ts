@@ -9,9 +9,19 @@ import type { ReactAgentTool } from "./reactTypes";
 const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024;
 
+export type RunCommandApprovalRequest = {
+  command: string;
+  cwd: string;
+  signal: AbortSignal;
+};
+
+export type RunCommandApprover = (request: RunCommandApprovalRequest) => Promise<boolean>;
+
 export type RunCommandToolOptions = {
   timeoutMs?: number;
   maxOutputBytes?: number;
+  /** 审批来源；默认回退到原生 showWarningMessage 模态框 */
+  approve?: RunCommandApprover;
 };
 
 type RunCommandInput = {
@@ -28,10 +38,12 @@ export function createRunCommandTool(
 ): ReactAgentTool {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+  const approve = options.approve ?? createNativeApprover(vscodeApi);
 
   return {
     name: "runCommand",
     description: "Run a non-interactive command inside the current workspace after explicit user approval.",
+    isConcurrencySafe: () => true,
     inputSchema: {
       type: "object",
       properties: {
@@ -45,17 +57,24 @@ export function createRunCommandTool(
       const request = parseRunCommandInput(input);
       signal.throwIfAborted();
       const cwd = await resolveWorkspaceCwd(vscodeApi, request.cwd);
-      const approved = await vscodeApi.window.showWarningMessage(
-        "LoopAgent wants to run a command.",
-        { modal: true, detail: `Command:\n${request.command}\n\nWorking directory:\n${cwd}` },
-        "Run",
-      );
-      if (approved !== "Run") {
+      const approved = await approve({ command: request.command, cwd, signal });
+      if (!approved) {
         return "Command rejected by user";
       }
       signal.throwIfAborted();
       return executeCommand(request.command, cwd, signal, timeoutMs, maxOutputBytes);
     },
+  };
+}
+
+function createNativeApprover(vscodeApi: Pick<typeof vscode, "window">): RunCommandApprover {
+  return async ({ command, cwd }) => {
+    const approved = await vscodeApi.window.showWarningMessage(
+      "LoopAgent wants to run a command.",
+      { modal: true, detail: `Command:\n${command}\n\nWorking directory:\n${cwd}` },
+      "Run",
+    );
+    return approved === "Run";
   };
 }
 

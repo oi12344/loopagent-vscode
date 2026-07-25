@@ -221,6 +221,271 @@ h1 {
   margin: 0;
 }
 
+.tool-calls-details {
+  background: var(--vscode-textBlockQuote-background, transparent);
+  border-left: 2px solid var(--vscode-charts-blue, var(--vscode-textLink-foreground));
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.tool-calls-details summary {
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.tool-calls-list {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.tool-call-entry {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.tool-call-header {
+  align-items: baseline;
+  color: var(--vscode-descriptionForeground);
+  display: flex;
+  gap: 6px;
+}
+
+.tool-call-name {
+  font-weight: 600;
+}
+
+.tool-call-input {
+  color: var(--vscode-editor-foreground);
+  white-space: pre-wrap;
+}
+
+.tool-call-failed .tool-call-status-icon {
+  color: var(--vscode-errorForeground);
+}
+
+.tool-call-succeeded .tool-call-status-icon {
+  color: var(--vscode-charts-green, var(--vscode-testing-iconPassed, currentColor));
+}
+
+.tool-call-output-details summary {
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.tool-call-output {
+  background: var(--vscode-textCodeBlock-background, transparent);
+  font-size: 11px;
+  margin: 4px 0 0;
+  max-height: 240px;
+  overflow: auto;
+  padding: 4px 6px;
+  white-space: pre-wrap;
+}
+
+.command-approvals {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.command-approval-card {
+  background: var(--vscode-textBlockQuote-background, transparent);
+  border: 1px solid var(--vscode-editorWarning-foreground, var(--vscode-textLink-foreground));
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+
+.command-approval-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+
+.command-approval-command {
+  background: var(--vscode-textCodeBlock-background, transparent);
+  font-size: 12px;
+  margin: 0 0 6px;
+  max-height: 160px;
+  overflow: auto;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+}
+
+.command-approval-cwd {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+
+.command-approval-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.chip-button-primary {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.chip-button-primary:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.edit-approvals {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.edit-approval-card {
+  background: var(--vscode-textBlockQuote-background, transparent);
+  border: 1px solid var(--vscode-editorWarning-foreground, var(--vscode-textLink-foreground));
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+
+.edit-approval-header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.edit-approval-title {
+  flex: 1 1 auto;
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.edit-approval-total-stat {
+  display: inline-flex;
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  gap: 6px;
+}
+
+.edit-approval-header-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+}
+
+.edit-approval-search {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 3px;
+  box-sizing: border-box;
+  color: var(--vscode-input-foreground);
+  font-size: 12px;
+  margin: 0 0 6px;
+  padding: 4px 6px;
+  width: 100%;
+}
+
+.edit-approval-file-list {
+  list-style: none;
+  margin: 0 0 8px;
+  max-height: 160px;
+  overflow: auto;
+  padding: 0;
+}
+
+.edit-approval-file-row {
+  align-items: center;
+  border-radius: 3px;
+  display: flex;
+  gap: 6px;
+}
+
+.edit-approval-file-row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.edit-approval-file-icon {
+  flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  width: 18px;
+}
+
+.edit-approval-file-button {
+  align-items: baseline;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  display: flex;
+  flex: 1 1 auto;
+  font-size: 12px;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 6px;
+  text-align: left;
+}
+
+.edit-approval-file-name {
+  flex: none;
+  overflow-wrap: anywhere;
+}
+
+.edit-approval-file-dir {
+  color: var(--vscode-descriptionForeground);
+  flex: 1 1 auto;
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.edit-approval-file-stat {
+  display: inline-flex;
+  flex: none;
+  font-size: 11px;
+  gap: 4px;
+  padding-right: 6px;
+}
+
+.edit-approval-file-revert {
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  flex: none;
+  font-size: 12px;
+  padding: 3px 6px;
+}
+
+.edit-approval-file-revert:hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+  color: var(--vscode-foreground);
+}
+
+.edit-approval-stat-added {
+  color: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-charts-green));
+}
+
+.edit-approval-stat-removed {
+  color: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-errorForeground));
+}
+
 .workflow-timeline {
   border-left: 2px solid var(--vscode-charts-blue, var(--vscode-textLink-foreground));
   color: var(--vscode-descriptionForeground);

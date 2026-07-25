@@ -6,22 +6,33 @@ export function selectTools(
   task: string,
   availableTools: readonly ReactAgentTool[],
   toolHints?: readonly string[],
+  allowedTools?: readonly string[],
 ): ReactAgentTool[] {
-  if (availableTools.length === 0) return [];
+  const scopedTools = scopeToAllowedTools(availableTools, allowedTools);
+  if (scopedTools.length === 0) return [];
 
   const hintedNames = new Set(toolHints?.map((hint) => hint.toLowerCase()));
   if (hintedNames.size > 0) {
-    const hintedTools = availableTools.filter((tool) => hintedNames.has(tool.name.toLowerCase()));
+    const hintedTools = scopedTools.filter((tool) => hintedNames.has(tool.name.toLowerCase()));
     if (hintedTools.length > 0) return hintedTools;
   }
 
   const taskWords = words(task);
-  const matchedTools = availableTools.filter(
+  const matchedTools = scopedTools.filter(
     (tool) => !HIGH_COST_TOOLS.has(tool.name.toLowerCase()) && [...words(`${tool.name} ${tool.description}`)].some((word) => taskWords.has(word)),
   );
   if (matchedTools.length > 0) return matchedTools;
 
-  return [availableTools.find((tool) => tool.name === "readFile") ?? availableTools[0]];
+  return [scopedTools.find((tool) => tool.name === "readFile") ?? scopedTools[0]];
+}
+
+function scopeToAllowedTools(
+  availableTools: readonly ReactAgentTool[],
+  allowedTools?: readonly string[],
+): ReactAgentTool[] {
+  if (!allowedTools) return [...availableTools];
+  const allowedNames = new Set(allowedTools.map((name) => name.toLowerCase()));
+  return availableTools.filter((tool) => allowedNames.has(tool.name.toLowerCase()));
 }
 
 function words(text: string): Set<string> {
