@@ -5,6 +5,8 @@ import { validateDAG } from "./workflow/dagValidator";
 import { resolveRole } from "./workflow/roleRegistry";
 import { selectTools } from "./workflow/toolRouter";
 import type { CreateSubagentConfig, SubagentResult, SubagentRunnerFactory, SubagentStatus, WorkflowLimits } from "./workflow/types";
+import type { ProjectMemory } from "../memory/projectMemory";
+import type { ReactAgentRunOutcome } from "../memory/types";
 
 export type WorkflowEvent =
   | { type: "SubagentCreated"; subagentId: string; task: string; dependsOn: readonly string[] }
@@ -17,6 +19,13 @@ export type WorkflowOrchestratorOptions = {
   createRunner: SubagentRunnerFactory;
   limits?: Partial<WorkflowLimits>;
   signal?: AbortSignal;
+  /**
+   * Best-effort outcome recording for subagent runs. Subagents themselves never get memory
+   * tools or read/write access -- the orchestrator records on their behalf at settle() time,
+   * the same way the main run's outcome is recorded in providerRegistry.ts. See the 2026-07-24
+   * spec's revised isolation clause.
+   */
+  projectMemory?: ProjectMemory;
 };
 
 export type WorkflowOrchestrator = {
@@ -43,6 +52,7 @@ type SubagentEntry = {
   resolveResult: (result: SubagentResult) => void;
   controller?: AbortController;
   timeout?: ReturnType<typeof setTimeout>;
+  expectedGeneration?: number;
 };
 
 export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions): WorkflowOrchestrator {
@@ -74,6 +84,28 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
     emit({ type: "SubagentStatusChanged", subagentId: snapshot.id, status: result.status });
 
     if (result.status !== "completed") cancelPendingDependents(snapshot.id);
+
+    recordSubagentOutcome(snapshot, result, entry.expectedGeneration);
+  }
+
+  function recordSubagentOutcome(
+    snapshot: SubagentContextSnapshot,
+    result: SubagentResult,
+    expectedGeneration: number | undefined,
+  ): void {
+    if (!options.projectMemory || expectedGeneration === undefined) return;
+    // Cancelled runs (timeout, user cancel, cascade from a failed dependency) never reflect
+    // the subagent's own work product -- nothing useful to record.
+    if (result.status === "cancelled") return;
+
+    const outcome: ReactAgentRunOutcome = {
+      runId: snapshot.id,
+      task: snapshot.task,
+      status: result.status,
+      ...(result.content !== undefined ? { finalContent: result.content } : {}),
+      evidence: [],
+    };
+    void options.projectMemory.recordOutcome(outcome, expectedGeneration);
   }
 
   function cancelPendingDependents(dependencyId: string): void {
@@ -201,6 +233,7 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
         messages: [],
         result,
         resolveResult,
+        expectedGeneration: options.projectMemory?.getGeneration(),
       };
 
       nextId += 1;

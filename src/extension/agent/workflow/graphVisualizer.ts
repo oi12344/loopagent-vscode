@@ -82,8 +82,8 @@ export function createGraphVisualizer(context: GraphComputationContext, dataFlow
 				label: truncateTask(node.config.task),
 				status: node.status,
 				role: node.config.role,
-				startedAt: node.context?.startedAt?.toString(),
-				finishedAt: node.context?.finishedAt?.toString(),
+				startedAt: node.startedAt?.toString(),
+				finishedAt: node.finishedAt?.toString(),
 				duration,
 				depth: depthMap.get(nodeId) ?? 0,
 				error: node.result?.error,
@@ -97,18 +97,18 @@ export function createGraphVisualizer(context: GraphComputationContext, dataFlow
 				});
 			}
 
-			if (node.context?.startedAt) {
+			if (node.startedAt) {
 				timeline.push({
-					timestamp: node.context.startedAt.toString(),
+					timestamp: node.startedAt.toString(),
 					nodeId,
 					event: "started",
 				});
 			}
 
-			if (node.context?.finishedAt) {
+			if (node.finishedAt) {
 				const event = node.status === "completed" ? "completed" : node.status === "failed" ? "failed" : "skipped";
 				timeline.push({
-					timestamp: node.context.finishedAt.toString(),
+					timestamp: node.finishedAt.toString(),
 					nodeId,
 					event: event as "completed" | "failed" | "skipped",
 					details: node.result?.error,
@@ -149,11 +149,8 @@ export function createGraphVisualizer(context: GraphComputationContext, dataFlow
 	}
 
 	function calculateDuration(node: DynamicNode): number | undefined {
-		const started = node.context?.startedAt as any;
-		const finished = node.context?.finishedAt as any;
-
-		if (started && finished) {
-			return new Date(finished).getTime() - new Date(started).getTime();
+		if (node.startedAt && node.finishedAt) {
+			return node.finishedAt.getTime() - node.startedAt.getTime();
 		}
 
 		return undefined;
@@ -339,6 +336,7 @@ export function createGraphVisualizer(context: GraphComputationContext, dataFlow
 		lines.push("    classDef failed fill:#FF6B6B,stroke:#333,stroke-width:2px");
 		lines.push("    classDef pending fill:#D3D3D3,stroke:#333,stroke-width:2px");
 		lines.push("    classDef skipped fill:#A9A9A9,stroke:#333,stroke-width:1px,stroke-dasharray: 5 5");
+		lines.push("    classDef cancelled fill:#B0B0B0,stroke:#333,stroke-width:1px,stroke-dasharray: 2 2");
 
 		return lines.join("\n");
 	}
@@ -353,6 +351,8 @@ export function createGraphVisualizer(context: GraphComputationContext, dataFlow
 				return "⟳";
 			case "skipped":
 				return "⊘";
+			case "cancelled":
+				return "⊗";
 			default:
 				return "○";
 		}
@@ -369,6 +369,8 @@ export function createGraphVisualizer(context: GraphComputationContext, dataFlow
 				return "running";
 			case "skipped":
 				return "skipped";
+			case "cancelled":
+				return "cancelled";
 			default:
 				return "pending";
 		}

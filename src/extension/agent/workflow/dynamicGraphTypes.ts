@@ -1,8 +1,9 @@
 import type { SubagentResult, SubagentRoleId } from "./types";
+import type { DataFlowValue } from "./dataFlowManager";
 
 export type DynamicNodeId = string;
 
-export type NodeStatus = "pending" | "ready" | "running" | "completed" | "failed" | "skipped";
+export type NodeStatus = "pending" | "ready" | "running" | "completed" | "failed" | "skipped" | "cancelled";
 
 export type DynamicNodeConfig = {
 	id: DynamicNodeId;
@@ -12,6 +13,10 @@ export type DynamicNodeConfig = {
 	timeoutMs?: number;
 	inputMapping?: Record<string, string>;
 	condition?: NodeCondition;
+	dependsOn?: DynamicNodeId[];
+	/** On completion, writes this node's result.content into globalData under this key, making it readable via "$key" expressions. */
+	exportTo?: string;
+	retry?: { maxAttempts: number; backoffMs?: number };
 };
 
 export type NodeCondition = {
@@ -27,11 +32,14 @@ export type DynamicNode = {
 	result?: SubagentResult;
 	context?: Record<string, unknown>;
 	subagentId?: string;
+	startedAt?: Date;
+	finishedAt?: Date;
+	attempts?: number;
 };
 
 export type GraphComputationContext = {
 	nodes: Map<DynamicNodeId, DynamicNode>;
-	globalData: Map<string, unknown>;
+	globalData: Map<string, DataFlowValue>;
 	executionOrder: DynamicNodeId[];
 };
 
@@ -46,6 +54,7 @@ export type DynamicGraphDefinition = {
 	resolvers?: Map<DynamicNodeId, DependencyResolver>;
 	maxNodes?: number;
 	maxDepth?: number;
+	initialGlobalData?: Record<string, DataFlowValue>;
 };
 
 export type GraphExecutionEvent =
@@ -53,6 +62,13 @@ export type GraphExecutionEvent =
 	| { type: "NodeStatusChanged"; nodeId: DynamicNodeId; status: NodeStatus }
 	| { type: "NodeCompleted"; nodeId: DynamicNodeId; result: SubagentResult }
 	| { type: "DependenciesResolved"; nodeId: DynamicNodeId; newNodes: DynamicNodeConfig[] }
-	| { type: "GraphCompleted"; finalNodes: ReadonlyMap<DynamicNodeId, SubagentResult> };
+	| { type: "ResolverFailed"; nodeId: DynamicNodeId; error: string }
+	| {
+			type: "GraphCompleted";
+			finalNodes: ReadonlyMap<DynamicNodeId, SubagentResult>;
+			failedNodes: DynamicNodeId[];
+			unreachedNodes: DynamicNodeId[];
+	  }
+	| { type: "GraphCancelled"; finalNodes: ReadonlyMap<DynamicNodeId, SubagentResult> };
 
 export type GraphExecutionListener = (event: GraphExecutionEvent) => void;
