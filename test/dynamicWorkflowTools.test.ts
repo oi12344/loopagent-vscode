@@ -6,75 +6,101 @@ import type { CreateSubagentConfig, SubagentResult } from "../src/extension/agen
 import type { WorkflowOrchestrator } from "../src/extension/agent/workflowOrchestrator";
 
 describe("dynamic workflow tools", () => {
-	it("exposes the complete graph definition and rejects invalid initial graphs at creation", async () => {
+	it("exposes a single merged tool and rejects invalid initial graphs before execution", async () => {
 		const tools = createDynamicWorkflowTools({ orchestrator: scriptedOrchestrator(() => "ok"), availableTools: [] });
-		const schema = toolByName(tools, "createDynamicGraph").inputSchema;
-		const properties = schema.properties as Record<string, any>;
+		expect(tools.map((tool) => tool.name)).toEqual(["runDynamicGraph"]);
+
+		const tool = toolByName(tools, "runDynamicGraph");
+		const properties = tool.inputSchema.properties as Record<string, any>;
 		const nodeProperties = properties.initialNodes.items.properties as Record<string, unknown>;
 
 		expect(nodeProperties).toEqual(expect.objectContaining({ dependsOn: expect.anything(), exportTo: expect.anything(), retry: expect.anything() }));
 		expect(properties.initialGlobalData).toBeDefined();
-		await expect(invoke(tools, "createDynamicGraph", {
-			initialNodes: [{ id: "same", task: "a" }, { id: "same", task: "b" }],
-		})).rejects.toThrow(/duplicate/i);
-		await expect(invoke(tools, "createDynamicGraph", {
-			initialNodes: [{ id: "a", task: "a", dependsOn: ["missing"] }],
-		})).rejects.toThrow(/not a known initial node/i);
-		await expect(invoke(tools, "createDynamicGraph", {
-			initialNodes: [{ id: "a", task: "a", role: "writer" }],
-		})).rejects.toThrow(/role must be one of/i);
-		await expect(invoke(tools, "createDynamicGraph", {
-			initialNodes: [{ id: "invalid id", task: "a" }],
-		})).rejects.toThrow(/node id/i);
-		await expect(invoke(tools, "createDynamicGraph", {
-			initialNodes: [{ id: "a", task: "a" }, { id: "b", task: "b" }],
-			maxNodes: 1,
-		})).rejects.toThrow(/maximum nodes/i);
-		await expect(invoke(tools, "createDynamicGraph", {
-			initialNodes: [{ id: "a", task: "a", dependsOn: ["b"] }, { id: "b", task: "b", dependsOn: ["a"] }],
-		})).rejects.toThrow(/circular/i);
+		expect(properties.resolvers.items.required).toEqual(["nodeId", "resolverType", "resolverConfig"]);
+		expect(properties.include.items.enum).toEqual(["visualization", "debug", "mermaid"]);
+		// Running a whole graph -- executor writes included -- must never share a concurrent batch.
+		expect(tool.isConcurrencySafe?.(undefined)).toBe(false);
+
+		await expect(runGraphRaw(tools, [{ id: "same", task: "a" }, { id: "same", task: "b" }])).rejects.toThrow(/duplicate/i);
+		await expect(runGraphRaw(tools, [{ id: "a", task: "a", dependsOn: ["missing"] }])).rejects.toThrow(/not a known initial node/i);
+		await expect(runGraphRaw(tools, [{ id: "a", task: "a", role: "writer" }])).rejects.toThrow(/role must be one of/i);
+		await expect(runGraphRaw(tools, [{ id: "invalid id", task: "a" }])).rejects.toThrow(/node id/i);
+		await expect(runGraphRaw(tools, [{ id: "a", task: "a" }, { id: "b", task: "b" }], { maxNodes: 1 })).rejects.toThrow(/maximum nodes/i);
+		await expect(runGraphRaw(tools, [
+			{ id: "a", task: "a", dependsOn: ["b"] },
+			{ id: "b", task: "b", dependsOn: ["a"] },
+		])).rejects.toThrow(/circular/i);
 		const deepNodes = Array.from({ length: 12 }, (_, index) => ({
 			id: `depth-${index}`,
 			task: `depth ${index}`,
 			...(index > 0 && { dependsOn: [`depth-${index - 1}`] }),
 		}));
-		await expect(invoke(tools, "createDynamicGraph", { initialNodes: deepNodes })).rejects.toThrow(/maximum depth \(10\)/i);
-		const created = JSON.parse(String(await invoke(tools, "createDynamicGraph", {
-			initialNodes: [
-				{ id: "read", task: "Read", role: "explorer" },
-				{ id: "review", task: "Review", role: "reviewer", dependsOn: ["read"] },
-			],
-		})));
-		expect(created.nodes).toEqual([
+		await expect(runGraphRaw(tools, deepNodes)).rejects.toThrow(/maximum depth \(10\)/i);
+		await expect(runGraphRaw(tools, [{ id: "a", task: "a" }], { include: ["timeline"] })).rejects.toThrow(/include entries must be one of/i);
+
+		const result = await runGraph(tools, [
+			{ id: "read", task: "Read", role: "explorer" },
+			{ id: "review", task: "Review", role: "reviewer", dependsOn: ["read"] },
+		]);
+		expect(result.nodes).toEqual([
 			{ id: "read", role: "explorer", dependsOn: [] },
 			{ id: "review", role: "reviewer", dependsOn: ["read"] },
 		]);
-		await expect(invoke(tools, "executeDynamicGraph", { graphId: "graph-stale" })).rejects.toThrow(/createDynamicGraph.*new graph/i);
+		expect(result.completedNodes).toEqual(["read", "review"]);
+		expect(result.executionOrder).toEqual(["read", "review"]);
+		expect(result.totalNodes).toBe(2);
+		expect(result.statusCounts).toEqual({ completed: 2 });
+		expect(result).not.toHaveProperty("visualization");
+		expect(result).not.toHaveProperty("debugInfo");
+		expect(result).not.toHaveProperty("mermaid");
+	});
+
+	it("returns observability payloads only when include requests them", async () => {
+		const tools = createDynamicWorkflowTools({ orchestrator: scriptedOrchestrator(() => "ok"), availableTools: [] });
+		const result = await runGraph(
+			tools,
+			[{ id: "read", task: "Read", role: "explorer" }],
+			{ include: ["visualization", "debug", "mermaid"] },
+		);
+
+		expect(result.visualization.nodes).toEqual([expect.objectContaining({ id: "read", status: "completed" })]);
+		expect(result.visualization.stats.totalNodes).toBe(1);
+		expect(result.debugInfo.nodeDetails.read).toEqual(expect.objectContaining({ id: "read", task: "Read" }));
+		expect(result.debugInfo.executionOrder).toEqual(["read"]);
+		expect(result.mermaid).toContain("graph TD");
+	});
+
+	it("fails the tool call when no node completes so the required-tool gate stays closed", async () => {
+		const tools = createDynamicWorkflowTools({
+			orchestrator: failingOrchestrator("subagent exploded"),
+			availableTools: [],
+		});
+
+		await expect(runGraphRaw(tools, [{ id: "read", task: "Read", role: "explorer" }]))
+			.rejects.toThrow(/No graph node completed \(failed: 1\)/i);
 	});
 
 	it("rejects malformed resolver configuration before execution", async () => {
 		const tools = createDynamicWorkflowTools({ orchestrator: scriptedOrchestrator(() => "ok"), availableTools: [] });
-		const graphId = await createGraph(tools, [{ id: "source", task: "Source" }]);
+		const source = [{ id: "source", task: "Source" }];
 
-		await expect(invoke(tools, "addDynamicResolver", {
-			graphId,
-			nodeId: "source",
-			resolverType: "fanout",
-			resolverConfig: { idPrefix: "scan", task: "Inspect", itemInputKey: "item" },
+		await expect(runGraphRaw(tools, source, {
+			resolvers: [{ nodeId: "source", resolverType: "fanout", resolverConfig: { idPrefix: "scan", task: "Inspect", itemInputKey: "item" } }],
 		})).rejects.toThrow(/itemsExpression/i);
-		await expect(invoke(tools, "addDynamicResolver", {
-			graphId,
-			nodeId: "missing",
-			resolverType: "conditional",
-			resolverConfig: { expression: "true", nodes: [{ id: "x", task: "x" }] },
+		await expect(runGraphRaw(tools, source, {
+			resolvers: [{ nodeId: "missing", resolverType: "conditional", resolverConfig: { expression: "true", nodes: [{ id: "x", task: "x" }] } }],
 		})).rejects.toThrow(/not an initial node/i);
-		await invoke(tools, "addDynamicResolver", {
-			graphId,
-			nodeId: "source",
-			resolverType: "conditional",
-			resolverConfig: { expression: "source.content + 1", nodes: [{ id: "x", task: "x" }] },
+		await expect(runGraphRaw(tools, source, {
+			resolvers: [
+				{ nodeId: "source", resolverType: "conditional", resolverConfig: { expression: "true", nodes: [{ id: "x", task: "x" }] } },
+				{ nodeId: "source", resolverType: "fanout", resolverConfig: { itemsExpression: "source.content", idPrefix: "s", task: "t", itemInputKey: "i" } },
+			],
+		})).rejects.toThrow(/duplicate resolver for node id/i);
+
+		// An unparseable resolver expression must surface as ResolverFailed, not silently drop.
+		const result = await runGraph(tools, source, {
+			resolvers: [{ nodeId: "source", resolverType: "conditional", resolverConfig: { expression: "source.content + 1", nodes: [{ id: "x", task: "x" }] } }],
 		});
-		const result = JSON.parse(String(await invoke(tools, "executeDynamicGraph", { graphId })));
 		expect(result.resolverFailures).toEqual([
 			expect.objectContaining({ nodeId: "source", error: expect.stringMatching(/unsupported expression/i) }),
 		]);
@@ -86,31 +112,28 @@ describe("dynamic workflow tools", () => {
 			orchestrator: scriptedOrchestrator((config) => config.task === "Generate items" ? '["alpha","beta"]' : "done", captured),
 			availableTools: [],
 		});
-		const graphId = await createGraph(tools, [{ id: "source", task: "Generate items" }]);
-
-		await invoke(tools, "addDynamicResolver", {
-			graphId,
-			nodeId: "source",
-			resolverType: "fanout",
-			resolverConfig: {
-				itemsExpression: "source.content",
-				idPrefix: "scan",
-				task: "Inspect item",
-				role: "explorer",
-				toolHints: ["readFile"],
-				retry: { maxAttempts: 2 },
-				itemInputKey: "item",
-			},
+		const result = await runGraph(tools, [{ id: "source", task: "Generate items" }], {
+			resolvers: [{
+				nodeId: "source",
+				resolverType: "fanout",
+				resolverConfig: {
+					itemsExpression: "source.content",
+					idPrefix: "scan",
+					task: "Inspect item",
+					role: "explorer",
+					toolHints: ["readFile"],
+					retry: { maxAttempts: 2 },
+					itemInputKey: "item",
+				},
+			}],
 		});
 
-		const result = JSON.parse(String(await invoke(tools, "executeDynamicGraph", { graphId })));
 		expect(result.completedNodes).toEqual(expect.arrayContaining(["source", "scan-1", "scan-2"]));
 		const scanTasks = captured.filter((config) => config.task.startsWith("Inspect item")).map((config) => config.task);
 		expect(scanTasks).toHaveLength(2);
 		expect(scanTasks.join("\n")).toContain('trust="untrusted"');
 		expect(scanTasks.join("\n")).toContain("alpha");
 		expect(scanTasks.join("\n")).toContain("beta");
-		await expect(invoke(tools, "getGraphStatus", { graphId })).rejects.toThrow(/not found/i);
 	});
 
 	it("registers a conditional resolver and creates declared nodes only when truthy", async () => {
@@ -124,19 +147,17 @@ describe("dynamic workflow tools", () => {
 			}, captured),
 			availableTools: [],
 		});
-		const graphId = await createGraph(tools, [{ id: "source", task: "Source" }, { id: "guard", task: "Guard" }]);
-
-		await invoke(tools, "addDynamicResolver", {
-			graphId,
-			nodeId: "source",
-			resolverType: "conditional",
-			resolverConfig: {
-				expression: "source.status === 'completed'",
+		const execution = runGraphRaw(tools, [{ id: "source", task: "Source" }, { id: "guard", task: "Guard" }], {
+			resolvers: [{
+				nodeId: "source",
+				resolverType: "conditional",
+				resolverConfig: {
+					expression: "source.status === 'completed'",
 					nodes: [{ id: "branch", task: "Run branch", role: "reviewer", dependsOn: ["guard"] }],
-			},
+				},
+			}],
 		});
 
-		const execution = invoke(tools, "executeDynamicGraph", { graphId });
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		expect(captured.some((config) => config.task === "Run branch")).toBe(false);
 		releaseGuard();
@@ -149,28 +170,41 @@ describe("dynamic workflow tools", () => {
 			orchestrator: scriptedOrchestrator((config) => config.task.startsWith("Review round 2") ? "APPROVED" : config.task === "Initial review" ? "REJECTED" : "revised"),
 			availableTools: [],
 		});
-		const graphId = await createGraph(tools, [{ id: "review-1", task: "Initial review" }], { maxDepth: 5 });
-
-		await invoke(tools, "addDynamicResolver", {
-			graphId,
-			nodeId: "review-1",
-			resolverType: "iterative",
-			resolverConfig: {
-				maxRounds: 3,
-				approvalText: "APPROVED",
-				reviseTask: "Revise round",
-				reviewTask: "Review round",
-				idPrefix: "loop",
-				reviseRole: "planner",
-				reviewRole: "reviewer",
-			},
+		const result = await runGraph(tools, [{ id: "review-1", task: "Initial review" }], {
+			maxDepth: 5,
+			resolvers: [{
+				nodeId: "review-1",
+				resolverType: "iterative",
+				resolverConfig: {
+					maxRounds: 3,
+					approvalText: "APPROVED",
+					reviseTask: "Revise round",
+					reviewTask: "Review round",
+					idPrefix: "loop",
+					reviseRole: "planner",
+					reviewRole: "reviewer",
+				},
+			}],
 		});
 
-		const result = JSON.parse(String(await invoke(tools, "executeDynamicGraph", { graphId })));
 		expect(result.completedNodes).toEqual(expect.arrayContaining(["review-1", "loop-revise-2", "loop-review-2"]));
 		expect(result.completedNodes).not.toContain("loop-revise-3");
 	});
 });
+
+function failingOrchestrator(error: string): WorkflowOrchestrator {
+	let nextId = 1;
+	return {
+		createSubagent: vi.fn(() => `subagent-${nextId++}`),
+		waitForSubagents: vi.fn(async (ids) => new Map(
+			ids.map((id) => [id, { status: "failed", error } satisfies SubagentResult] as const),
+		)),
+		getSubagent: vi.fn(),
+		cancelSubagent: vi.fn(() => true),
+		cancelAll: vi.fn(),
+		onEvent: vi.fn(() => () => {}),
+	};
+}
 
 function scriptedOrchestrator(
 	content: (config: CreateSubagentConfig) => string | Promise<string>,
@@ -199,13 +233,20 @@ function scriptedOrchestrator(
 	};
 }
 
-async function createGraph(
+async function runGraph(
 	tools: ReactAgentTool[],
 	initialNodes: unknown[],
 	extra: Record<string, unknown> = {},
-): Promise<string> {
-	const result = JSON.parse(String(await invoke(tools, "createDynamicGraph", { initialNodes, ...extra })));
-	return result.graphId;
+): Promise<any> {
+	return JSON.parse(String(await invoke(tools, "runDynamicGraph", { initialNodes, ...extra })));
+}
+
+function runGraphRaw(
+	tools: ReactAgentTool[],
+	initialNodes: unknown[],
+	extra: Record<string, unknown> = {},
+): Promise<string | object> {
+	return invoke(tools, "runDynamicGraph", { initialNodes, ...extra });
 }
 
 function toolByName(tools: ReactAgentTool[], name: string): ReactAgentTool {

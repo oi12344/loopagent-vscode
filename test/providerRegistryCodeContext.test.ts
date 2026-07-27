@@ -7,7 +7,7 @@ import type { ModelMessage, ModelProvider } from "../src/extension/model/types";
 import type { HostToWebviewMessage } from "../src/shared/messages";
 
 describe("createConfiguredAgentRunner code intelligence context", () => {
-  it("forces the parent runner to use only dynamic graph controls", async () => {
+  it("gives the parent runner both direct tools and the graph tool, gated on any real tool call", async () => {
     const capturedToolNames: string[][] = [];
     const capturedMessages: ModelMessage[][] = [];
     vi.resetModules();
@@ -34,24 +34,73 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
       { workspaceIntelligence: { buildCodeIntelligencePrompt: async () => "" } } as never,
     );
 
+    // 未调用任何真实工具就直接给出最终答案：应被 requiredAnyOfToolNames 门禁拦下并最终失败
     await expect(collectHostMessages(runner, "Explain this code")).resolves.toContainEqual({
       type: "runFailed",
       runId: "run-1",
-      message: expect.stringContaining("createDynamicGraph, executeDynamicGraph"),
+      message: expect.stringContaining("one of [exploreCode, runDynamicGraph]"),
     });
-    expect(capturedToolNames[0]).toEqual([
-      "createDynamicGraph", "executeDynamicGraph", "addDynamicResolver", "getGraphStatus",
-      "cancelDynamicGraph", "visualizeGraph", "getGraphDebugInfo",
-    ]);
+    expect(capturedToolNames[0]).toEqual(["exploreCode", "runDynamicGraph"]);
     const systemPrompt = capturedMessages[0]
       ?.filter((message) => message.role === "system")
       .map((message) => message.content)
       .join("\n") ?? "";
     expect(systemPrompt).toContain(
+      "For a single, well-defined task whose evidence fits in one context",
+    );
+    expect(systemPrompt).toContain(
       "dependsOn only controls scheduling; it does not forward upstream output",
     );
     expect(systemPrompt).toContain(
       "When a reviewer aggregates dependency results, map every dependency's <node-id>.content through inputMapping.",
+    );
+  });
+
+  it("lets the parent runner answer directly after a real tool call, without building a graph", async () => {
+    const capturedToolNames: string[][] = [];
+    vi.resetModules();
+    vi.doMock("../src/extension/model/modelConfig", () => ({
+      getModelRuntimeConfig: async () => ({ provider: "deepseek", model: "test-model", baseUrl: "", apiKey: "test-key", thinking: "disabled" }),
+    }));
+    vi.doMock("../src/extension/runtime/vscodeRuntimeContext", () => ({ collectVsCodeRuntimeContext: async () => ({}) }));
+    vi.doMock("../src/extension/runtime/contextPrompt", () => ({ renderCodeRuntimeContextPrompt: () => "" }));
+    let turn = 0;
+    vi.doMock("../src/extension/model/providers/deepseekProvider", () => ({
+      createDeepSeekProvider: (): ModelProvider => ({
+        id: "mock",
+        displayName: "Mock model",
+        stream: async function* ({ tools }) {
+          capturedToolNames.push((tools ?? []).map((tool) => tool.function.name));
+          turn++;
+          if (turn === 1) {
+            yield {
+              type: "toolCallDelta",
+              index: 0,
+              id: "call-1",
+              name: "exploreCode",
+              argumentsDelta: '{"query":"foo"}',
+            };
+            yield { type: "finishReason", reason: "tool_calls" };
+            return;
+          }
+          yield { type: "contentDelta", content: "direct answer" };
+          yield { type: "finishReason", reason: "stop" };
+        },
+      }),
+    }));
+
+    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
+    const runner = await createConfiguredAgentRunner(
+      {} as never,
+      { provider: "deepseek" },
+      { workspaceIntelligence: { buildCodeIntelligencePrompt: async () => "code context" } } as never,
+    );
+
+    const hostMessages = await collectHostMessages(runner, "What does this function do?");
+
+    expect(hostMessages).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "direct answer" });
+    expect(hostMessages).not.toContainEqual(
+      expect.objectContaining({ type: "toolCallStarted", toolName: "runDynamicGraph" }),
     );
   });
 
@@ -374,28 +423,14 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
 
           parentTurns.push(messages);
           if (parentTurns.length === 1) {
-            expect(toolNames).toEqual([
-              "createDynamicGraph", "executeDynamicGraph", "addDynamicResolver", "getGraphStatus",
-              "cancelDynamicGraph", "visualizeGraph", "getGraphDebugInfo",
-            ]);
+            expect(toolNames).toEqual(["exploreCode", "readFile", "applyEdit", "runCommand", "inspectRepo", "runDynamicGraph"]);
             yield {
               type: "toolCallDelta",
               index: 0,
-              id: "create-graph-call",
-              name: "createDynamicGraph",
+              id: "run-graph-call",
+              name: "runDynamicGraph",
               argumentsDelta:
                 '{"initialNodes":[{"id":"execute","task":"Apply the delegated repository task.","role":"executor","toolHints":["readFile","applyEdit","runCommand"]}]}',
-            };
-            yield { type: "finishReason", reason: "tool_calls" };
-            return;
-          }
-          if (parentTurns.length === 2) {
-            yield {
-              type: "toolCallDelta",
-              index: 0,
-              id: "execute-graph-call",
-              name: "executeDynamicGraph",
-              argumentsDelta: '{"graphId":"graph-1"}',
             };
             yield { type: "finishReason", reason: "tool_calls" };
             return;
@@ -424,11 +459,11 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     const hostMessages = await collectHostMessages(runner, "Delegate this repository task.");
 
     expect(childToolNames).toEqual([["readFile", "applyEdit", "runCommand"]]);
-    expect(childToolNames.flat()).not.toContain("createDynamicGraph");
+    expect(childToolNames.flat()).not.toContain("runDynamicGraph");
     expect(parentTurns.at(-1)).toEqual(expect.arrayContaining([
       expect.objectContaining({
         role: "tool",
-        name: "executeDynamicGraph",
+        name: "runDynamicGraph",
         content: expect.stringContaining('"content":"child result"'),
       }),
     ]));
@@ -477,16 +512,8 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
           parentTurn++;
           if (parentTurn === 1) {
             yield {
-              type: "toolCallDelta", index: 0, id: "create-1", name: "createDynamicGraph",
+              type: "toolCallDelta", index: 0, id: "run-1", name: "runDynamicGraph",
               argumentsDelta: '{"initialNodes":[{"id":"review","task":"Review the code.","role":"reviewer"}]}',
-            };
-            yield { type: "finishReason", reason: "tool_calls" };
-            return;
-          }
-          if (parentTurn === 2) {
-            yield {
-              type: "toolCallDelta", index: 0, id: "execute-1", name: "executeDynamicGraph",
-              argumentsDelta: '{"graphId":"graph-1"}',
             };
             yield { type: "finishReason", reason: "tool_calls" };
             return;
@@ -889,20 +916,9 @@ function createDeferredWorkflowProvider() {
         yield {
           type: "toolCallDelta",
           index: 0,
-          id: "create-deferred-graph",
-          name: "createDynamicGraph",
+          id: "run-deferred-graph",
+          name: "runDynamicGraph",
           argumentsDelta: '{"initialNodes":[{"id":"deferred","task":"Deferred child task.","role":"explorer"}]}',
-        };
-        yield { type: "finishReason", reason: "tool_calls" };
-        return;
-      }
-      if (parentTurn === 2) {
-        yield {
-          type: "toolCallDelta",
-          index: 0,
-          id: "execute-deferred-graph",
-          name: "executeDynamicGraph",
-          argumentsDelta: '{"graphId":"graph-1"}',
         };
         yield { type: "finishReason", reason: "tool_calls" };
         return;

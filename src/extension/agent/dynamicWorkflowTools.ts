@@ -3,6 +3,7 @@ import type { WorkflowOrchestrator } from "./workflowOrchestrator";
 import type { DataFlowValue } from "./workflow/dataFlowManager";
 import type { DynamicGraphDefinition, DynamicNodeConfig, DependencyResolver, GraphComputationContext } from "./workflow/dynamicGraphTypes";
 import { createDynamicGraphEngine, DEFAULT_DYNAMIC_GRAPH_LIMITS, type DynamicGraphEngine } from "./workflow/dynamicGraphEngine";
+import type { GraphDebugInfo } from "./workflow/graphVisualizer";
 import { createReflectionResolver } from "./workflow/reflectionResolver";
 import type { SubagentRoleId, SubagentResult } from "./workflow/types";
 
@@ -17,6 +18,10 @@ type ActiveGraph = {
 	resolvers: Map<string, DependencyResolver>;
 	initialNodeIds: Set<string>;
 };
+
+type GraphInclude = "visualization" | "debug" | "mermaid";
+
+const VALID_INCLUDES: ReadonlySet<string> = new Set<GraphInclude>(["visualization", "debug", "mermaid"]);
 
 const RETRY_SCHEMA = {
 	type: "object",
@@ -51,14 +56,41 @@ const NODE_SCHEMA = {
 	required: ["id", "task"],
 };
 
-export function createDynamicWorkflowTools({ orchestrator, availableTools, signal }: DynamicWorkflowToolsOptions): ReactAgentTool[] {
-	const activeGraphs = new Map<string, ActiveGraph>();
-	let nextGraphId = 1;
+const RESOLVER_SCHEMA = {
+	type: "object",
+	properties: {
+		nodeId: { type: "string", minLength: 1 },
+		resolverType: { type: "string", enum: ["fanout", "conditional", "iterative"] },
+		resolverConfig: {
+			type: "object",
+			properties: {
+				itemsExpression: { type: "string", minLength: 1 },
+				idPrefix: { type: "string", minLength: 1 },
+				task: { type: "string", minLength: 1 },
+				role: NODE_SCHEMA.properties.role,
+				toolHints: NODE_SCHEMA.properties.toolHints,
+				retry: RETRY_SCHEMA,
+				itemInputKey: { type: "string", minLength: 1 },
+				expression: { type: "string", minLength: 1 },
+				nodes: { type: "array", items: NODE_SCHEMA },
+				maxRounds: { type: "integer", minimum: 1 },
+				approvalText: { type: "string", minLength: 1 },
+				reviseTask: { type: "string", minLength: 1 },
+				reviewTask: { type: "string", minLength: 1 },
+				reviseRole: NODE_SCHEMA.properties.role,
+				reviewRole: NODE_SCHEMA.properties.role,
+			},
+		},
+	},
+	required: ["nodeId", "resolverType", "resolverConfig"],
+};
 
+export function createDynamicWorkflowTools({ orchestrator, availableTools, signal }: DynamicWorkflowToolsOptions): ReactAgentTool[] {
 	return [
 		{
-			name: "createDynamicGraph",
-			description: "Create a dynamic computation graph with initial nodes and optional dependency resolvers.",
+			name: "runDynamicGraph",
+			description:
+				"Create and execute a dynamic computation graph in one call, then return every node result. Register fanout, conditional, or iterative expansion through the optional resolvers field.",
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -66,14 +98,25 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 						type: "array",
 						items: NODE_SCHEMA,
 					},
+					resolvers: {
+						type: "array",
+						items: RESOLVER_SCHEMA,
+					},
 					initialGlobalData: { type: "object" },
 					maxNodes: { type: "integer", minimum: 1 },
 					maxDepth: { type: "integer", minimum: 1 },
+					include: {
+						type: "array",
+						items: { type: "string", enum: ["visualization", "debug", "mermaid"] },
+					},
 				},
 				required: ["initialNodes"],
 			},
-			isConcurrencySafe: () => true,
-			invoke({ input }) {
+			// The merged tool runs the whole graph, including executor nodes that write to the
+			// workspace. Two concurrent invocations would bypass the orchestrator's single-executor
+			// gate, so this tool must never share a concurrent batch.
+			isConcurrencySafe: () => false,
+			async invoke({ input }) {
 				const record = requireRecord(input);
 				const initialNodes = parseNodeConfigs(record.initialNodes);
 				const maxNodes = record.maxNodes !== undefined ? requirePositiveInteger(record.maxNodes, "maxNodes") : undefined;
@@ -81,13 +124,17 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 				const initialGlobalData = record.initialGlobalData !== undefined
 					? requireRecord(record.initialGlobalData) as Record<string, DataFlowValue>
 					: undefined;
+				const include = parseIncludes(record.include);
 				validateInitialGraph(
 					initialNodes,
 					maxNodes ?? DEFAULT_DYNAMIC_GRAPH_LIMITS.maxNodes,
 					maxDepth ?? DEFAULT_DYNAMIC_GRAPH_LIMITS.maxDepth,
 				);
-				const resolvers = new Map<string, DependencyResolver>();
 
+				// The engine reads `definition.resolvers` lazily at execution time, so the map can stay
+				// empty here and be filled in below -- that breaks the cycle between resolver closures
+				// (which need the engine's data-flow manager) and the engine (which needs the map).
+				const resolvers = new Map<string, DependencyResolver>();
 				const definition: DynamicGraphDefinition = {
 					initialNodes,
 					resolvers,
@@ -95,252 +142,121 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 					maxDepth,
 					initialGlobalData,
 				};
-
 				const engine = createDynamicGraphEngine({
 					definition,
 					orchestrator,
 					availableTools,
 					signal,
 				});
+				const activeGraph: ActiveGraph = {
+					engine,
+					resolvers,
+					initialNodeIds: new Set(initialNodes.map((node) => node.id)),
+				};
 
-				const graphId = `graph-${nextGraphId++}`;
-				activeGraphs.set(graphId, { engine, resolvers, initialNodeIds: new Set(initialNodes.map((node) => node.id)) });
-
-				return JSON.stringify({
-					graphId,
-					nodeCount: initialNodes.length,
-					nodes: initialNodes.map((node) => ({
-						id: node.id,
-						role: node.role ?? "explorer",
-						dependsOn: node.dependsOn ?? [],
-					})),
-				});
-			},
-		},
-		{
-			name: "executeDynamicGraph",
-			description: "Execute a dynamic computation graph and return all node results.",
-			inputSchema: {
-				type: "object",
-				properties: {
-					graphId: { type: "string", minLength: 1 },
-				},
-				required: ["graphId"],
-			},
-			isConcurrencySafe: () => true,
-			async invoke({ input }) {
-				const graphId = requireString(requireRecord(input).graphId, "graphId");
-				const activeGraph = activeGraphs.get(graphId);
-				if (!activeGraph) {
-					throw new Error(`Graph ${graphId} not found. Call createDynamicGraph to create a new graph before executeDynamicGraph.`);
+				for (const entry of parseResolverEntries(record.resolvers)) {
+					if (!activeGraph.initialNodeIds.has(entry.nodeId)) {
+						throw new Error(`Resolver nodeId "${entry.nodeId}" is not an initial node`);
+					}
+					resolvers.set(entry.nodeId, createConfiguredResolver(entry.resolverType, entry.resolverConfig, activeGraph));
 				}
 
+				const nodes = initialNodes.map((node) => ({
+					id: node.id,
+					role: node.role ?? "explorer",
+					dependsOn: node.dependsOn ?? [],
+				}));
 				const resolverFailures: Array<{ nodeId: string; error: string }> = [];
-				const dispose = activeGraph.engine.onEvent((event) => {
+				const dispose = engine.onEvent((event) => {
 					if (event.type === "ResolverFailed") resolverFailures.push({ nodeId: event.nodeId, error: event.error });
 				});
+
 				try {
-					const results = await activeGraph.engine.execute();
-					const context = activeGraph.engine.getContext();
+					const results = await engine.execute();
+					const context = engine.getContext();
+					const statusCounts: Record<string, number> = {};
+					for (const node of context.nodes.values()) {
+						statusCounts[node.status] = (statusCounts[node.status] ?? 0) + 1;
+					}
+
+					// A graph where nothing completed carries no evidence, but execute() still resolves
+					// normally -- returning it as a success would satisfy the runner's requiredToolNames
+					// gate and let the model answer from nothing. Throwing keeps the gate closed so the
+					// model has to build a working graph. User cancellation is exempt: the run is ending
+					// anyway and the partial results are all there is.
+					const cancelled = (statusCounts.cancelled ?? 0) > 0;
+					if ((statusCounts.completed ?? 0) === 0 && !cancelled) {
+						throw new Error(
+							`No graph node completed (${formatStatusCounts(statusCounts)}). `
+							+ `Rebuild a simpler graph with narrower node tasks.`
+							+ (resolverFailures.length > 0 ? ` Resolver failures: ${resolverFailures.map((entry) => `${entry.nodeId}: ${entry.error}`).join("; ")}` : ""),
+						);
+					}
+
+					const visualizer = engine.getVisualizer();
 					return JSON.stringify({
-						graphId,
+						nodes,
+						totalNodes: context.nodes.size,
+						statusCounts,
 						completedNodes: Array.from(results.keys()),
 						results: Object.fromEntries(results),
 						executionOrder: context.executionOrder,
 						resolverFailures,
+						...(include.has("visualization") && { visualization: visualizer.generateVisualization() }),
+						...(include.has("debug") && { debugInfo: serializeDebugInfo(visualizer.generateDebugInfo()) }),
+						...(include.has("mermaid") && { mermaid: visualizer.exportToMermaid() }),
 					});
 				} finally {
 					dispose();
-					activeGraphs.delete(graphId);
 				}
-			},
-		},
-		{
-			name: "addDynamicResolver",
-			description: "Add a dependency resolver to a graph node that will generate new nodes when the node completes.",
-			inputSchema: {
-				type: "object",
-				properties: {
-					graphId: { type: "string", minLength: 1 },
-					nodeId: { type: "string", minLength: 1 },
-					resolverType: { type: "string", enum: ["fanout", "conditional", "iterative"] },
-					resolverConfig: {
-						type: "object",
-						properties: {
-							itemsExpression: { type: "string", minLength: 1 },
-							idPrefix: { type: "string", minLength: 1 },
-							task: { type: "string", minLength: 1 },
-							role: NODE_SCHEMA.properties.role,
-							toolHints: NODE_SCHEMA.properties.toolHints,
-							retry: RETRY_SCHEMA,
-							itemInputKey: { type: "string", minLength: 1 },
-							expression: { type: "string", minLength: 1 },
-							nodes: { type: "array", items: NODE_SCHEMA },
-							maxRounds: { type: "integer", minimum: 1 },
-							approvalText: { type: "string", minLength: 1 },
-							reviseTask: { type: "string", minLength: 1 },
-							reviewTask: { type: "string", minLength: 1 },
-							reviseRole: NODE_SCHEMA.properties.role,
-							reviewRole: NODE_SCHEMA.properties.role,
-						},
-					},
-				},
-				required: ["graphId", "nodeId", "resolverType", "resolverConfig"],
-			},
-			isConcurrencySafe: () => true,
-			invoke({ input }) {
-				const record = requireRecord(input);
-				const graphId = requireString(record.graphId, "graphId");
-				const nodeId = requireString(record.nodeId, "nodeId");
-				const resolverType = requireString(record.resolverType, "resolverType");
-				const resolverConfig = requireRecord(record.resolverConfig);
-
-				const activeGraph = activeGraphs.get(graphId);
-				if (!activeGraph) {
-					throw new Error(`Graph ${graphId} not found`);
-				}
-				if (!activeGraph.initialNodeIds.has(nodeId)) {
-					throw new Error(`Node ${nodeId} is not an initial node in graph ${graphId}`);
-				}
-				const resolver = createConfiguredResolver(resolverType, resolverConfig, activeGraph);
-				activeGraph.resolvers.set(nodeId, resolver);
-				return JSON.stringify({
-					graphId,
-					nodeId,
-					resolverType,
-					registered: true,
-				});
-			},
-		},
-		{
-			name: "getGraphStatus",
-			description: "Get the current status of a dynamic computation graph.",
-			inputSchema: {
-				type: "object",
-				properties: {
-					graphId: { type: "string", minLength: 1 },
-				},
-				required: ["graphId"],
-			},
-			isConcurrencySafe: () => true,
-			invoke({ input }) {
-				const graphId = requireString(requireRecord(input).graphId, "graphId");
-				const activeGraph = activeGraphs.get(graphId);
-				if (!activeGraph) {
-					throw new Error(`Graph ${graphId} not found`);
-				}
-
-				const context = activeGraph.engine.getContext();
-				const statusCounts: Record<string, number> = {};
-
-				for (const node of context.nodes.values()) {
-					statusCounts[node.status] = (statusCounts[node.status] || 0) + 1;
-				}
-
-				return JSON.stringify({
-					graphId,
-					totalNodes: context.nodes.size,
-					statusCounts,
-					executionOrder: context.executionOrder,
-				});
-			},
-		},
-		{
-			name: "cancelDynamicGraph",
-			description: "Cancel a running dynamic computation graph.",
-			inputSchema: {
-				type: "object",
-				properties: {
-					graphId: { type: "string", minLength: 1 },
-				},
-				required: ["graphId"],
-			},
-			isConcurrencySafe: () => true,
-			invoke({ input }) {
-				const graphId = requireString(requireRecord(input).graphId, "graphId");
-				const activeGraph = activeGraphs.get(graphId);
-				if (!activeGraph) {
-					throw new Error(`Graph ${graphId} not found`);
-				}
-
-				activeGraph.engine.cancel();
-				activeGraphs.delete(graphId);
-
-				return JSON.stringify({ graphId, cancelled: true });
-			},
-		},
-		{
-			name: "visualizeGraph",
-			description: "Generate a visualization of the dynamic computation graph including nodes, edges, and statistics.",
-			inputSchema: {
-				type: "object",
-				properties: {
-					graphId: { type: "string", minLength: 1 },
-					format: { type: "string", enum: ["json", "mermaid"] },
-				},
-				required: ["graphId"],
-			},
-			isConcurrencySafe: () => true,
-			invoke({ input }) {
-				const record = requireRecord(input);
-				const graphId = requireString(record.graphId, "graphId");
-				const format = record.format !== undefined ? requireString(record.format, "format") : "json";
-
-				const activeGraph = activeGraphs.get(graphId);
-				if (!activeGraph) {
-					throw new Error(`Graph ${graphId} not found`);
-				}
-
-				const visualizer = activeGraph.engine.getVisualizer();
-
-				if (format === "mermaid") {
-					return JSON.stringify({
-						graphId,
-						format: "mermaid",
-						diagram: visualizer.exportToMermaid(),
-					});
-				}
-
-				const visualization = visualizer.generateVisualization();
-				return JSON.stringify({
-					graphId,
-					format: "json",
-					visualization,
-				});
-			},
-		},
-		{
-			name: "getGraphDebugInfo",
-			description: "Get detailed debug information about a dynamic computation graph including critical path and bottlenecks.",
-			inputSchema: {
-				type: "object",
-				properties: {
-					graphId: { type: "string", minLength: 1 },
-				},
-				required: ["graphId"],
-			},
-			isConcurrencySafe: () => true,
-			invoke({ input }) {
-				const graphId = requireString(requireRecord(input).graphId, "graphId");
-				const activeGraph = activeGraphs.get(graphId);
-				if (!activeGraph) {
-					throw new Error(`Graph ${graphId} not found`);
-				}
-
-				const visualizer = activeGraph.engine.getVisualizer();
-				const debugInfo = visualizer.generateDebugInfo();
-
-				return JSON.stringify({
-					graphId,
-					nodeDetails: Object.fromEntries(debugInfo.nodeDetails),
-					dataFlowRecords: debugInfo.dataFlowRecords,
-					executionOrder: debugInfo.executionOrder,
-					criticalPath: debugInfo.criticalPath,
-					bottlenecks: debugInfo.bottlenecks,
-				});
 			},
 		},
 	];
+}
+
+function formatStatusCounts(statusCounts: Record<string, number>): string {
+	const entries = Object.entries(statusCounts);
+	return entries.length > 0 ? entries.map(([status, count]) => `${status}: ${count}`).join(", ") : "no nodes";
+}
+
+function serializeDebugInfo(debugInfo: GraphDebugInfo) {
+	return {
+		nodeDetails: Object.fromEntries(debugInfo.nodeDetails),
+		dataFlowRecords: debugInfo.dataFlowRecords,
+		executionOrder: debugInfo.executionOrder,
+		criticalPath: debugInfo.criticalPath,
+		bottlenecks: debugInfo.bottlenecks,
+	};
+}
+
+function parseIncludes(value: unknown): ReadonlySet<GraphInclude> {
+	if (value === undefined) return new Set();
+	if (!Array.isArray(value)) throw new Error("include must be an array");
+	for (const entry of value) {
+		if (typeof entry !== "string" || !VALID_INCLUDES.has(entry)) {
+			throw new Error(`include entries must be one of: ${[...VALID_INCLUDES].join(", ")}`);
+		}
+	}
+	return new Set(value as GraphInclude[]);
+}
+
+function parseResolverEntries(value: unknown): Array<{ nodeId: string; resolverType: string; resolverConfig: Record<string, unknown> }> {
+	if (value === undefined) return [];
+	if (!Array.isArray(value)) throw new Error("resolvers must be an array");
+
+	const seen = new Set<string>();
+	return value.map((item, index) => {
+		const record = requireRecord(item);
+		const path = `resolvers[${index}]`;
+		const nodeId = requireString(record.nodeId, `${path}.nodeId`);
+		if (seen.has(nodeId)) throw new Error(`Duplicate resolver for node id: ${nodeId}`);
+		seen.add(nodeId);
+		return {
+			nodeId,
+			resolverType: requireString(record.resolverType, `${path}.resolverType`),
+			resolverConfig: requireRecord(record.resolverConfig),
+		};
+	});
 }
 
 function parseNodeConfigs(value: unknown, property = "initialNodes"): DynamicNodeConfig[] {

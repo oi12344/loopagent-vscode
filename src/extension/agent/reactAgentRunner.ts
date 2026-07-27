@@ -16,6 +16,8 @@ export type CreateReactAgentRunnerOptions = {
   maxSteps?: number;
   maxToolRequestsPerStep?: number;
   requiredToolNames?: string[];
+  /** 至少一个必须成功调用；与 requiredToolNames（全部满足）语义独立，可同时使用 */
+  requiredAnyOfToolNames?: string[];
   systemPromptProvider?: (request: AgentRunRequest, imageAnalyses?: ImageAnalysisContext[]) => string | Promise<string>;
   onCheckpoint?: (checkpoint: InterruptedRunCheckpoint) => void | Promise<void>;
   recordMemoryRunOutcome?: (outcome: ReactAgentRunOutcome) => void | Promise<void>;
@@ -30,6 +32,7 @@ export function createReactAgentRunner({
   maxSteps = 20,
   maxToolRequestsPerStep = 10,
   requiredToolNames: configuredRequiredToolNames = [],
+  requiredAnyOfToolNames: configuredRequiredAnyOfToolNames = [],
   systemPromptProvider,
   onCheckpoint,
   recordMemoryRunOutcome,
@@ -42,6 +45,7 @@ export function createReactAgentRunner({
     async *run(request) {
       const { runId, task, signal, conversationHistory = [], resumeState } = request;
       const requiredToolNames = request.requiredToolNames ?? configuredRequiredToolNames;
+      const requiredAnyOfToolNames = configuredRequiredAnyOfToolNames;
       let status: ReactAgentRunOutcome["status"] = "cancelled";
       let finalContent: string | undefined;
       const evidence: MemoryEvidence[] = [];
@@ -122,8 +126,8 @@ export function createReactAgentRunner({
             return;
           }
 
-          const missingRequiredTools = getMissingRequiredTools(requiredToolNames, successfulTools);
-          const toolChoice = isFinalAnswerStep && missingRequiredTools.length === 0 ? "none" : "auto";
+          const missingRequirements = getMissingRequirements(requiredToolNames, requiredAnyOfToolNames, successfulTools);
+          const toolChoice = isFinalAnswerStep && missingRequirements.length === 0 ? "none" : "auto";
           const result = await modelTurn({
             messages,
             signal,
@@ -139,7 +143,7 @@ export function createReactAgentRunner({
           }
 
           if (result.kind === "final") {
-            const missingTools = getMissingRequiredTools(requiredToolNames, successfulTools);
+            const missingTools = getMissingRequirements(requiredToolNames, requiredAnyOfToolNames, successfulTools);
             if (missingTools.length > 0) {
               if (requiredToolRetries >= 2) {
                 throw new Error(`Required tools were not called successfully: ${missingTools.join(", ")}`);
@@ -157,7 +161,7 @@ export function createReactAgentRunner({
           }
 
           if (isFinalAnswerStep) {
-            const missingTools = getMissingRequiredTools(requiredToolNames, successfulTools);
+            const missingTools = getMissingRequirements(requiredToolNames, requiredAnyOfToolNames, successfulTools);
             if (missingTools.length === 0) {
               if (result.reasoning) {
                 yield { type: "assistantReasoningDelta", runId, content: result.reasoning } satisfies HostToWebviewMessage;
@@ -197,10 +201,10 @@ export function createReactAgentRunner({
 
             const invoke = async (toolRequest: ReactAgentToolRequest) => {
               if (!toolsByName.has(toolRequest.name)) {
-                return { content: `Tool error: Unknown tool "${toolRequest.name}"`, succeeded: false, evidence: [] as MemoryEvidence[] };
+                return { content: `Tool error: Unknown tool "${toolRequest.name}"`, succeeded: false, productive: false, evidence: [] as MemoryEvidence[] };
               }
               if (toolRequest.parseError) {
-                return { content: `Tool error: ${toolRequest.parseError}`, succeeded: false, evidence: [] as MemoryEvidence[] };
+                return { content: `Tool error: ${toolRequest.parseError}`, succeeded: false, productive: false, evidence: [] as MemoryEvidence[] };
               }
               // ponytail: 同批次并发的相同调用会漏判（记录发生在批次结束后），可接受 —— maxToolRequestsPerStep 封顶
               const cached = succeededCalls.get(`${toolRequest.name}:${toolRequest.rawArguments}`);
@@ -208,14 +212,15 @@ export function createReactAgentRunner({
                 return {
                   content: `重复调用：已用相同参数调用过 ${toolRequest.name}，上次结果：${cached}。请改变查询或给出最终答案。`,
                   succeeded: false,
+                  productive: false,
                   evidence: [] as MemoryEvidence[],
                 };
               }
               try {
                 const result = await toolRegistry.invoke(toolRequest, signal);
-                return { content: result.content, succeeded: true, evidence: result.evidence };
+                return { content: result.content, succeeded: true, productive: result.productive ?? true, evidence: result.evidence };
               } catch (error) {
-                return { content: `Tool error: ${formatRunError(error)}`, succeeded: false, evidence: [] as MemoryEvidence[] };
+                return { content: `Tool error: ${formatRunError(error)}`, succeeded: false, productive: false, evidence: [] as MemoryEvidence[] };
               }
             };
             const outcomes = batch.concurrent
@@ -229,7 +234,8 @@ export function createReactAgentRunner({
             for (const [index, { request, call }] of batch.requests.entries()) {
               const outcome = outcomes[index]!;
               const content = outcome.content;
-              if (outcome.succeeded) successfulTools.add(request.name);
+              // 未命中/空结果的调用不抛错（succeeded 为真），但不计入证据门禁 -- 见 reactTypes.ts 的 productive 说明
+              if (outcome.succeeded && outcome.productive) successfulTools.add(request.name);
               yield {
                 type: "toolCallFinished",
                 runId,
@@ -283,8 +289,14 @@ export function createReactAgentRunner({
   };
 }
 
-function getMissingRequiredTools(requiredToolNames: string[], successfulTools: ReadonlySet<string>): string[] {
-  return requiredToolNames.filter((name) => !successfulTools.has(name));
+function getMissingRequirements(
+  requiredToolNames: string[],
+  requiredAnyOfToolNames: string[],
+  successfulTools: ReadonlySet<string>,
+): string[] {
+  const missingAllOf = requiredToolNames.filter((name) => !successfulTools.has(name));
+  const anyOfUnmet = requiredAnyOfToolNames.length > 0 && !requiredAnyOfToolNames.some((name) => successfulTools.has(name));
+  return anyOfUnmet ? [...missingAllOf, `one of [${requiredAnyOfToolNames.join(", ")}]`] : missingAllOf;
 }
 
 type ToolRequestBatch = {

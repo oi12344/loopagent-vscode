@@ -29,7 +29,7 @@ describe("createExploreCodeTool", () => {
         input: { query: "provider registry" },
         signal: new AbortController().signal,
       }),
-    ).resolves.toEqual({ content: "provider registry context", evidence: [] });
+    ).resolves.toEqual({ content: "provider registry context", evidence: [], productive: true });
     expect(intelligence.buildCodeIntelligencePrompt).toHaveBeenCalledWith("provider registry");
     expect(tool).toMatchObject({
       name: "exploreCode",
@@ -63,6 +63,7 @@ describe("createExploreCodeTool", () => {
         { filePath: "src/a.ts", startLine: 10, endLine: 12, sha256: sha256(snippetTexts[0]!), required: true },
         { filePath: "src/b.ts", startLine: 20, endLine: 25, sha256: sha256(snippetTexts[1]!), required: true },
       ],
+      productive: true,
     });
     for (const entry of (result as { evidence: unknown[] }).evidence) {
       expect(JSON.stringify(entry)).not.toContain("function");
@@ -101,7 +102,7 @@ describe("createExploreCodeTool", () => {
         input: { query: "provider" },
         signal: new AbortController().signal,
       }),
-    ).resolves.toEqual({ content: "legacy prompt only", evidence: [] });
+    ).resolves.toEqual({ content: "legacy prompt only", evidence: [], productive: true });
   });
 
   it.each([
@@ -120,7 +121,7 @@ describe("createExploreCodeTool", () => {
     ).rejects.toThrow("Invalid exploreCode input");
   });
 
-  it("returns a bounded observation when no code context matches", async () => {
+  it("returns a bounded observation when no code context matches, marked unproductive", async () => {
     const tool = createExploreCodeTool(createIntelligence(""));
 
     await expect(
@@ -129,10 +130,10 @@ describe("createExploreCodeTool", () => {
         input: { query: "missing symbol" },
         signal: new AbortController().signal,
       }),
-    ).resolves.toEqual({ content: "未命中代码上下文。", evidence: [] });
+    ).resolves.toEqual({ content: "未命中代码上下文。", evidence: [], productive: false });
   });
 
-  it("hides internal search errors from the model observation", async () => {
+  it("hides internal search errors from the model observation, marked unproductive", async () => {
     const tool = createExploreCodeTool(createIntelligence(new Error("E:\\secret\\source.ts\nprivate stack")));
 
     const observation = await tool.invoke({
@@ -141,7 +142,7 @@ describe("createExploreCodeTool", () => {
       signal: new AbortController().signal,
     });
 
-    expect(observation).toEqual({ content: "代码搜索失败，请调整查询后重试。", evidence: [] });
+    expect(observation).toEqual({ content: "代码搜索失败，请调整查询后重试。", evidence: [], productive: false });
     expect(JSON.stringify(observation)).not.toContain("E:\\secret");
     expect(JSON.stringify(observation)).not.toContain("stack");
   });

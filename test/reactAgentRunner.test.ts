@@ -1391,6 +1391,74 @@ describe("createReactAgentRunner", () => {
     expect(messages).toContainEqual({ type: "runFinished", runId: "run-1" });
   });
 
+  it("does not finish when none of requiredAnyOfToolNames succeeded", async () => {
+    let turns = 0;
+    const runner = createReactAgentRunner({
+      requiredAnyOfToolNames: ["exploreCode", "runDynamicGraph"],
+      modelTurn: async () => {
+        turns++;
+        return { kind: "final", content: "I am done." };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(turns).toBe(3);
+    expect(messages).toContainEqual({
+      type: "runFailed",
+      runId: "run-1",
+      message: expect.stringContaining("one of [exploreCode, runDynamicGraph]"),
+    });
+    expect(messages).not.toContainEqual({ type: "runFinished", runId: "run-1" });
+  });
+
+  it("does not count an unproductive (empty-result) tool call toward requiredAnyOfToolNames", async () => {
+    let turns = 0;
+    const runner = createReactAgentRunner({
+      requiredAnyOfToolNames: ["exploreCode"],
+      tools: [{
+        name: "exploreCode",
+        description: "search",
+        inputSchema: { type: "object" },
+        invoke: async () => ({ content: "未命中代码上下文。", evidence: [], productive: false }),
+      }],
+      modelTurn: async () => {
+        turns++;
+        return turns === 1
+          ? toolRequest("explore-1", "exploreCode", { query: "nonexistent" })
+          : { kind: "final", content: "I am done." };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(messages).toContainEqual({
+      type: "runFailed",
+      runId: "run-1",
+      message: expect.stringContaining("one of [exploreCode]"),
+    });
+    expect(messages).not.toContainEqual({ type: "runFinished", runId: "run-1" });
+  });
+
+  it("finishes once any one of requiredAnyOfToolNames succeeds", async () => {
+    let turns = 0;
+    const runner = createReactAgentRunner({
+      requiredAnyOfToolNames: ["exploreCode", "runDynamicGraph"],
+      tools: [{ name: "exploreCode", description: "search", inputSchema: { type: "object" }, invoke: async () => "found" }],
+      modelTurn: async () => {
+        turns++;
+        return turns === 1
+          ? toolRequest("explore-1", "exploreCode", { query: "x" })
+          : { kind: "final", content: "I am done." };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(messages).toContainEqual({ type: "runFinished", runId: "run-1" });
+    expect(messages).not.toContainEqual({ type: "runFailed", runId: "run-1", message: expect.any(String) });
+  });
+
   it("blocks a repeated identical successful tool call instead of re-running it", async () => {
     let turn = 0;
     const invoke = vi.fn(async () => "code context");

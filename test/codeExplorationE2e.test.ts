@@ -26,7 +26,7 @@ type GraphNode = { id: string; role?: string; dependsOn?: string[] };
 const expectedQuestion =
   "请在不修改代码的前提下，第一张且唯一一张运行图就恰好创建三个节点：两个无依赖、可并行的只读分析节点，每个只聚焦一条调用链；第三个审查节点同时依赖前两个节点并统一核对。不要先做目录结构探索，不要枚举整个仓库或逐文件读取，每个节点使用 60 秒超时。问题：本项目从 Webview 提交请求到 DeepSeek 创建并执行运行时工作流，关键调用链和角色权限边界是什么？请给出关键源码文件和函数证据，并指出并发与串行约束。";
 
-const completeProcess = "createDynamicGraph\nexecuteDynamicGraph\nreviewer\nDone";
+const completeProcess = "runDynamicGraph\nreviewer\nDone";
 const completedWorkflow: WorkflowEvent[] = [
   { agentId: "subagent-1", status: "running", at: 1 },
   { agentId: "subagent-2", status: "running", at: 2 },
@@ -45,7 +45,7 @@ describe("code exploration E2E oracle", () => {
   it("asks a complex project question without leaking implementation symbols", () => {
     expect(CODE_EXPLORATION_QUESTION).toBe(expectedQuestion);
     expect(CODE_EXPLORATION_QUESTION).not.toContain("createConfiguredAgentRunner");
-    expect(CODE_EXPLORATION_QUESTION).not.toContain("createDynamicGraph");
+    expect(CODE_EXPLORATION_QUESTION).not.toContain("runDynamicGraph");
   });
 
   it("accepts graph controls, parallel readers, a dependent reviewer, and source evidence", () => {
@@ -76,7 +76,7 @@ describe("code exploration E2E oracle", () => {
         "src/extension/agent/dynamicWorkflowTools.ts",
       ],
       missingStates: [],
-      toolCalls: ["createDynamicGraph", "executeDynamicGraph"],
+      toolCalls: ["runDynamicGraph"],
       parallelReadOnlyNodes: 2,
       reviewerCompleted: true,
     });
@@ -91,10 +91,7 @@ describe("code exploration E2E oracle", () => {
     expect(result.passed).toBe(false);
     expect(result.matchedAnchors).toEqual([]);
     expect(result.matchedPaths).toEqual([]);
-    expect(result.missingStates).toEqual([
-      "createDynamicGraph",
-      "executeDynamicGraph",
-    ]);
+    expect(result.missingStates).toEqual(["runDynamicGraph"]);
   });
 
   it("rejects an otherwise semantic answer with only one source path", () => {

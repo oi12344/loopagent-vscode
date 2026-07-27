@@ -47,21 +47,24 @@ export function createExploreCodeTool(workspaceIntelligence: WorkspaceIntelligen
 
       let content: string;
       let evidence: MemoryEvidence[] = [];
+      let productive = true;
       try {
         if (workspaceIntelligence.buildCodeIntelligenceResult) {
           const result = await workspaceIntelligence.buildCodeIntelligenceResult(query);
-          content = result.prompt.length > 0 ? result.prompt : EMPTY_OBSERVATION;
+          productive = result.prompt.length > 0;
+          content = productive ? result.prompt : EMPTY_OBSERVATION;
           evidence = buildSnippetEvidence(result.snippets);
         } else {
           const prompt = await workspaceIntelligence.buildCodeIntelligencePrompt(query);
-          content = prompt.length > 0 ? prompt : EMPTY_OBSERVATION;
+          productive = prompt.length > 0;
+          content = productive ? prompt : EMPTY_OBSERVATION;
         }
       } catch (error) {
         signal.throwIfAborted();
         getOutputChannel()?.appendLine(
           `[exploreCode] buildCodeIntelligencePrompt 失败: ${error instanceof Error ? error.message : String(error)}`,
         );
-        return { content: FAILED_OBSERVATION, evidence: [] };
+        return { content: FAILED_OBSERVATION, evidence: [], productive: false };
       }
 
       signal.throwIfAborted();
@@ -69,7 +72,7 @@ export function createExploreCodeTool(workspaceIntelligence: WorkspaceIntelligen
       getOutputChannel()?.appendLine(
         `[exploreCode] 工具返回 长度=${content.length} 格式=${format} 前100字符="${content.slice(0, 100)}"`,
       );
-      return { content, evidence };
+      return { content, evidence, productive };
     },
   };
 }

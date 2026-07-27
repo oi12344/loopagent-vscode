@@ -368,7 +368,7 @@ async function waitForAnswer(session, previousTurnCount) {
         output: entry.querySelector(".tool-call-output")?.textContent?.trim() ?? "",
       }));
       const graphDefinitions = toolCalls
-        .filter((call) => call.name === "createDynamicGraph")
+        .filter((call) => call.name === "runDynamicGraph")
         .map((call) => {
           try { return JSON.parse(call.output).nodes; } catch { return undefined; }
         })

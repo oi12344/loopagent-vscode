@@ -2,8 +2,7 @@ const CODE_EXPLORATION_QUESTION =
   "请在不修改代码的前提下，第一张且唯一一张运行图就恰好创建三个节点：两个无依赖、可并行的只读分析节点，每个只聚焦一条调用链；第三个审查节点同时依赖前两个节点并统一核对。不要先做目录结构探索，不要枚举整个仓库或逐文件读取，每个节点使用 60 秒超时。问题：本项目从 Webview 提交请求到 DeepSeek 创建并执行运行时工作流，关键调用链和角色权限边界是什么？请给出关键源码文件和函数证据，并指出并发与串行约束。";
 
 const REQUIRED_STATES = [
-  "createDynamicGraph",
-  "executeDynamicGraph",
+  "runDynamicGraph",
   "Done",
 ];
 const ANCHOR_GROUPS = [
@@ -38,9 +37,7 @@ const REQUIRED_INTELLIGENCE_PATHS = new Set([
 
 function evaluateCodeExploration({ process, answer, workflowEvents = [], graphNodes = [] }) {
   const missingStates = REQUIRED_STATES.filter((state) => !process.includes(state));
-  const toolCalls = ["createDynamicGraph", "executeDynamicGraph"].filter((name) =>
-    process.includes(name),
-  );
+  const toolCalls = ["runDynamicGraph"].filter((name) => process.includes(name));
   const matchedAnchors = ANCHOR_GROUPS.flatMap((group) => {
     const matched = group.find((anchor) => answer.includes(anchor));
     return matched ? [matched] : [];

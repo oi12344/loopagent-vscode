@@ -112,6 +112,6 @@ npm run test:e2e:code-exploration
 
 `Test-Path` 只检查环境变量是否存在，不读取或输出它的值。若结果为 `False`，应在隔离窗口中执行 `LoopAgent: Set Model API Key`，让 VS Code SecretStorage 保存密钥；不得把真实值写入 PowerShell history、仓库文件或验证记录。
 
-自动化使用复杂项目问题验证强制动态图运行时。判定除源码语义锚点和真实路径外，还要求成功调用 `createDynamicGraph`、`executeDynamicGraph`，至少两个只读节点并发运行，并在其后完成审查节点。判定结果只输出锚点、路径、工具名、并发指标、回答长度和截图路径，不保存完整回答。
+自动化使用复杂项目问题验证强制动态图运行时。判定除源码语义锚点和真实路径外，还要求成功调用 `runDynamicGraph`，至少两个只读节点并发运行，并在其后完成审查节点。判定结果只输出锚点、路径、工具名、并发指标、回答长度和截图路径，不保存完整回答。
 
 CDP runner 覆盖单轮 Webview 提交、动态图工具历史、子节点状态时序和结果读取。若当前 VS Code 版本不暴露可访问的 Webview CDP target，人工 fallback 必须复用同一个隔离窗口，提交同一固定问题，并按相同语义规则结合可见 Process 状态和截图验收；不得为 fallback 启动第二个 VS Code 窗口。运行时边界和排障命令见 [强制动态图运行时指南](superpowers/guides/dynamic-graph-runtime.md)。

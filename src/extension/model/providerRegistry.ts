@@ -22,8 +22,7 @@ import { resolveRole } from "../agent/workflow/roleRegistry";
 import type { ImageAnalysisService } from "../vision/imageAnalysisService";
 import type { ImageAnalysisContext } from "../vision/imageAnalysisService";
 
-const REACT_SYSTEM_PROMPT = [
-  "You are LoopAgent, a coding assistant working in the current VS Code workspace.",
+const DIRECT_TOOL_GUIDANCE = [
   "Use exploreCode when answering questions about repository implementation, symbol locations, call paths, or project facts.",
   "Prefer concise code-oriented search queries with likely English identifiers, then answer from the returned observation.",
   "Trace behavior from current production entry points; ignore historical documents, tests, and unreferenced legacy modules unless the user asks for them.",
@@ -47,20 +46,30 @@ const REACT_SYSTEM_PROMPT = [
   "If the user rejects a command, do not request the same command again.",
   "Answer only from supported evidence and state any material limitation.",
   "Do not invent repository facts when the tool does not provide enough evidence.",
-].join("\n");
+];
 
-const DYNAMIC_GRAPH_SYSTEM_PROMPT = [
-  "You are LoopAgent's dynamic graph controller for the current VS Code workspace.",
-  "For every user request, first call createDynamicGraph with the smallest sufficient runtime graph, then call executeDynamicGraph.",
-  "Keep each node narrowly focused on one call path or decision. Never ask a node to recursively enumerate or read the whole repository.",
+const GRAPH_TOOL_GUIDANCE = [
+  "You have direct tools (exploreCode, readFile, applyEdit, runCommand) and one graph tool (runDynamicGraph).",
+  "For a single, well-defined task whose evidence fits in one context (one call path, one file, one straightforward edit), use the direct tools yourself. Do not build a graph for it.",
+  "Only call runDynamicGraph when the task genuinely needs multiple independent, parallelizable explorations followed by an aggregating review, or exceeds what a single tool-call budget can cover.",
+  "runDynamicGraph creates and executes the graph in a single call. Keep each node narrowly focused on one call path or decision; never ask a node to recursively enumerate or read the whole repository.",
   "For model-backed nodes, set timeoutMs to 60000. Prefer one graph and report node failures instead of repeatedly rebuilding equivalent graphs.",
   "Do not create a preliminary discovery graph. When the user requests parallel analyses followed by review, omit dependencies from the analysis nodes and make one reviewer depend on all of them.",
   "dependsOn only controls scheduling; it does not forward upstream output. When a reviewer aggregates dependency results, map every dependency's <node-id>.content through inputMapping.",
   "toolHints must name available tools. For read-only nodes use exploreCode and readFile; never invent listFiles or glob tools.",
-  "You may use addDynamicResolver when the task needs fanout, conditional expansion, or bounded iterative review.",
-  "You do not have direct repository tools. All exploration, planning, review, editing, and command execution must happen in graph nodes with the appropriate role.",
-  "Use explorer, planner, and reviewer for read-only work. Use executor for edits or commands; command approval and workspace boundaries still apply.",
-  "Do not create nested workflows. After execution, summarize only from the structured graph results and report node or resolver failures explicitly.",
+  "Use the resolvers field when the task needs fanout, conditional expansion, or bounded iterative review; every resolver nodeId must name an initial node.",
+  "Graph nodes do not have access to runDynamicGraph and cannot create nested workflows.",
+];
+
+const REACT_SYSTEM_PROMPT = [
+  "You are LoopAgent, a coding assistant working in the current VS Code workspace.",
+  ...DIRECT_TOOL_GUIDANCE,
+].join("\n");
+
+const AGENT_SYSTEM_PROMPT = [
+  "You are LoopAgent, a coding assistant working in the current VS Code workspace.",
+  ...GRAPH_TOOL_GUIDANCE,
+  ...DIRECT_TOOL_GUIDANCE,
 ].join("\n");
 
 export type CreateConfiguredAgentRunnerDeps = {
@@ -144,6 +153,7 @@ export async function createConfiguredAgentRunner(
     tools: ReactAgentTool[],
     requiredToolNames: string[] | undefined,
     basePrompt: string,
+    requiredAnyOfToolNames?: string[],
   ): AgentRunner => createReactAgentRunner({
     providerName: provider.displayName,
     tools,
@@ -158,6 +168,7 @@ export async function createConfiguredAgentRunner(
     },
     onCheckpoint: deps.onCheckpoint,
     requiredToolNames,
+    requiredAnyOfToolNames,
     analyzeImages: deps.imageAnalysisService
       ? async (request) => {
           return await deps.imageAnalysisService!.analyzeAttachments(
@@ -196,11 +207,13 @@ export async function createConfiguredAgentRunner(
         },
       });
       const unsubscribe = orchestrator.onEvent((event) => events.push(toHostMessage(event, request.runId)));
-      const tools = createDynamicWorkflowTools({ orchestrator, availableTools: parentTools, signal: request.signal });
+      const graphTools = createDynamicWorkflowTools({ orchestrator, availableTools: parentTools, signal: request.signal });
+      const tools = [...parentTools, ...graphTools];
       const parentRunner = createParentRunner(
         tools,
-        ["createDynamicGraph", "executeDynamicGraph"],
-        DYNAMIC_GRAPH_SYSTEM_PROMPT,
+        undefined,
+        AGENT_SYSTEM_PROMPT,
+        tools.map((tool) => tool.name),
       );
 
       let parentError: unknown;

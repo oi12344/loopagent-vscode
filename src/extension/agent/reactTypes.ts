@@ -42,6 +42,12 @@ export type ReactAgentToolInvocation = {
 export type ReactAgentToolResult = {
   content: string;
   evidence: MemoryEvidence[];
+  /** Defaults to true. A tool sets this to false when the call succeeded (no error) but
+   * turned up nothing usable -- e.g. a search that found no matches. Distinct from
+   * `succeeded`: an unproductive call is not a failure (must not trip failure retries or
+   * the consecutive-failure circuit breaker) but must not count as evidence toward
+   * `requiredAnyOfToolNames`, which exists specifically to stop answers built on nothing. */
+  productive?: boolean;
 };
 
 export type ReactAgentTool = {
