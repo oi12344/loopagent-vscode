@@ -22,8 +22,9 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByRole("heading", { name: "LoopAgent" })).toBeInTheDocument();
     expect(screen.getByRole("form", { name: "Chat composer" })).toHaveClass("chat-composer");
     expect(screen.getByLabelText("Message")).toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "Mode" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Edit" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("group", { name: "Mode" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Ask" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "DeepSeek v4 Flash" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Think: On" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
@@ -41,7 +42,6 @@ describe("LoopAgent webview app", () => {
       type: "startTask",
       runId: expect.stringMatching(/^run-/),
       task: "Explain the active file",
-      mode: "ask",
       model: { provider: "deepseek", model: "deepseek-v4-flash", thinking: "enabled" },
     });
     expect(screen.getByText("Explain the active file")).toBeInTheDocument();
@@ -178,7 +178,6 @@ describe("LoopAgent webview app", () => {
       type: "startTask",
       runId: expect.stringMatching(/^run-/),
       task: "hello",
-      mode: "edit",
       model: {
         provider: "deepseek",
         model: "deepseek-v4-flash",
@@ -189,38 +188,18 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
   });
 
-  it("sends typed tasks in the selected Ask mode", async () => {
+  it("sends typed tasks without a task mode", async () => {
     const user = userEvent.setup();
     const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
     render(<App vscodeApi={{ postMessage }} />);
 
-    await user.click(screen.getByRole("button", { name: "Ask" }));
     await user.type(screen.getByLabelText("Message"), "Explain this function");
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     expect(postMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "startTask", task: "Explain this function", mode: "ask" }),
+      expect.objectContaining({ type: "startTask", task: "Explain this function" }),
     );
-  });
-
-  it("keeps Edit selected after completing an Edit-mode run", async () => {
-    const user = userEvent.setup();
-    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
-    render(<App vscodeApi={{ postMessage }} />);
-
-    await user.type(screen.getByLabelText("Message"), "Add logging");
-    await user.click(screen.getByRole("button", { name: "Send" }));
-    postHostMessage({ type: "runStarted", runId: "run-1", task: "Add logging" });
-    postHostMessage({ type: "runFinished", runId: "run-1" });
-
-    expect(screen.getByRole("button", { name: "Edit" })).toHaveAttribute("aria-pressed", "true");
-
-    await user.type(screen.getByLabelText("Message"), "What does this method do?");
-    await user.click(screen.getByRole("button", { name: "Send" }));
-
-    expect(postMessage).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "startTask", task: "What does this method do?", mode: "edit" }),
-    );
+    expect(postMessage.mock.calls.at(-1)?.[0]).not.toHaveProperty("mode");
   });
 
   it("shows workflow and subagent progress without replacing the assistant answer", () => {

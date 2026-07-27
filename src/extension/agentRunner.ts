@@ -1,11 +1,10 @@
-import type { HostToWebviewMessage, TaskMode, MessageAttachment } from "../shared/messages";
+import type { HostToWebviewMessage, MessageAttachment } from "../shared/messages";
 import type { ChatMessage, InterruptedRunCheckpoint } from "../shared/chatTypes";
 import type { ReactAgentMessage } from "./agent/reactTypes";
 
 export type AgentRunRequest = {
   runId: string;
   task: string;
-  mode?: TaskMode;
   signal: AbortSignal;
   conversationHistory?: ChatMessage[];
   initialMessages?: ReactAgentMessage[];
@@ -26,7 +25,6 @@ export type PostHostMessage = (message: HostToWebviewMessage) => boolean | void 
 
 export type StartAgentRunOptions = {
   task: string;
-  mode?: TaskMode;
   runner: AgentRunner | PromiseLike<AgentRunner>;
   postMessage: PostHostMessage;
   runId?: string;
@@ -44,7 +42,6 @@ export type AgentRunHandle = {
 
 export function startAgentRun({
   task,
-  mode = "ask",
   runner,
   postMessage,
   runId = createRunId(),
@@ -57,7 +54,6 @@ export function startAgentRun({
   const request: AgentRunRequest = {
     runId,
     task,
-    mode,
     signal: abortController.signal,
     conversationHistory,
     conversationId,

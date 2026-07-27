@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { EditFileStat, HostToWebviewMessage, ModelThinkingMode, RunModelSelection, TaskMode } from "../shared/messages";
+import type { EditFileStat, HostToWebviewMessage, ModelThinkingMode, RunModelSelection } from "../shared/messages";
 import type { ConversationSummary } from "../shared/chatTypes";
 import { createDefaultVsCodeApi, type VsCodeApi } from "./vscodeApi";
 import "./styles.css";
@@ -88,7 +88,6 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [turns, setTurns] = React.useState<ChatTurn[]>([]);
   const [selectedModelId, setSelectedModelId] = React.useState(modelOptions[0].id);
   const [thinkingMode, setThinkingMode] = React.useState<ModelThinkingMode>("enabled");
-  const [taskMode, setTaskMode] = React.useState<TaskMode>("edit");
   const [openMenu, setOpenMenu] = React.useState<"model" | "thinking" | "history" | null>(null);
   const [conversationId, setConversationId] = React.useState<string | undefined>(undefined);
   const [conversations, setConversations] = React.useState<ConversationSummary[]>([]);
@@ -496,7 +495,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
     vscodeApi.postMessage({ type: "switchConversation", conversationId: targetConversationId });
   }
 
-  function submitTask(task: string, mode: TaskMode = taskMode) {
+  function submitTask(task: string) {
     const trimmedMessage = task.trim();
 
     if (!trimmedMessage || isRunning) {
@@ -529,11 +528,10 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         runId,
         conversationId,
         userMessage: trimmedMessage,
-        mode,
         model: runModel,
       });
     } else {
-      vscodeApi.postMessage({ type: "startTask", runId, task: trimmedMessage, mode, model: runModel });
+      vscodeApi.postMessage({ type: "startTask", runId, task: trimmedMessage, model: runModel });
     }
   }
 
@@ -578,7 +576,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         {turns.length === 0 ? (
           <>
             <p className="empty-state">Start a conversation with LoopAgent.</p>
-            <TaskSuggestions onSelect={(task) => submitTask(task, "ask")} />
+            <TaskSuggestions onSelect={submitTask} />
           </>
         ) : (
           turns.map((turn) => {
@@ -637,15 +635,6 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
 
         <div className="composer-toolbar">
           <div className="composer-tools" ref={composerToolsRef}>
-            <div className="mode-switch" role="group" aria-label="Mode">
-              <button type="button" className="mode-button" aria-pressed={taskMode === "edit"} onClick={() => setTaskMode("edit")}>
-                Edit
-              </button>
-              <button type="button" className="mode-button" aria-pressed={taskMode === "ask"} onClick={() => setTaskMode("ask")}>
-                Ask
-              </button>
-            </div>
-
             <div className="tool-menu-anchor">
               <button type="button" className="chip-button" onClick={() => setOpenMenu(openMenu === "model" ? null : "model")}>
                 {selectedModel.label}

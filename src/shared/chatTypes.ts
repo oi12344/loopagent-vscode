@@ -23,7 +23,6 @@ export type InterruptedRunCheckpoint = {
   conversationId: string;
   runId: string;
   task: string;
-  mode?: "ask" | "edit";
   model?: {
     provider: "deepseek";
     model: string;

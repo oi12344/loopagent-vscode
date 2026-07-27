@@ -21,7 +21,7 @@ import { createConversationStore } from "./extension/conversation/conversationSt
 import type { ConversationStore } from "./extension/conversation/conversationStore";
 import { createPersistentConversationStore } from "./extension/conversation/persistentConversationStore";
 import { createConversationManager, type ConversationManager } from "./extension/conversation/conversationManager";
-import type { WebviewToHostMessage, HostToWebviewMessage, TaskMode, RunModelSelection } from "./shared/messages";
+import type { WebviewToHostMessage, HostToWebviewMessage, RunModelSelection, MessageAttachment } from "./shared/messages";
 import type { ChatMessage, InterruptedRunCheckpoint } from "./shared/chatTypes";
 import { LocalVisionService } from "./extension/vision/localVisionService";
 import { ImageAnalysisService } from "./extension/vision/imageAnalysisService";
@@ -219,7 +219,6 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private activeWebviewView: vscode.WebviewView | undefined;
   private readonly conversationStore: ConversationStore & { close?(): void };
   private readonly conversationManager: ConversationManager;
-  private activeRunInfo: { conversationId: string; task: string; mode: TaskMode; model?: RunModelSelection } | undefined;
   private currentConversationId: string | undefined;
   private readonly visionService: LocalVisionService;
   private readonly imageAnalysisService: ImageAnalysisService;
@@ -430,7 +429,6 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.executeRun(
       message.runId,
       checkpoint.task,
-      "ask",
       checkpoint.model,
       this.conversationManager.getConversationHistory(conversation.conversationId),
       conversation.conversationId,
@@ -468,7 +466,6 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.executeRun(
       message.runId,
       message.task,
-      message.mode,
       message.model,
       conversationHistory,
       conversation.conversationId,
@@ -495,7 +492,6 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.executeRun(
       message.runId,
       message.userMessage,
-      "ask",
       message.model,
       conversationHistory,
       message.conversationId,
@@ -508,7 +504,6 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private executeRun(
     runId: string,
     task: string,
-    mode: TaskMode | undefined,
     model: RunModelSelection | undefined,
     conversationHistory: ChatMessage[],
     conversationId: string,
@@ -523,7 +518,6 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     const run = startAgentRun({
       runId,
       task,
-      mode: "ask",
       attachments,
       runner: createConfiguredAgentRunner(this.context, model, {
         workspaceIntelligence: this.workspaceIntelligence,
@@ -535,7 +529,6 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
           this.conversationManager.saveInterruptedRun({
             ...checkpoint,
             conversationId,
-            mode: "ask",
             model,
           });
         },
@@ -570,11 +563,9 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     this.activeRun = run;
-    this.activeRunInfo = { conversationId, task, mode: "ask", model };
     void run.done.finally(() => {
       if (this.activeRun === run) {
         this.activeRun = undefined;
-        this.activeRunInfo = undefined;
       }
     });
   }

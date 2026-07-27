@@ -27,9 +27,6 @@ export type ModelProviderId = "deepseek";
 /** 模型思维模式 */
 export type ModelThinkingMode = "disabled" | "enabled";
 
-/** 任务执行模式 */
-export type TaskMode = "ask" | "edit";
-
 /** 模型运行配置 */
 export type RunModelSelection = {
   provider: ModelProviderId;
@@ -45,7 +42,6 @@ export type WebviewToHostMessage =
       type: "startTask";
       runId: string;
       task: string;
-      mode?: TaskMode;
       model?: RunModelSelection;
       attachments?: MessageAttachment[];
     }
@@ -54,7 +50,6 @@ export type WebviewToHostMessage =
       runId: string;
       conversationId: string;
       userMessage: string;
-      mode?: TaskMode;
       model?: RunModelSelection;
       attachments?: MessageAttachment[];
     }

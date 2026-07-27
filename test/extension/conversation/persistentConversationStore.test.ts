@@ -196,7 +196,6 @@ describe("createPersistentConversationStore", () => {
       conversationId: context.conversationId,
       runId: "run-1",
       task: "Continue the task",
-      mode: "edit",
       step: 2,
       messages: [
         { role: "user", content: "Continue the task" },

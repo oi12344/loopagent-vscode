@@ -27,9 +27,9 @@ async function collectRunnerMessages(
   return messages;
 }
 
-async function collectRunnerMessagesInMode(runner: AgentRunner, mode: "ask" | "edit", task: string) {
+async function collectRunnerMessagesForTask(runner: AgentRunner, task: string) {
   const messages: HostToWebviewMessage[] = [];
-  for await (const message of runner.run({ runId: "run-1", task, mode, signal: new AbortController().signal })) {
+  for await (const message of runner.run({ runId: "run-1", task, signal: new AbortController().signal })) {
     messages.push(message);
   }
   return messages;
@@ -695,7 +695,7 @@ describe("createReactAgentRunner", () => {
     expect(order).toEqual(["read", "edit"]);
   });
 
-  it("allows an Edit-mode task to continue after applyEdit without forced review step", async () => {
+  it("continues after applyEdit without a forced review step", async () => {
     const choices: unknown[] = [];
     const order: string[] = [];
     let turn = 0;
@@ -755,7 +755,7 @@ describe("createReactAgentRunner", () => {
       },
     });
 
-    const messages = await collectRunnerMessagesInMode(runner, "edit", "每个方法添加日志");
+    const messages = await collectRunnerMessagesForTask(runner, "每个方法添加日志");
 
     expect(choices).toEqual([
       "auto",
@@ -766,7 +766,7 @@ describe("createReactAgentRunner", () => {
     expect(messages).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "Changes were applied." });
   });
 
-  it("returns a direct answer in Edit mode without opening a review", async () => {
+  it("returns a direct answer without opening a review", async () => {
     const choices: unknown[] = [];
     const runner = createReactAgentRunner({
       tools: [
@@ -779,7 +779,7 @@ describe("createReactAgentRunner", () => {
       },
     });
 
-    const messages = await collectRunnerMessagesInMode(runner, "edit", "What does ensure_admin_user do?");
+    const messages = await collectRunnerMessagesForTask(runner, "What does ensure_admin_user do?");
 
     expect(choices).toEqual(["auto"]);
     expect(messages).toContainEqual({
@@ -842,7 +842,7 @@ describe("createReactAgentRunner", () => {
       },
     });
 
-    const messages = await collectRunnerMessagesInMode(runner, "edit", "修改文件");
+    const messages = await collectRunnerMessagesForTask(runner, "修改文件");
 
     expect(choices).toEqual([
       "auto",
@@ -873,7 +873,7 @@ describe("createReactAgentRunner", () => {
       },
     });
 
-    await expect(collectRunnerMessagesInMode(runner, "edit", "修改文件")).resolves.toContainEqual({
+    await expect(collectRunnerMessagesForTask(runner, "修改文件")).resolves.toContainEqual({
       type: "assistantDelta",
       runId: "run-1",
       content: "The edit could not be applied because the target text no longer matches.",

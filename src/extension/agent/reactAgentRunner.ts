@@ -103,7 +103,6 @@ export function createReactAgentRunner({
             conversationId: request.conversationId ?? resumedCheckpoint?.conversationId ?? "",
             runId,
             task,
-            mode: request.mode,
             step,
             messages: messages.map((message) => ({ ...message })),
             updatedAt: Date.now(),
