@@ -9,7 +9,7 @@ const { CODE_EXPLORATION_QUESTION, evaluateCodeExploration } = require(
 
 const root = resolve(import.meta.dirname, "..");
 const CDP_PORT = 9333;
-const WAIT_TIMEOUT_MS = 120_000;
+const WAIT_TIMEOUT_MS = 300_000;
 const TARGET_TIMEOUT_MS = 20_000;
 const CONNECTION_TIMEOUT_MS = 10_000;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -263,6 +263,15 @@ async function submitQuestion(session, question) {
     if (!webviewWindow) {
       return { ok: false, reason: "webview window missing" };
     }
+    const newChatButton = [...webviewDocument.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "New chat",
+    );
+    if (!(newChatButton instanceof webviewWindow.HTMLButtonElement)) {
+      return { ok: false, reason: "new chat button missing" };
+    }
+    newChatButton.click();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
     const modelLabel = "DeepSeek v4 Flash";
     const modelButton = webviewDocument.querySelector(
       "form.chat-composer .composer-tools .tool-menu-anchor:first-child > button",
@@ -303,11 +312,34 @@ async function submitQuestion(session, question) {
       'form.chat-composer button[type="submit"]',
     );
     if (!(submit instanceof webviewWindow.HTMLButtonElement) || submit.disabled) {
-      return { ok: false, reason: "submit button unavailable" };
+      return {
+        ok: false,
+        reason:
+          "submit button unavailable (value=" +
+          textarea.value.length +
+          ", disabled=" +
+          submit?.disabled +
+          ")",
+      };
     }
     const assistantTurnCount = webviewDocument.querySelectorAll(
       ".message-assistant",
     ).length;
+    webviewWindow.__loopAgentE2eWorkflow?.observer?.disconnect();
+    const workflowEvents = [];
+    const workflowStates = new Map();
+    const recordWorkflow = () => {
+      const agents = [...webviewDocument.querySelectorAll(".workflow-timeline span")].slice(1);
+      for (const agent of agents) {
+        const match = agent.textContent?.trim().match(/^(.+): (pending|running|completed|failed|cancelled)$/);
+        if (!match || workflowStates.get(match[1]) === match[2]) continue;
+        workflowStates.set(match[1], match[2]);
+        workflowEvents.push({ agentId: match[1], status: match[2], at: Date.now() });
+      }
+    };
+    const observer = new webviewWindow.MutationObserver(recordWorkflow);
+    observer.observe(webviewDocument.body, { childList: true, characterData: true, subtree: true });
+    webviewWindow.__loopAgentE2eWorkflow = { events: workflowEvents, observer };
     submit.click();
     return { ok: true, assistantTurnCount };
   })()`);
@@ -326,11 +358,29 @@ async function waitForAnswer(session, previousTurnCount) {
     const state = await session.evaluate(`(() => {
       const webviewDocument =
         document.getElementById("active-frame")?.contentDocument ?? document;
+      const webviewWindow = webviewDocument.defaultView ?? window;
       const turns = [...webviewDocument.querySelectorAll(".message-assistant")];
       if (turns.length <= ${previousTurnCount}) return null;
       const turn = turns.at(-1);
+      const toolCalls = [...(turn?.querySelectorAll(".tool-call-entry") ?? [])].map((entry) => ({
+        name: entry.querySelector(".tool-call-name")?.textContent?.trim() ?? "",
+        input: entry.querySelector(".tool-call-input")?.textContent?.trim() ?? "",
+        output: entry.querySelector(".tool-call-output")?.textContent?.trim() ?? "",
+      }));
+      const graphDefinitions = toolCalls
+        .filter((call) => call.name === "createDynamicGraph")
+        .map((call) => {
+          try { return JSON.parse(call.output).nodes; } catch { return undefined; }
+        })
+        .filter(Array.isArray);
       return {
-        process: turn?.querySelector(".process-details")?.innerText ?? "",
+        process: [
+          ...toolCalls.map((call) => [call.name, call.input].filter(Boolean).join(" ")),
+          turn?.querySelector(".workflow-timeline")?.innerText ?? "",
+          turn?.querySelector(".message-meta")?.innerText ?? "",
+        ].filter(Boolean).join("\\n"),
+        workflowEvents: webviewWindow.__loopAgentE2eWorkflow?.events ?? [],
+        graphNodes: graphDefinitions.length === 1 ? graphDefinitions[0] : [],
         answer: turn?.querySelector(".assistant-answer")?.innerText ?? "",
         error: turn?.querySelector('[role="alert"]')?.innerText ?? "",
       };
@@ -396,6 +446,9 @@ async function main() {
           matchedAnchors: evaluation.matchedAnchors,
           matchedPaths: evaluation.matchedPaths,
           missingStates: evaluation.missingStates,
+          toolCalls: evaluation.toolCalls,
+          parallelReadOnlyNodes: evaluation.parallelReadOnlyNodes,
+          reviewerCompleted: evaluation.reviewerCompleted,
           answerLength: result.answer.length,
           screenshotPath: SCREENSHOT_PATH,
         },

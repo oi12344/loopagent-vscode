@@ -253,3 +253,11 @@ git commit -m "test: verify forced dynamic graph runtime"
 ```
 
 最后审查 `git diff HEAD~7..HEAD`：主 Agent 无直接文件/命令工具，子 Agent 无图控制工具，旧 checkpoint 兼容，无 token 和临时调试代码。
+
+## 完成记录（2026-07-27）
+
+- 任务 1 至任务 6 已完成并分别提交；生产请求默认强制进入 `DynamicGraphEngine`，Edit/Ask 模式已删除。
+- 真实 E2E 暴露并修复两个运行时问题：角色白名单被二次裁剪成单工具，以及 60 秒节点配置被默认 30 秒上限截断。
+- `npm run test:e2e:code-exploration` 使用 DeepSeek v4 Flash 通过：单张三节点图调用 `createDynamicGraph`、`executeDynamicGraph`，两个只读节点并发，双依赖 reviewer 后置完成，回答命中 4 个关键函数和 12 个真实源码路径。
+- 最终审查补齐：重试退避可取消、resolver 批量扩图原子验证、建图结果包含角色/依赖摘要、失效 `graphId` 明确提示重建。
+- 同一 Extension Development Host 完成验证；截图保存在 `.artifacts/code-exploration-e2e.png`。密钥未写入仓库、脚本、日志或文档。

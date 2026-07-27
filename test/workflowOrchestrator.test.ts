@@ -254,7 +254,7 @@ describe("workflow orchestrator", () => {
     }
   });
 
-  it("caps a requested timeout at the default workflow limit", async () => {
+  it("allows a 60 second timeout at the default workflow limit", async () => {
     vi.useFakeTimers();
     const orchestrator = createWorkflowOrchestrator({
       createRunner: () => runner(async function* ({ signal }) {
@@ -267,11 +267,11 @@ describe("workflow orchestrator", () => {
     void waiting.then(() => { settled = true; });
 
     try {
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(60_000);
       expect(settled).toBe(true);
       expect((await waiting).get(id)).toEqual({
         status: "failed",
-        error: "Subagent timed out after 30000ms",
+        error: "Subagent timed out after 60000ms",
       });
     } finally {
       orchestrator.cancelAll();

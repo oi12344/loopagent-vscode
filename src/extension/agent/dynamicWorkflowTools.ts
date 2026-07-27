@@ -106,7 +106,15 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 				const graphId = `graph-${nextGraphId++}`;
 				activeGraphs.set(graphId, { engine, resolvers, initialNodeIds: new Set(initialNodes.map((node) => node.id)) });
 
-				return JSON.stringify({ graphId, nodeCount: initialNodes.length });
+				return JSON.stringify({
+					graphId,
+					nodeCount: initialNodes.length,
+					nodes: initialNodes.map((node) => ({
+						id: node.id,
+						role: node.role ?? "explorer",
+						dependsOn: node.dependsOn ?? [],
+					})),
+				});
 			},
 		},
 		{
@@ -124,7 +132,7 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 				const graphId = requireString(requireRecord(input).graphId, "graphId");
 				const activeGraph = activeGraphs.get(graphId);
 				if (!activeGraph) {
-					throw new Error(`Graph ${graphId} not found`);
+					throw new Error(`Graph ${graphId} not found. Call createDynamicGraph to create a new graph before executeDynamicGraph.`);
 				}
 
 				const resolverFailures: Array<{ nodeId: string; error: string }> = [];

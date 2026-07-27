@@ -990,9 +990,9 @@ function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; w
       ) : null}
 
       {turn.content.length > 0 ? <div className="message-body assistant-answer">{turn.content}</div> : null}
-      {workflow?.phase ? (
+      {workflow && (workflow.phase || workflow.agents.length > 0) ? (
         <div className="workflow-timeline" aria-label="Workflow progress">
-          <span>{workflow.phase}</span>
+          <span>{workflow.phase ?? "Workflow"}</span>
           {workflow.agents.map((agent) => <span key={agent}>{agent}</span>)}
         </div>
       ) : null}

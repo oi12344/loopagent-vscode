@@ -54,6 +54,7 @@ describe("LoopAgent extension workspace intelligence lifecycle", () => {
         registerCodeLensProvider: vi.fn(() => createDisposable()),
       },
       workspace: {
+        getConfiguration: vi.fn(() => ({ get: vi.fn() })),
         registerTextDocumentContentProvider: vi.fn(() => createDisposable()),
       },
     }));
@@ -69,7 +70,7 @@ describe("LoopAgent extension workspace intelligence lifecycle", () => {
 
     const { activate, deactivate } = await import("../src/extension");
     const storageUri = { fsPath: "E:\\storage" };
-    activate({ subscriptions: [], extensionUri: { fsPath: "E:\\work\\extension" }, storageUri } as never);
+    activate({ subscriptions: [], extensionPath: "E:\\work\\extension", extensionUri: { fsPath: "E:\\work\\extension" }, storageUri } as never);
 
     const webviewView = createFakeWebviewView((listener) => {
       messageListener = listener;
@@ -150,6 +151,7 @@ describe("LoopAgent extension workspace intelligence lifecycle", () => {
         registerCodeLensProvider: vi.fn(() => createDisposable()),
       },
       workspace: {
+        getConfiguration: vi.fn(() => ({ get: vi.fn() })),
         registerTextDocumentContentProvider: vi.fn(() => createDisposable()),
       },
     }));
@@ -164,7 +166,7 @@ describe("LoopAgent extension workspace intelligence lifecycle", () => {
     }));
 
     const { activate } = await import("../src/extension");
-    activate({ subscriptions: [], extensionUri: { fsPath: "E:\\work\\extension" }, storageUri: { fsPath: "E:\\storage" } } as never);
+    activate({ subscriptions: [], extensionPath: "E:\\work\\extension", extensionUri: { fsPath: "E:\\work\\extension" }, storageUri: { fsPath: "E:\\storage" } } as never);
 
     registeredProvider?.resolveWebviewView(createFakeWebviewView((listener) => {
       messageListener = listener;

@@ -215,6 +215,16 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByText("implementer-1: running")).toBeInTheDocument();
   });
 
+  it("shows dynamic subagent progress before a workflow phase is reported", () => {
+    render(<App />);
+
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "LoopAgent" });
+    postHostMessage({ type: "subagentStateChanged", runId: "run-1", agentId: "explorer-1", status: "running" });
+
+    expect(screen.getByText("Workflow")).toBeInTheDocument();
+    expect(screen.getByText("explorer-1: running")).toBeInTheDocument();
+  });
+
   it("renders assistant process and streamed answer", async () => {
     const user = userEvent.setup();
     const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();

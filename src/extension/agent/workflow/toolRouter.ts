@@ -17,6 +17,8 @@ export function selectTools(
     if (hintedTools.length > 0) return hintedTools;
   }
 
+  if (allowedTools) return scopedTools;
+
   const taskWords = words(task);
   const matchedTools = scopedTools.filter(
     (tool) => !HIGH_COST_TOOLS.has(tool.name.toLowerCase()) && [...words(`${tool.name} ${tool.description}`)].some((word) => taskWords.has(word)),

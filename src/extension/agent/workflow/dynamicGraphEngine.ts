@@ -121,6 +121,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 	const visualizer = createGraphVisualizer(context, dataFlowManager);
 	const listeners = new Set<GraphExecutionListener>();
 	const pendingResolvers = new Map<DynamicNodeId, Set<DynamicNodeId>>();
+	const cancellationController = new AbortController();
 	let cancelled = false;
 
 	function emit(event: GraphExecutionEvent): void {
@@ -141,7 +142,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			throw new Error(`Maximum nodes limit (${maxNodes}) exceeded`);
 		}
 
-		const depth = calculateNodeDepth(config.id, dependencies);
+		const depth = calculateNodeDepth(dependencies);
 		if (depth > maxDepth) {
 			throw new Error(`Maximum depth (${maxDepth}) exceeded for node ${config.id}`);
 		}
@@ -167,7 +168,11 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 		return config.id;
 	}
 
-	function calculateNodeDepth(nodeId: DynamicNodeId, dependencies: DynamicNodeId[]): number {
+	function calculateNodeDepth(
+		dependencies: DynamicNodeId[],
+		getDependencies: (nodeId: DynamicNodeId) => ReadonlySet<DynamicNodeId> | undefined =
+			(nodeId) => context.nodes.get(nodeId)?.dependencies,
+	): number {
 		const visited = new Set<DynamicNodeId>();
 		const stack: Array<{ id: DynamicNodeId; depth: number }> = dependencies.map((id) => ({ id, depth: 1 }));
 		let maxDepth = dependencies.length > 0 ? 1 : 0;
@@ -178,15 +183,55 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			visited.add(current.id);
 
 			maxDepth = Math.max(maxDepth, current.depth);
-			const node = context.nodes.get(current.id);
-			if (node) {
-				for (const depId of node.dependencies) {
+			const nodeDependencies = getDependencies(current.id);
+			if (nodeDependencies) {
+				for (const depId of nodeDependencies) {
 					stack.push({ id: depId, depth: current.depth + 1 });
 				}
 			}
 		}
 
 		return maxDepth;
+	}
+
+	function validateNodeBatch(configs: DynamicNodeConfig[], sourceNodeId: DynamicNodeId) {
+		const projectedDependencies = new Map(
+			[...context.nodes].map(([id, node]) => [id, new Set(node.dependencies)] as const),
+		);
+
+		return configs.map((config) => {
+			if (projectedDependencies.has(config.id)) throw new Error(`Duplicate node id: ${config.id}`);
+			if (projectedDependencies.size >= maxNodes) throw new Error(`Maximum nodes limit (${maxNodes}) exceeded`);
+			const dependencies = [...new Set([sourceNodeId, ...(config.dependsOn ?? [])])];
+			for (const dependencyId of dependencies) {
+				if (!projectedDependencies.has(dependencyId)) {
+					throw new Error(`Node "${config.id}" declares dependsOn "${dependencyId}", which is not present in the graph`);
+				}
+			}
+			const depth = calculateNodeDepth(dependencies, (id) => projectedDependencies.get(id));
+			if (depth > maxDepth) throw new Error(`Maximum depth (${maxDepth}) exceeded for node ${config.id}`);
+			projectedDependencies.set(config.id, new Set(dependencies));
+			return { config, dependencies };
+		});
+	}
+
+	function waitForBackoff(milliseconds: number): Promise<void> {
+		const signals = signal ? [cancellationController.signal, signal] : [cancellationController.signal];
+		if (signals.some((candidate) => candidate.aborted)) return Promise.resolve();
+
+		return new Promise((resolve) => {
+			let settled = false;
+			const finish = () => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				for (const candidate of signals) candidate.removeEventListener("abort", finish);
+				resolve();
+			};
+			const timer = setTimeout(finish, milliseconds);
+			for (const candidate of signals) candidate.addEventListener("abort", finish, { once: true });
+			if (signals.some((candidate) => candidate.aborted)) finish();
+		});
 	}
 
 	function updateNodeStatus(nodeId: DynamicNodeId, status: NodeStatus): void {
@@ -298,7 +343,8 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			if (!result || result.status === "completed" || result.status === "cancelled") break;
 			if (attempt < maxAttempts) {
 				if (cancelled || signal?.aborted) break;
-				if (backoffMs > 0) await new Promise((resolve) => setTimeout(resolve, backoffMs));
+				if (backoffMs > 0) await waitForBackoff(backoffMs);
+				if (cancelled || signal?.aborted) break;
 			}
 		}
 
@@ -333,16 +379,9 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			const newNodeConfigs = await resolver(nodeId, completedNodes, context);
 			if (newNodeConfigs.length === 0) return;
 
-			const newNodeIds: DynamicNodeId[] = [];
-			for (const config of newNodeConfigs) {
-				const dependencies = [...new Set([nodeId, ...(config.dependsOn ?? [])])];
-				for (const dependencyId of dependencies) {
-					if (!context.nodes.has(dependencyId)) {
-						throw new Error(`Node "${config.id}" declares dependsOn "${dependencyId}", which is not present in the graph`);
-					}
-				}
-				const id = addNode(config, dependencies);
-				newNodeIds.push(id);
+			const plannedNodes = validateNodeBatch(newNodeConfigs, nodeId);
+			for (const { config, dependencies } of plannedNodes) {
+				addNode(config, dependencies);
 			}
 
 			emit({ type: "DependenciesResolved", nodeId, newNodes: newNodeConfigs });
@@ -417,6 +456,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 
 	function cancel(): void {
 		cancelled = true;
+		cancellationController.abort();
 		for (const [nodeId, node] of context.nodes) {
 			if (node.status === "pending" || node.status === "ready" || node.status === "running") {
 				node.finishedAt = node.finishedAt ?? new Date();

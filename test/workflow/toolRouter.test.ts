@@ -41,12 +41,18 @@ describe("ToolRouter", () => {
     ]);
   });
 
-  it("falls back within the role whitelist when the task only matches an excluded tool", () => {
-    expect(names(selectTools("propose an edit", tools, undefined, ["exploreCode", "readFile"]))).toEqual(["readFile"]);
+  it("keeps the full role tool set when no explicit hints are provided", () => {
+    expect(names(selectTools("propose an edit", tools, undefined, ["exploreCode", "readFile"]))).toEqual([
+      "readFile",
+      "exploreCode",
+    ]);
   });
 
-  it("restricts the fallback tool to the role whitelist", () => {
-    expect(names(selectTools("xyz abc 123", tools, undefined, ["exploreCode", "readFile"]))).toEqual(["readFile"]);
+  it("keeps the full role tool set when hints do not name tools", () => {
+    expect(names(selectTools("xyz abc 123", tools, ["explorer"], ["exploreCode", "readFile"]))).toEqual([
+      "readFile",
+      "exploreCode",
+    ]);
   });
 
   it("returns no tools when the role whitelist excludes everything available", () => {

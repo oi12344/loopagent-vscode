@@ -614,6 +614,24 @@ describe("Dynamic Graph Workflow Integration", () => {
 		expect(resolverFailedEvent?.error).toContain("resolver blew up");
 	});
 
+	it("does not add a partial resolver batch when a later node is invalid", async () => {
+		const orchestrator = createWorkflowOrchestrator({ createRunner: mockRunnerFactory });
+		const definition: DynamicGraphDefinition = {
+			initialNodes: [{ id: "source", task: "Generate data" }],
+			resolvers: new Map([
+				["source", async () => [
+					{ id: "valid", task: "Would run" },
+					{ id: "invalid", task: "Must reject batch", dependsOn: ["missing"] },
+				]],
+			]),
+		};
+		const engine = createDynamicGraphEngine({ definition, orchestrator, availableTools: mockTools });
+
+		await engine.execute();
+
+		expect(engine.getContext().nodes.has("valid")).toBe(false);
+	});
+
 	it("should launch downstream nodes as soon as their own dependency finishes, without waiting for slower sibling branches (T6)", async () => {
 		const log: string[] = [];
 		const runnerFactory = vi.fn().mockImplementation(async ({ task }: { task: string }) => ({
@@ -756,6 +774,38 @@ describe("Dynamic Graph Workflow Integration", () => {
 		expect(context.nodes.get("flaky")?.status).toBe("completed");
 		expect(context.nodes.get("flaky")?.attempts).toBe(2);
 		expect(callCount).toBe(2);
+	});
+
+	it("cancels immediately while waiting for retry backoff", async () => {
+		vi.useFakeTimers();
+		const orchestrator = createWorkflowOrchestrator({
+			createRunner: () => ({
+				run: async function* () {
+					yield { type: "runFailed", message: "retry later" };
+				},
+			}),
+		});
+		const engine = createDynamicGraphEngine({
+			definition: {
+				initialNodes: [{ id: "slow-retry", task: "Retry", retry: { maxAttempts: 2, backoffMs: 10_000 } }],
+			},
+			orchestrator,
+			availableTools: mockTools,
+		});
+		const execution = engine.execute();
+		let settled = false;
+		void execution.then(() => { settled = true; });
+
+		try {
+			await vi.advanceTimersByTimeAsync(0);
+			engine.cancel();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(settled).toBe(true);
+		} finally {
+			await vi.advanceTimersByTimeAsync(10_000);
+			await execution;
+			vi.useRealTimers();
+		}
 	});
 
 	it("should exhaust retries and report failed once maxAttempts is reached (T9)", async () => {

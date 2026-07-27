@@ -41,7 +41,7 @@ const DEFAULT_LIMITS: WorkflowLimits = {
   maxSubagentsPerRun: 50,
   maxNestingDepth: 3,
   maxConcurrentSubagents: 10,
-  subagentTimeoutMs: 30_000,
+  subagentTimeoutMs: 60_000,
 };
 
 type SubagentEntry = {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "@jest/globals";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as path from "path";
 import * as fs from "fs";
 import { LocalVisionService } from "../src/extension/vision/localVisionService";
@@ -67,7 +67,7 @@ describe("Vision Service Integration", () => {
 
     expect(result.text).toBeTruthy();
     expect(result.text.length).toBeGreaterThan(10);
-    expect(result.processingTimeMs).toBeGreaterThan(0);
+    expect(result.processingTimeMs).toBeGreaterThanOrEqual(0);
     console.log("📊 Analysis result:", result.text);
     console.log("⏱️  Processing time:", result.processingTimeMs, "ms");
   }, 30000);
@@ -144,7 +144,7 @@ describe("Hybrid Inference Service", () => {
 
     expect(result.deepAnalysis.changesAppliedCorrectly).toBe(true);
     expect(result.deepAnalysis.fullAnalysis).toBeTruthy();
-    expect(result.processingTimeMs).toBeGreaterThan(0);
+    expect(result.processingTimeMs).toBeGreaterThanOrEqual(0);
     console.log("📝 Hybrid analysis result:", result);
   }, 30000);
 

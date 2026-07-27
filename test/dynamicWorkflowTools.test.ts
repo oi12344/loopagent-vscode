@@ -39,6 +39,17 @@ describe("dynamic workflow tools", () => {
 			...(index > 0 && { dependsOn: [`depth-${index - 1}`] }),
 		}));
 		await expect(invoke(tools, "createDynamicGraph", { initialNodes: deepNodes })).rejects.toThrow(/maximum depth \(10\)/i);
+		const created = JSON.parse(String(await invoke(tools, "createDynamicGraph", {
+			initialNodes: [
+				{ id: "read", task: "Read", role: "explorer" },
+				{ id: "review", task: "Review", role: "reviewer", dependsOn: ["read"] },
+			],
+		})));
+		expect(created.nodes).toEqual([
+			{ id: "read", role: "explorer", dependsOn: [] },
+			{ id: "review", role: "reviewer", dependsOn: ["read"] },
+		]);
+		await expect(invoke(tools, "executeDynamicGraph", { graphId: "graph-stale" })).rejects.toThrow(/createDynamicGraph.*new graph/i);
 	});
 
 	it("rejects malformed resolver configuration before execution", async () => {

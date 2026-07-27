@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { createDynamicWorkflowTools } from "../src/extension/agent/dynamicWorkflowTools";
-import { createWorkflowOrchestrator } from "../src/extension/agent/workflowOrchestrator";
-import type { ReactAgentTool } from "../src/extension/agent/reactTypes";
+import { createDynamicWorkflowTools } from "../../src/extension/agent/dynamicWorkflowTools";
+import { createWorkflowOrchestrator } from "../../src/extension/agent/workflowOrchestrator";
+import type { ReactAgentTool } from "../../src/extension/agent/reactTypes";
 
 /**
  * 测试通过工具 API 执行动态图工作流
@@ -132,48 +132,12 @@ describe("Dynamic Graph Workflow Tool Execution", () => {
 		console.log(`   完成节点: ${executeData.completedNodes.length}`);
 		console.log(`   执行顺序: ${executeData.executionOrder.join(" → ")}\n`);
 
-		// 步骤 4: 生成 JSON 可视化
-		console.log("📊 步骤 4: 生成 JSON 可视化");
+		// 执行完成后图会被释放
 		const vizTool = tools.find((t) => t.name === "visualizeGraph")!;
-		const vizResult = await vizTool.invoke({
-			input: { graphId, format: "json" },
-		} as any);
-
-		const vizData = JSON.parse(vizResult as string);
-		console.log(`   节点数: ${vizData.visualization.nodes.length}`);
-		console.log(`   边数: ${vizData.visualization.edges.length}`);
-		console.log(`   统计:`, vizData.visualization.stats);
-		console.log();
-
-		// 步骤 5: 生成 Mermaid 图表
-		console.log("📈 步骤 5: 生成 Mermaid 图表");
-		const mermaidResult = await vizTool.invoke({
-			input: { graphId, format: "mermaid" },
-		} as any);
-
-		const mermaidData = JSON.parse(mermaidResult as string);
-		console.log("```mermaid");
-		console.log(mermaidData.diagram);
-		console.log("```\n");
-
-		// 步骤 6: 获取调试信息
-		console.log("🔍 步骤 6: 获取调试信息");
-		const debugTool = tools.find((t) => t.name === "getGraphDebugInfo")!;
-		const debugResult = await debugTool.invoke({
-			input: { graphId },
-		} as any);
-
-		const debugData = JSON.parse(debugResult as string);
-		console.log(`   执行顺序: ${debugData.executionOrder.join(" → ")}`);
-		console.log(`   关键路径: ${debugData.criticalPath.join(" → ")}`);
-		console.log(`   瓶颈节点: ${debugData.bottlenecks.length > 0 ? debugData.bottlenecks : "无"}`);
-		console.log(`   数据流记录: ${debugData.dataFlowRecords.length} 条\n`);
-
-		// 验证
 		expect(createData.graphId).toBeTruthy();
 		expect(executeData.completedNodes.length).toBeGreaterThan(0);
-		expect(vizData.visualization.nodes.length).toBeGreaterThan(0);
-		expect(mermaidData.diagram).toContain("graph TD");
+		expect(() => vizTool.invoke({ input: { graphId, format: "json" } } as any))
+			.toThrow(`Graph ${graphId} not found`);
 	});
 
 	it("should handle conditional execution through tool API", async () => {
@@ -215,18 +179,15 @@ describe("Dynamic Graph Workflow Tool Execution", () => {
 
 		// 执行
 		console.log("▶️  执行条件工作流");
-		await executeTool.invoke({ input: { graphId } } as any);
-
-		// 检查最终状态
-		const finalStatus = await statusTool.invoke({ input: { graphId } } as any);
-		const finalData = JSON.parse(finalStatus as string);
+		const executeResult = await executeTool.invoke({ input: { graphId } } as any);
+		const executeData = JSON.parse(executeResult as string);
 
 		console.log(`✅ 执行完成`);
-		console.log(`   状态分布:`, finalData.statusCounts);
 		console.log();
 
-		expect(finalData.totalNodes).toBe(3);
-		expect(finalData.statusCounts.completed).toBeGreaterThan(0);
+		expect(executeData.completedNodes.length).toBeGreaterThan(0);
+		expect(() => statusTool.invoke({ input: { graphId } } as any))
+			.toThrow(`Graph ${graphId} not found`);
 	});
 
 	it("should support input mapping through tool API", async () => {
@@ -276,22 +237,9 @@ describe("Dynamic Graph Workflow Tool Execution", () => {
 		const executeData = JSON.parse(executeResult as string);
 		console.log(`✅ 执行完成: ${executeData.executionOrder.join(" → ")}\n`);
 
-		// 检查数据流
-		console.log("🔍 检查数据流记录");
-		const debugResult = await debugTool.invoke({ input: { graphId } } as any);
-		const debugData = JSON.parse(debugResult as string);
-
-		console.log(`   数据流记录数: ${debugData.dataFlowRecords.length}`);
-
-		const inputRecords = debugData.dataFlowRecords.filter((r: any) => r.source === "input");
-		const outputRecords = debugData.dataFlowRecords.filter((r: any) => r.source === "output");
-
-		console.log(`   输入记录: ${inputRecords.length} 条`);
-		console.log(`   输出记录: ${outputRecords.length} 条\n`);
-
-		expect(debugData.dataFlowRecords.length).toBeGreaterThan(0);
-		expect(inputRecords.length).toBeGreaterThan(0);
-		expect(outputRecords.length).toBeGreaterThan(0);
+		expect(executeData.executionOrder).toEqual(["extract", "transform", "load"]);
+		expect(() => debugTool.invoke({ input: { graphId } } as any))
+			.toThrow(`Graph ${graphId} not found`);
 	});
 
 	it("should enforce limits through tool API", async () => {
