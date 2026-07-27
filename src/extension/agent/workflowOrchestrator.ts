@@ -123,9 +123,12 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
     if (cancellingAll || options.signal?.aborted) return;
 
     while (running.size < limits.maxConcurrentSubagents) {
+	  const hasRunningExecutor = [...running].some((id) => entries.get(id)?.context.snapshot().role === "executor");
       const ready = [...entries.values()].find((entry) => {
         const snapshot = entry.context.snapshot();
-        return snapshot.status === "pending" && snapshot.dependsOn.every((id) => entries.get(id)?.context.snapshot().status === "completed");
+		return snapshot.status === "pending"
+		  && !(snapshot.role === "executor" && hasRunningExecutor)
+		  && snapshot.dependsOn.every((id) => entries.get(id)?.context.snapshot().status === "completed");
       });
       if (!ready) return;
       void start(ready);

@@ -3,7 +3,7 @@ import type { ReactAgentTool } from "../reactTypes";
 
 export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
-export type SubagentRoleId = "explorer" | "reviewer" | "planner";
+export type SubagentRoleId = "explorer" | "reviewer" | "planner" | "executor";
 
 export type SubagentRoleProfile = {
   id: SubagentRoleId;

@@ -91,7 +91,7 @@ describe("workflow orchestrator", () => {
     expect(started).toEqual([rootId]);
   });
 
-  it("enforces count, depth, and concurrency limits", async () => {
+	it("enforces count, depth, and concurrency limits", async () => {
     const releases = [deferred<void>(), deferred<void>()];
     const started: string[] = [];
     const orchestrator = createWorkflowOrchestrator({
@@ -100,7 +100,7 @@ describe("workflow orchestrator", () => {
         await releases[index].promise;
       }),
       limits: { maxConcurrentSubagents: 1, maxSubagentsPerRun: 2 },
-    });
+	});
 
     const firstId = orchestrator.createSubagent({ task: "First" }, []);
     const secondId = orchestrator.createSubagent({ task: "Second" }, []);
@@ -124,6 +124,43 @@ describe("workflow orchestrator", () => {
       "Unknown dependency: missing",
     );
   });
+
+	it("runs read-only roles concurrently while allowing only one executor", async () => {
+		const releases = new Map<string, ReturnType<typeof deferred<void>>>();
+		const started: Array<{ id: string; role: string }> = [];
+		let runningExecutors = 0;
+		let runningReadOnly = 0;
+		let maxExecutors = 0;
+		let maxReadOnly = 0;
+		const orchestrator = createWorkflowOrchestrator({
+			createRunner: ({ subagentId, role }) => runner(async function* () {
+				const release = deferred<void>();
+				releases.set(subagentId, release);
+				started.push({ id: subagentId, role });
+				if (role === "executor") maxExecutors = Math.max(maxExecutors, ++runningExecutors);
+				else maxReadOnly = Math.max(maxReadOnly, ++runningReadOnly);
+				await release.promise;
+				if (role === "executor") runningExecutors -= 1;
+				else runningReadOnly -= 1;
+			}),
+			limits: { maxConcurrentSubagents: 4 },
+		});
+
+		const executor1 = orchestrator.createSubagent({ task: "Edit one", role: "executor" }, []);
+		const executor2 = orchestrator.createSubagent({ task: "Edit two", role: "executor" }, []);
+		const explorer = orchestrator.createSubagent({ task: "Explore", role: "explorer" }, []);
+		const reviewer = orchestrator.createSubagent({ task: "Review", role: "reviewer" }, []);
+
+		await vi.waitFor(() => expect(started.map(({ id }) => id)).toEqual([executor1, explorer, reviewer]));
+		expect(maxExecutors).toBe(1);
+		expect(maxReadOnly).toBe(2);
+
+		releases.get(executor1)!.resolve();
+		await vi.waitFor(() => expect(started.map(({ id }) => id)).toEqual([executor1, explorer, reviewer, executor2]));
+		for (const release of releases.values()) release.resolve();
+		await orchestrator.waitForSubagents([executor1, executor2, explorer, reviewer]);
+		expect(maxExecutors).toBe(1);
+	});
 
   it("keeps a cancelled runner in the concurrency slot until it exits", async () => {
     const abortObserved = deferred<void>();

@@ -1,6 +1,7 @@
 import type { SubagentRoleId, SubagentRoleProfile } from "./types";
 
 const READ_ONLY_TOOLS = ["exploreCode", "readFile"] as const;
+const EXECUTOR_TOOLS = [...READ_ONLY_TOOLS, "applyEdit", "runCommand"] as const;
 
 const EXPLORER_PROMPT = [
   "You are a subagent in the explorer role. Your job is to locate source code, symbols, and call paths, and to collect factual evidence.",
@@ -23,6 +24,13 @@ const PLANNER_PROMPT = [
   "Do not attempt edits or command execution yourself; you only produce the plan.",
 ].join("\n");
 
+const EXECUTOR_PROMPT = [
+  "You are a subagent in the executor role. Your job is to implement the assigned graph node and verify its result.",
+  "Use exploreCode and readFile to understand the exact target before editing. Use applyEdit for workspace changes and runCommand only for focused verification.",
+  "Keep changes limited to the assigned task. Report modified files, commands run, results, and any remaining failure.",
+  "Command execution still requires user approval. Never assume access outside the workspace.",
+].join("\n");
+
 export const ROLE_PROFILES: Readonly<Record<SubagentRoleId, SubagentRoleProfile>> = Object.freeze({
   explorer: Object.freeze({
     id: "explorer",
@@ -38,6 +46,11 @@ export const ROLE_PROFILES: Readonly<Record<SubagentRoleId, SubagentRoleProfile>
     id: "planner",
     systemPrompt: PLANNER_PROMPT,
     allowedTools: Object.freeze([...READ_ONLY_TOOLS]),
+  }),
+  executor: Object.freeze({
+    id: "executor",
+    systemPrompt: EXECUTOR_PROMPT,
+    allowedTools: Object.freeze([...EXECUTOR_TOOLS]),
   }),
 });
 

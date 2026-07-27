@@ -32,7 +32,7 @@ const NODE_SCHEMA = {
 	properties: {
 		id: { type: "string", minLength: 1 },
 		task: { type: "string", minLength: 1 },
-		role: { type: "string", enum: ["explorer", "reviewer", "planner"] },
+		role: { type: "string", enum: ["explorer", "reviewer", "planner", "executor"] },
 		dependsOn: { type: "array", items: { type: "string", minLength: 1 } },
 		toolHints: { type: "array", items: { type: "string", minLength: 1 } },
 		timeoutMs: { type: "integer", minimum: 1 },
@@ -563,7 +563,7 @@ function requireNonNegativeInteger(value: unknown, property: string): number {
 	return value;
 }
 
-const VALID_ROLES: ReadonlySet<string> = new Set(["explorer", "reviewer", "planner"]);
+const VALID_ROLES: ReadonlySet<string> = new Set(["explorer", "reviewer", "planner", "executor"]);
 
 function requireRole(value: unknown): SubagentRoleId {
 	if (typeof value !== "string" || !VALID_ROLES.has(value)) {
