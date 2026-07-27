@@ -79,7 +79,7 @@ export function createDataFlowManager(): DataFlowManager {
 		}
 
 		// Global data reference: $variableName
-		const globalRefMatch = trimmed.match(/^\$([A-Za-z0-9_-]+)$/);
+		const globalRefMatch = trimmed.match(/^\$([A-Za-z0-9_.-]+)$/);
 		if (globalRefMatch) {
 			const [, varName] = globalRefMatch;
 			return context.globalData.get(varName) ?? null;

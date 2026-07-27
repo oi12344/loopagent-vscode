@@ -135,6 +135,9 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 	}
 
 	function addNode(config: DynamicNodeConfig, dependencies: DynamicNodeId[] = []): DynamicNodeId {
+		if (context.nodes.has(config.id)) {
+			throw new Error(`Duplicate node id: ${config.id}`);
+		}
 		if (context.nodes.size >= maxNodes) {
 			throw new Error(`Maximum nodes limit (${maxNodes}) exceeded`);
 		}

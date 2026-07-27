@@ -1015,8 +1015,8 @@ describe("Dynamic Graph Workflow Integration", () => {
 		expect(context.nodes.get("reflect-review-2")?.status).toBe("completed");
 		expect(results.get("reflect-review-2")?.content).toContain("APPROVED");
 
-		// Total nodes: 5 initial + 3 fetch + 1 aggregate + 1 review-1 + 1 revise-2 + 1 review-2 = 12
-		expect(context.nodes.size).toBe(12);
+		// Total nodes: 9 initial nodes + 1 revise-2 + 1 review-2 = 11.
+		expect(context.nodes.size).toBe(11);
 	});
 
 	it("should evaluate expressions in data flow", () => {
