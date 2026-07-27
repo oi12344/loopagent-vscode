@@ -4,8 +4,8 @@ import { createExploreCodeTool } from "../agent/exploreCodeTool";
 import type { ReactAgentTool } from "../agent/reactTypes";
 import { createOpenAiReactModelTurn } from "../agent/openAiReactModelTurn";
 import { createReactAgentRunner } from "../agent/reactAgentRunner";
+import { createDynamicWorkflowTools } from "../agent/dynamicWorkflowTools";
 import { createWorkflowOrchestrator, type WorkflowEvent } from "../agent/workflowOrchestrator";
-import { createWorkflowTools } from "../agent/workflowTools";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import type { ParserRuntime } from "../intelligence/parser/parserRuntime";
 import { createTreeSitterParserRuntime } from "../intelligence/parser/treeSitterRuntime";
@@ -47,6 +47,15 @@ const REACT_SYSTEM_PROMPT = [
   "If the user rejects a command, do not request the same command again.",
   "Answer only from supported evidence and state any material limitation.",
   "Do not invent repository facts when the tool does not provide enough evidence.",
+].join("\n");
+
+const DYNAMIC_GRAPH_SYSTEM_PROMPT = [
+  "You are LoopAgent's dynamic graph controller for the current VS Code workspace.",
+  "For every user request, first call createDynamicGraph with the smallest sufficient runtime graph, then call executeDynamicGraph.",
+  "You may use addDynamicResolver when the task needs fanout, conditional expansion, or bounded iterative review.",
+  "You do not have direct repository tools. All exploration, planning, review, editing, and command execution must happen in graph nodes with the appropriate role.",
+  "Use explorer, planner, and reviewer for read-only work. Use executor for edits or commands; command approval and workspace boundaries still apply.",
+  "Do not create nested workflows. After execution, summarize only from the structured graph results and report node or resolver failures explicitly.",
 ].join("\n");
 
 export type CreateConfiguredAgentRunnerDeps = {
@@ -101,36 +110,40 @@ export async function createConfiguredAgentRunner(
     } catch {
       // Runtime context is useful but must not block the model/tool loop.
     }
-    return [REACT_SYSTEM_PROMPT, runtimePrompt].filter(Boolean).join("\n\n");
+    return runtimePrompt;
   };
 
-  const systemPromptProvider = async (request: AgentRunRequest, imageAnalyses?: ImageAnalysisContext[]): Promise<string> => {
-    const runtimePrompt = await runtimeSystemPromptProvider();
-    let memoryPrompt = "";
-    try {
-      const memoryContext = await deps.projectMemory?.loadContext(request.task);
-      if (memoryContext) {
-        memoryPrompt = memoryContext.prompt;
-        memoryGenerationByRunId.set(request.runId, memoryContext.generation);
+  const createSystemPromptProvider = (basePrompt: string) =>
+    async (request: AgentRunRequest, imageAnalyses?: ImageAnalysisContext[]): Promise<string> => {
+      const runtimePrompt = await runtimeSystemPromptProvider();
+      let memoryPrompt = "";
+      try {
+        const memoryContext = await deps.projectMemory?.loadContext(request.task);
+        if (memoryContext) {
+          memoryPrompt = memoryContext.prompt;
+          memoryGenerationByRunId.set(request.runId, memoryContext.generation);
+        }
+      } catch {
+        // Project memory is best-effort context and must not block the model/tool loop.
       }
-    } catch {
-      // Project memory is best-effort context and must not block the model/tool loop.
-    }
 
-    // 如果有图片分析结果，添加到系统提示词
-    let imagePrompt = "";
-    if (imageAnalyses && imageAnalyses.length > 0 && deps.imageAnalysisService) {
-      imagePrompt = deps.imageAnalysisService.buildSystemPromptFragment(imageAnalyses);
-    }
+      let imagePrompt = "";
+      if (imageAnalyses && imageAnalyses.length > 0 && deps.imageAnalysisService) {
+        imagePrompt = deps.imageAnalysisService.buildSystemPromptFragment(imageAnalyses);
+      }
 
-    return [runtimePrompt, memoryPrompt, imagePrompt].filter(Boolean).join("\n\n");
-  };
+      return [basePrompt, runtimePrompt, memoryPrompt, imagePrompt].filter(Boolean).join("\n\n");
+    };
 
-  const createParentRunner = (tools: ReactAgentTool[]): AgentRunner => createReactAgentRunner({
+  const createParentRunner = (
+    tools: ReactAgentTool[],
+    requiredToolNames: string[] | undefined,
+    basePrompt: string,
+  ): AgentRunner => createReactAgentRunner({
     providerName: provider.displayName,
     tools,
     modelTurn: createOpenAiReactModelTurn({ provider, tools }),
-    systemPromptProvider,
+    systemPromptProvider: createSystemPromptProvider(basePrompt),
     recordMemoryRunOutcome: async (outcome) => {
       const expectedGeneration = memoryGenerationByRunId.get(outcome.runId);
       memoryGenerationByRunId.delete(outcome.runId);
@@ -139,7 +152,7 @@ export async function createConfiguredAgentRunner(
       }
     },
     onCheckpoint: deps.onCheckpoint,
-    requiredToolNames: deps.requiredToolNames,
+    requiredToolNames,
     analyzeImages: deps.imageAnalysisService
       ? async (request) => {
           return await deps.imageAnalysisService!.analyzeAttachments(
@@ -151,7 +164,7 @@ export async function createConfiguredAgentRunner(
       : undefined,
   });
 
-  if (deps.enableWorkflowTools === false) return createParentRunner(parentTools);
+  if (deps.enableWorkflowTools === false) return createParentRunner(parentTools, deps.requiredToolNames, REACT_SYSTEM_PROMPT);
 
   return {
     async *run(request) {
@@ -178,8 +191,12 @@ export async function createConfiguredAgentRunner(
         },
       });
       const unsubscribe = orchestrator.onEvent((event) => events.push(toHostMessage(event, request.runId)));
-      const tools = [...parentTools, ...createWorkflowTools({ orchestrator, availableTools: readOnlyTools })];
-      const parentRunner = createParentRunner(tools);
+      const tools = createDynamicWorkflowTools({ orchestrator, availableTools: parentTools, signal: request.signal });
+      const parentRunner = createParentRunner(
+        tools,
+        ["createDynamicGraph", "executeDynamicGraph"],
+        DYNAMIC_GRAPH_SYSTEM_PROMPT,
+      );
 
       let parentError: unknown;
       const parentDone = (async () => {
