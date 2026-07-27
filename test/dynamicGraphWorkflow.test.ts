@@ -1047,6 +1047,7 @@ describe("Dynamic Graph Workflow Integration", () => {
 		expect(manager.evaluateExpression("read-token.status === 'completed'", context)).toBe(true);
 		expect(manager.evaluateExpression("$expected !== null", context)).toBe(true);
 		expect(() => manager.evaluateExpression("read-token.content + 1", context)).toThrow(/unsupported expression/i);
+		expect(() => manager.evaluateExpression("read-token.status === ", context)).toThrow(/unsupported expression/i);
 	});
 
 	it("should map inputs using expressions", () => {

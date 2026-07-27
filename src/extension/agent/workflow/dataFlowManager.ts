@@ -49,14 +49,13 @@ export function createDataFlowManager(): DataFlowManager {
 
 	function evaluateExpression(expression: string, context: ExpressionContext): DataFlowValue {
 		const trimmed = expression.trim();
+		if (!trimmed) throw new Error(`Unsupported expression: ${expression}`);
 		const comparison = findStrictComparison(trimmed);
 		if (comparison) {
 			const left = evaluateExpression(trimmed.slice(0, comparison.index), context);
 			const right = evaluateExpression(trimmed.slice(comparison.index + comparison.operator.length), context);
 			return comparison.operator === "===" ? left === right : left !== right;
 		}
-
-		if (!trimmed) return null;
 
 		// Literal values
 		if (trimmed === "null") return null;
