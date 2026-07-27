@@ -31,8 +31,7 @@ export type DynamicGraphEngine = {
 	onEvent(listener: GraphExecutionListener): () => void;
 };
 
-const DEFAULT_MAX_NODES = 200;
-const DEFAULT_MAX_DEPTH = 10;
+export const DEFAULT_DYNAMIC_GRAPH_LIMITS = Object.freeze({ maxNodes: 200, maxDepth: 10 });
 
 // Upstream node output is untrusted, model-generated text; capping and fencing it prevents
 // one node's output from being interpreted as instructions by a downstream node's subagent.
@@ -109,8 +108,8 @@ function buildTaskWithInputData(task: string, inputData: Record<string, unknown>
 
 export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): DynamicGraphEngine {
 	const { definition, orchestrator, availableTools, signal } = options;
-	const maxNodes = definition.maxNodes ?? DEFAULT_MAX_NODES;
-	const maxDepth = definition.maxDepth ?? DEFAULT_MAX_DEPTH;
+	const maxNodes = definition.maxNodes ?? DEFAULT_DYNAMIC_GRAPH_LIMITS.maxNodes;
+	const maxDepth = definition.maxDepth ?? DEFAULT_DYNAMIC_GRAPH_LIMITS.maxDepth;
 
 	const context: GraphComputationContext = {
 		nodes: new Map(),
@@ -336,7 +335,13 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 
 			const newNodeIds: DynamicNodeId[] = [];
 			for (const config of newNodeConfigs) {
-				const id = addNode(config, [nodeId]);
+				const dependencies = [...new Set([nodeId, ...(config.dependsOn ?? [])])];
+				for (const dependencyId of dependencies) {
+					if (!context.nodes.has(dependencyId)) {
+						throw new Error(`Node "${config.id}" declares dependsOn "${dependencyId}", which is not present in the graph`);
+					}
+				}
+				const id = addNode(config, dependencies);
 				newNodeIds.push(id);
 			}
 

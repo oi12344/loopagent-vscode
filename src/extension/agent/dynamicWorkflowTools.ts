@@ -2,7 +2,7 @@ import type { ReactAgentTool } from "./reactTypes";
 import type { WorkflowOrchestrator } from "./workflowOrchestrator";
 import type { DataFlowValue } from "./workflow/dataFlowManager";
 import type { DynamicGraphDefinition, DynamicNodeConfig, DependencyResolver, GraphComputationContext } from "./workflow/dynamicGraphTypes";
-import { createDynamicGraphEngine, type DynamicGraphEngine } from "./workflow/dynamicGraphEngine";
+import { createDynamicGraphEngine, DEFAULT_DYNAMIC_GRAPH_LIMITS, type DynamicGraphEngine } from "./workflow/dynamicGraphEngine";
 import { createReflectionResolver } from "./workflow/reflectionResolver";
 import type { SubagentRoleId, SubagentResult } from "./workflow/types";
 
@@ -81,7 +81,11 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 				const initialGlobalData = record.initialGlobalData !== undefined
 					? requireRecord(record.initialGlobalData) as Record<string, DataFlowValue>
 					: undefined;
-				validateInitialGraph(initialNodes, maxNodes, maxDepth);
+				validateInitialGraph(
+					initialNodes,
+					maxNodes ?? DEFAULT_DYNAMIC_GRAPH_LIMITS.maxNodes,
+					maxDepth ?? DEFAULT_DYNAMIC_GRAPH_LIMITS.maxDepth,
+				);
 				const resolvers = new Map<string, DependencyResolver>();
 
 				const definition: DynamicGraphDefinition = {

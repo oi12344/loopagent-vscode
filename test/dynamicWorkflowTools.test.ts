@@ -33,6 +33,12 @@ describe("dynamic workflow tools", () => {
 		await expect(invoke(tools, "createDynamicGraph", {
 			initialNodes: [{ id: "a", task: "a", dependsOn: ["b"] }, { id: "b", task: "b", dependsOn: ["a"] }],
 		})).rejects.toThrow(/circular/i);
+		const deepNodes = Array.from({ length: 12 }, (_, index) => ({
+			id: `depth-${index}`,
+			task: `depth ${index}`,
+			...(index > 0 && { dependsOn: [`depth-${index - 1}`] }),
+		}));
+		await expect(invoke(tools, "createDynamicGraph", { initialNodes: deepNodes })).rejects.toThrow(/maximum depth \(10\)/i);
 	});
 
 	it("rejects malformed resolver configuration before execution", async () => {
@@ -97,8 +103,17 @@ describe("dynamic workflow tools", () => {
 	});
 
 	it("registers a conditional resolver and creates declared nodes only when truthy", async () => {
-		const tools = createDynamicWorkflowTools({ orchestrator: scriptedOrchestrator(() => "ok"), availableTools: [] });
-		const graphId = await createGraph(tools, [{ id: "source", task: "Source" }]);
+		let releaseGuard!: () => void;
+		const guard = new Promise<void>((resolve) => { releaseGuard = resolve; });
+		const captured: CreateSubagentConfig[] = [];
+		const tools = createDynamicWorkflowTools({
+			orchestrator: scriptedOrchestrator(async (config) => {
+				if (config.task === "Guard") await guard;
+				return "ok";
+			}, captured),
+			availableTools: [],
+		});
+		const graphId = await createGraph(tools, [{ id: "source", task: "Source" }, { id: "guard", task: "Guard" }]);
 
 		await invoke(tools, "addDynamicResolver", {
 			graphId,
@@ -106,11 +121,15 @@ describe("dynamic workflow tools", () => {
 			resolverType: "conditional",
 			resolverConfig: {
 				expression: "source.status === 'completed'",
-				nodes: [{ id: "branch", task: "Run branch", role: "reviewer", dependsOn: ["source"] }],
+					nodes: [{ id: "branch", task: "Run branch", role: "reviewer", dependsOn: ["guard"] }],
 			},
 		});
 
-		const result = JSON.parse(String(await invoke(tools, "executeDynamicGraph", { graphId })));
+		const execution = invoke(tools, "executeDynamicGraph", { graphId });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(captured.some((config) => config.task === "Run branch")).toBe(false);
+		releaseGuard();
+		const result = JSON.parse(String(await execution));
 		expect(result.completedNodes).toEqual(expect.arrayContaining(["source", "branch"]));
 	});
 
@@ -143,7 +162,7 @@ describe("dynamic workflow tools", () => {
 });
 
 function scriptedOrchestrator(
-	content: (config: CreateSubagentConfig) => string,
+	content: (config: CreateSubagentConfig) => string | Promise<string>,
 	captured: CreateSubagentConfig[] = [],
 ): WorkflowOrchestrator {
 	const configs = new Map<string, CreateSubagentConfig>();
@@ -155,10 +174,13 @@ function scriptedOrchestrator(
 			captured.push(config);
 			return id;
 		}),
-		waitForSubagents: vi.fn(async (ids) => new Map(ids.map((id) => [id, {
-			status: "completed",
-			content: content(configs.get(id)!),
-		} satisfies SubagentResult]))),
+		waitForSubagents: vi.fn(async (ids) => {
+			const entries = await Promise.all(ids.map(async (id) => [id, {
+				status: "completed",
+				content: await content(configs.get(id)!),
+			} satisfies SubagentResult] as const));
+			return new Map(entries);
+		}),
 		getSubagent: vi.fn(),
 		cancelSubagent: vi.fn(() => true),
 		cancelAll: vi.fn(),
