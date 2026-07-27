@@ -1043,6 +1043,7 @@ describe("Dynamic Graph Workflow Integration", () => {
 		expect(manager.evaluateExpression("true", context)).toBe(true);
 		expect(manager.evaluateExpression("42", context)).toBe(42);
 		expect(manager.evaluateExpression("read-token.content.items[0]", context)).toBe("alpha");
+		expect(manager.evaluateExpression("read-token.content.missing", context)).toBe(null);
 		expect(manager.evaluateExpression("read-token.status === 'completed'", context)).toBe(true);
 		expect(manager.evaluateExpression("$expected !== null", context)).toBe(true);
 		expect(() => manager.evaluateExpression("read-token.content + 1", context)).toThrow(/unsupported expression/i);

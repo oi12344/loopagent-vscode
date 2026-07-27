@@ -131,7 +131,7 @@ export function createDataFlowManager(): DataFlowManager {
 			const arrayAccessMatch = key.match(/^(.+)\[(\d+)\]$/);
 			current = arrayAccessMatch ? current[arrayAccessMatch[1]]?.[Number(arrayAccessMatch[2])] : current[key];
 		}
-		return current;
+		return current ?? null;
 	}
 
 	function mapInputs(mapping: Record<string, string>, context: ExpressionContext): Record<string, DataFlowValue> {
