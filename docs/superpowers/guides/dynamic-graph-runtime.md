@@ -31,6 +31,8 @@ Webview 的每次用户请求都经 `src/extension.ts` 进入 `createConfiguredA
 
 `createDynamicGraph` 返回节点 ID、角色和依赖摘要，供运行观测与 E2E 核对。resolver 批量扩图会先整体验证，任一节点非法时整批不落图。重试退避可被 Stop 立即中断。
 
+`dependsOn` 只控制调度，不会自动传递上游输出。reviewer 聚合多个分析节点时，必须为每个依赖设置 `inputMapping`，例如 `{ "webview": "chain-webview-to-host.content", "host": "chain-host-to-deepseek.content" }`；否则 reviewer 会重新读取源码并可能触发 60 秒节点超时。
+
 `executeDynamicGraph` 返回节点结果、执行顺序和 resolver 失败信息，并在成功、失败或取消后释放该图。释放或恢复会话后不得复用旧 `graphId`；错误会明确要求重新调用 `createDynamicGraph`。
 
 ## 验证

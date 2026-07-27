@@ -9,6 +9,7 @@ import type { HostToWebviewMessage } from "../src/shared/messages";
 describe("createConfiguredAgentRunner code intelligence context", () => {
   it("forces the parent runner to use only dynamic graph controls", async () => {
     const capturedToolNames: string[][] = [];
+    const capturedMessages: ModelMessage[][] = [];
     vi.resetModules();
     vi.doMock("../src/extension/model/modelConfig", () => ({
       getModelRuntimeConfig: async () => ({ provider: "deepseek", model: "test-model", baseUrl: "", apiKey: "test-key", thinking: "disabled" }),
@@ -17,7 +18,8 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
       createDeepSeekProvider: (): ModelProvider => ({
         id: "mock",
         displayName: "Mock model",
-        stream: async function* ({ tools }) {
+        stream: async function* ({ messages, tools }) {
+          capturedMessages.push(messages);
           capturedToolNames.push((tools ?? []).map((tool) => tool.function.name));
           yield { type: "contentDelta", content: "ask works" };
           yield { type: "finishReason", reason: "stop" };
@@ -41,6 +43,16 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
       "createDynamicGraph", "executeDynamicGraph", "addDynamicResolver", "getGraphStatus",
       "cancelDynamicGraph", "visualizeGraph", "getGraphDebugInfo",
     ]);
+    const systemPrompt = capturedMessages[0]
+      ?.filter((message) => message.role === "system")
+      .map((message) => message.content)
+      .join("\n") ?? "";
+    expect(systemPrompt).toContain(
+      "dependsOn only controls scheduling; it does not forward upstream output",
+    );
+    expect(systemPrompt).toContain(
+      "When a reviewer aggregates dependency results, map every dependency's <node-id>.content through inputMapping.",
+    );
   });
 
   it("runs native exploreCode tool calls and returns observations to the next model turn", async () => {

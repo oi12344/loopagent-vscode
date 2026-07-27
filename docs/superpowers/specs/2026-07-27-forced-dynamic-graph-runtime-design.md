@@ -118,6 +118,8 @@ type CreateDynamicGraphInput = {
 
 创建阶段校验唯一 ID、未知依赖、静态循环、角色、条件、重试和资源上限。图定义不合法时不创建活动图。
 
+`dependsOn` 只表达执行顺序，不自动传递上游结果。需要聚合分析结果的 reviewer 必须为每个依赖配置 `inputMapping`，使用 `<node-id>.content` 将结果作为受信边界内的数据输入；系统提示必须明确这一约束，避免 reviewer 因重新探索而耗尽节点超时。
+
 ### `addDynamicResolver`
 
 resolver 只接受纯 JSON 配置，并真实写入对应活动图的 resolver Map。

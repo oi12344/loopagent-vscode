@@ -55,6 +55,7 @@ const DYNAMIC_GRAPH_SYSTEM_PROMPT = [
   "Keep each node narrowly focused on one call path or decision. Never ask a node to recursively enumerate or read the whole repository.",
   "For model-backed nodes, set timeoutMs to 60000. Prefer one graph and report node failures instead of repeatedly rebuilding equivalent graphs.",
   "Do not create a preliminary discovery graph. When the user requests parallel analyses followed by review, omit dependencies from the analysis nodes and make one reviewer depend on all of them.",
+  "dependsOn only controls scheduling; it does not forward upstream output. When a reviewer aggregates dependency results, map every dependency's <node-id>.content through inputMapping.",
   "toolHints must name available tools. For read-only nodes use exploreCode and readFile; never invent listFiles or glob tools.",
   "You may use addDynamicResolver when the task needs fanout, conditional expansion, or bounded iterative review.",
   "You do not have direct repository tools. All exploration, planning, review, editing, and command execution must happen in graph nodes with the appropriate role.",

@@ -260,4 +260,5 @@ git commit -m "test: verify forced dynamic graph runtime"
 - 真实 E2E 暴露并修复两个运行时问题：角色白名单被二次裁剪成单工具，以及 60 秒节点配置被默认 30 秒上限截断。
 - `npm run test:e2e:code-exploration` 使用 DeepSeek v4 Flash 通过：单张三节点图调用 `createDynamicGraph`、`executeDynamicGraph`，两个只读节点并发，双依赖 reviewer 后置完成，回答命中 4 个关键函数和 12 个真实源码路径。
 - 最终审查补齐：重试退避可取消、resolver 批量扩图原子验证、建图结果包含角色/依赖摘要、失效 `graphId` 明确提示重建。
+- 运行日志发现 reviewer 仅声明 `dependsOn` 时不会收到上游内容；已在动态图系统提示中明确要求通过 `inputMapping` 映射每个依赖的 `<node-id>.content`，并增加提示回归测试。
 - 同一 Extension Development Host 完成验证；截图保存在 `.artifacts/code-exploration-e2e.png`。密钥未写入仓库、脚本、日志或文档。
