@@ -49,6 +49,14 @@ export function createDataFlowManager(): DataFlowManager {
 
 	function evaluateExpression(expression: string, context: ExpressionContext): DataFlowValue {
 		const trimmed = expression.trim();
+		const comparison = findStrictComparison(trimmed);
+		if (comparison) {
+			const left = evaluateExpression(trimmed.slice(0, comparison.index), context);
+			const right = evaluateExpression(trimmed.slice(comparison.index + comparison.operator.length), context);
+			return comparison.operator === "===" ? left === right : left !== right;
+		}
+
+		if (!trimmed) return null;
 
 		// Literal values
 		if (trimmed === "null") return null;
@@ -59,42 +67,27 @@ export function createDataFlowManager(): DataFlowManager {
 			return trimmed.slice(1, -1);
 		}
 
-		// Node reference: nodeId.field
-		const nodeRefMatch = trimmed.match(/^(\w+)\.(\w+)$/);
+		// Node reference: nodeId.field or nodeId.field[index]
+		const nodeRefMatch = trimmed.match(/^([A-Za-z0-9_-]+)\.(content|status|error)(?:\[(\d+)\])?$/);
 		if (nodeRefMatch) {
-			const [, nodeId, field] = nodeRefMatch;
+			const [, nodeId, field, indexStr] = nodeRefMatch;
 			const nodeResult = context.nodes.get(nodeId);
 			if (!nodeResult) return null;
 
-			if (field === "content") return nodeResult.content ?? null;
-			if (field === "status") return nodeResult.status;
-			if (field === "error") return nodeResult.error ?? null;
-			return null;
+			const value = field === "content" ? nodeResult.content : field === "status" ? nodeResult.status : nodeResult.error;
+			if (indexStr !== undefined) return Array.isArray(value) ? value[Number(indexStr)] ?? null : null;
+			return value ?? null;
 		}
 
 		// Global data reference: $variableName
-		if (trimmed.startsWith("$")) {
-			const varName = trimmed.slice(1);
+		const globalRefMatch = trimmed.match(/^\$([A-Za-z0-9_-]+)$/);
+		if (globalRefMatch) {
+			const [, varName] = globalRefMatch;
 			return context.globalData.get(varName) ?? null;
 		}
 
-		// Array access: nodeId.field[index]
-		const arrayAccessMatch = trimmed.match(/^(\w+)\.(\w+)\[(\d+)\]$/);
-		if (arrayAccessMatch) {
-			const [, nodeId, field, indexStr] = arrayAccessMatch;
-			const nodeResult = context.nodes.get(nodeId);
-			if (!nodeResult) return null;
-
-			const value = field === "content" ? nodeResult.content : null;
-			if (Array.isArray(value)) {
-				const index = parseInt(indexStr, 10);
-				return value[index] ?? null;
-			}
-			return null;
-		}
-
 		// JSON path: nodeId.content.nested.field
-		const jsonPathMatch = trimmed.match(/^(\w+)\.content\.(.+)$/);
+		const jsonPathMatch = trimmed.match(/^([A-Za-z0-9_-]+)\.content\.(.+)$/);
 		if (jsonPathMatch) {
 			const [, nodeId, path] = jsonPathMatch;
 			const nodeResult = context.nodes.get(nodeId);
@@ -108,6 +101,25 @@ export function createDataFlowManager(): DataFlowManager {
 			}
 		}
 
+		throw new Error(`Unsupported expression: ${expression}`);
+	}
+
+	function findStrictComparison(expression: string): { index: number; operator: "===" | "!==" } | null {
+		let quote: string | undefined;
+		for (let index = 0; index < expression.length; index += 1) {
+			const char = expression[index];
+			if (quote) {
+				if (char === "\\") index += 1;
+				else if (char === quote) quote = undefined;
+				continue;
+			}
+			if (char === '"' || char === "'") {
+				quote = char;
+				continue;
+			}
+			const operator = expression.slice(index, index + 3);
+			if (operator === "===" || operator === "!==") return { index, operator };
+		}
 		return null;
 	}
 
@@ -116,7 +128,8 @@ export function createDataFlowManager(): DataFlowManager {
 		for (const key of path) {
 			if (current === null || current === undefined) return null;
 			if (typeof current !== "object") return null;
-			current = current[key];
+			const arrayAccessMatch = key.match(/^(.+)\[(\d+)\]$/);
+			current = arrayAccessMatch ? current[arrayAccessMatch[1]]?.[Number(arrayAccessMatch[2])] : current[key];
 		}
 		return current;
 	}

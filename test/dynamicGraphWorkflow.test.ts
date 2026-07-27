@@ -1025,11 +1025,15 @@ describe("Dynamic Graph Workflow Integration", () => {
 		const mockResults = new Map<string, SubagentResult>([
 			["nodeA", { status: "completed", content: "test content" }],
 			["nodeB", { status: "completed", content: '{"key": "value"}' }],
+			["read-token", { status: "completed", content: '{"items": ["alpha"]}' }],
 		]);
 
 		const context = {
 			nodes: mockResults,
-			globalData: new Map([["var1", "global value"]]),
+			globalData: new Map([
+				["var1", "global value"],
+				["expected", "value"],
+			]),
 		};
 
 		expect(manager.evaluateExpression("nodeA.content", context)).toBe("test content");
@@ -1038,6 +1042,10 @@ describe("Dynamic Graph Workflow Integration", () => {
 		expect(manager.evaluateExpression("null", context)).toBe(null);
 		expect(manager.evaluateExpression("true", context)).toBe(true);
 		expect(manager.evaluateExpression("42", context)).toBe(42);
+		expect(manager.evaluateExpression("read-token.content.items[0]", context)).toBe("alpha");
+		expect(manager.evaluateExpression("read-token.status === 'completed'", context)).toBe(true);
+		expect(manager.evaluateExpression("$expected !== null", context)).toBe(true);
+		expect(() => manager.evaluateExpression("read-token.content + 1", context)).toThrow(/unsupported expression/i);
 	});
 
 	it("should map inputs using expressions", () => {
@@ -1055,12 +1063,13 @@ describe("Dynamic Graph Workflow Integration", () => {
 		const mapping = {
 			input1: "upstream.content",
 			input2: "$globalVar",
-			input3: "literal string",
+			input3: "'literal string'",
 		};
 
 		const result = manager.mapInputs(mapping, context);
 
 		expect(result.input1).toBe("data from upstream");
 		expect(result.input2).toBe(null);
+		expect(result.input3).toBe("literal string");
 	});
 });
