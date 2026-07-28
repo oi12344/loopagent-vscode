@@ -82,6 +82,43 @@ function hasRequiredGraphStructure(nodes) {
   );
 }
 
+function parseGraphNodes(output) {
+  try {
+    const parsed = JSON.parse(output);
+    return Array.isArray(parsed.nodes) ? parsed.nodes : undefined;
+  } catch {
+    // The Webview intentionally truncates long tool results after the nodes metadata.
+  }
+
+  const marker = output.indexOf('"nodes"');
+  const start = marker === -1 ? -1 : output.indexOf("[", marker);
+  if (start === -1) return undefined;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < output.length; index += 1) {
+    const character = output[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') inString = true;
+    else if (character === "[") depth += 1;
+    else if (character === "]" && --depth === 0) {
+      try {
+        const nodes = JSON.parse(output.slice(start, index + 1));
+        return Array.isArray(nodes) ? nodes : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
 function analyzeWorkflowEvents(events) {
   const intervals = new Map();
   for (const event of [...events].sort((left, right) => left.at - right.at)) {
@@ -110,4 +147,4 @@ function analyzeWorkflowEvents(events) {
   return { maxConcurrent };
 }
 
-module.exports = { CODE_EXPLORATION_QUESTION, evaluateCodeExploration };
+module.exports = { CODE_EXPLORATION_QUESTION, evaluateCodeExploration, parseGraphNodes };

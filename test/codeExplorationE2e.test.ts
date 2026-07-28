@@ -5,10 +5,11 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const require = createRequire(import.meta.url);
-const { CODE_EXPLORATION_QUESTION, evaluateCodeExploration } = require(
+const { CODE_EXPLORATION_QUESTION, evaluateCodeExploration, parseGraphNodes } = require(
   "../scripts/codeExplorationE2e.js",
 ) as {
   CODE_EXPLORATION_QUESTION: string;
+  parseGraphNodes(output: string): GraphNode[] | undefined;
   evaluateCodeExploration(result: { process: string; answer: string; workflowEvents?: WorkflowEvent[]; graphNodes?: GraphNode[] }): {
     passed: boolean;
     matchedAnchors: string[];
@@ -39,6 +40,12 @@ const validGraphNodes: GraphNode[] = [
 ];
 
 describe("code exploration E2E oracle", () => {
+  it("extracts graph nodes from a truncated tool result", () => {
+    const output = `${JSON.stringify({ nodes: validGraphNodes, totalNodes: 2 }).slice(0, -1)},"results":{"webview":{"content":"truncated`;
+
+    expect(parseGraphNodes(output)).toEqual(validGraphNodes);
+  });
+
   it("asks a complex project question without leaking implementation symbols", () => {
     expect(CODE_EXPLORATION_QUESTION).toBe(expectedQuestion);
     expect(CODE_EXPLORATION_QUESTION).not.toContain("createConfiguredAgentRunner");
@@ -247,6 +254,7 @@ describe("code exploration CDP runner contract", () => {
 
   it("uses the real Webview composer and assistant result selectors", () => {
     const runner = readRunner();
+    expect(runner).toContain("parseGraphNodes.toString()");
     expect(runner).toContain('getElementById("active-frame")');
     expect(runner).toContain("contentDocument ?? document");
     expect(runner).toContain("webviewDocument.defaultView");

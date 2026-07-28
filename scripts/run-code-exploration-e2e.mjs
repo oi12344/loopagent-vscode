@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 
 const require = createRequire(import.meta.url);
-const { CODE_EXPLORATION_QUESTION, evaluateCodeExploration } = require(
+const { CODE_EXPLORATION_QUESTION, evaluateCodeExploration, parseGraphNodes } = require(
   "./codeExplorationE2e.js",
 );
 
@@ -18,6 +18,7 @@ const SCREENSHOT_PATH = resolve(
   ".artifacts",
   "code-exploration-e2e.png",
 );
+const parseGraphNodesSource = parseGraphNodes.toString();
 
 const delay = (milliseconds) =>
   new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
@@ -356,6 +357,7 @@ async function waitForAnswer(session, previousTurnCount) {
   const deadline = Date.now() + WAIT_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const state = await session.evaluate(`(() => {
+      const parseGraphNodes = ${parseGraphNodesSource};
       const webviewDocument =
         document.getElementById("active-frame")?.contentDocument ?? document;
       const webviewWindow = webviewDocument.defaultView ?? window;
@@ -369,9 +371,7 @@ async function waitForAnswer(session, previousTurnCount) {
       }));
       const graphDefinitions = toolCalls
         .filter((call) => call.name === "runDynamicGraph")
-        .map((call) => {
-          try { return JSON.parse(call.output).nodes; } catch { return undefined; }
-        })
+        .map((call) => parseGraphNodes(call.output))
         .filter(Array.isArray);
       return {
         process: [
