@@ -973,6 +973,149 @@ function UserMessage({ turn }: { turn: UserTurn }) {
   );
 }
 
+function formatAnswerInline(text: string): React.ReactNode[] {
+  return text.split(/(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__)/g).map((part, index) => {
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return <code key={index}>{part.slice(1, -1)}</code>;
+    }
+    if ((part.startsWith("**") && part.endsWith("**")) || (part.startsWith("__") && part.endsWith("__"))) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    return part;
+  });
+}
+
+function AssistantAnswer({ content }: { content: string }) {
+  const lines = content.replace(/\\n/g, "\n").replace(/\r\n?/g, "\n").split("\n");
+  const blocks: React.ReactNode[] = [];
+  let paragraph: string[] = [];
+  let listItems: string[] = [];
+  let listType: "ul" | "ol" | null = null;
+  let codeLines: string[] = [];
+  let inCodeBlock = false;
+  let tableRows: string[][] = [];
+
+  const flushParagraph = () => {
+    if (paragraph.length > 0) {
+      blocks.push(<p key={`paragraph-${blocks.length}`}>{formatAnswerInline(paragraph.join(" ").trim())}</p>);
+      paragraph = [];
+    }
+  };
+
+  const flushList = () => {
+    if (!listType || listItems.length === 0) {
+      return;
+    }
+    const Tag = listType;
+    blocks.push(
+      <Tag key={`list-${blocks.length}`}>
+        {listItems.map((item, index) => <li key={`${item}-${index}`}>{formatAnswerInline(item)}</li>)}
+      </Tag>,
+    );
+    listItems = [];
+    listType = null;
+  };
+
+  const flushCode = () => {
+    blocks.push(
+      <pre key={`code-${blocks.length}`} className="assistant-code"><code>{codeLines.join("\n")}</code></pre>,
+    );
+    codeLines = [];
+  };
+
+  const flushTable = () => {
+    if (tableRows.length === 0) {
+      return;
+    }
+    const [header, ...rows] = tableRows;
+    blocks.push(
+      <table key={`table-${blocks.length}`}>
+        <thead><tr>{header.map((cell, index) => <th key={`${cell}-${index}`}>{formatAnswerInline(cell)}</th>)}</tr></thead>
+        {rows.length > 0 ? (
+          <tbody>{rows.map((row, rowIndex) => (
+            <tr key={`row-${rowIndex}`}>{row.map((cell, cellIndex) => <td key={`${cell}-${cellIndex}`}>{formatAnswerInline(cell)}</td>)}</tr>
+          ))}</tbody>
+        ) : null}
+      </table>,
+    );
+    tableRows = [];
+  };
+
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      flushParagraph();
+      flushList();
+      flushTable();
+      if (inCodeBlock) {
+        flushCode();
+      }
+      inCodeBlock = !inCodeBlock;
+      return;
+    }
+    if (inCodeBlock) {
+      codeLines.push(line);
+      return;
+    }
+    if (!trimmed || /^-{3,}$/.test(trimmed) || /^\*{3,}$/.test(trimmed)) {
+      flushParagraph();
+      flushList();
+      flushTable();
+      return;
+    }
+
+    const tableRow = trimmed.startsWith("|") && trimmed.endsWith("|")
+      ? trimmed.slice(1, -1).split("|").map((cell) => cell.trim())
+      : null;
+    if (tableRow) {
+      flushParagraph();
+      flushList();
+      if (!tableRow.every((cell) => /^:?-{3,}:?$/.test(cell))) {
+        tableRows.push(tableRow);
+      }
+      return;
+    }
+
+    const heading = trimmed.match(/^#{1,6}\s*(.+)$/);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      flushTable();
+      const level = Math.min(4, heading[0].match(/^#+/)?.[0].length ?? 3);
+      const Tag = (["h1", "h2", "h3", "h4"] as const)[level - 1];
+      blocks.push(<Tag key={`heading-${blocks.length}`}>{formatAnswerInline(heading[1])}</Tag>);
+      return;
+    }
+
+    const unorderedItem = trimmed.match(/^[-*+]\s+(.+)$/);
+    const orderedItem = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    if (unorderedItem || orderedItem) {
+      flushParagraph();
+      flushTable();
+      const nextType = unorderedItem ? "ul" : "ol";
+      if (listType && listType !== nextType) {
+        flushList();
+      }
+      listType = nextType;
+      listItems.push((unorderedItem ?? orderedItem)![1]);
+      return;
+    }
+
+    flushList();
+    flushTable();
+    paragraph.push(trimmed);
+  });
+
+  flushParagraph();
+  flushList();
+  flushTable();
+  if (inCodeBlock || codeLines.length > 0) {
+    flushCode();
+  }
+
+  return <>{blocks}</>;
+}
+
 function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; workflow?: WorkflowProgress; onResume?: () => void }) {
   const [isProcessOpen, setIsProcessOpen] = React.useState(turn.status !== "done");
   const previousStatus = React.useRef(turn.status);
@@ -1032,7 +1175,7 @@ function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; w
       ) : null}
 
       {workflow?.agents.length ? <WorkflowPlan workflow={workflow} parentStatus={turn.status} /> : null}
-      {turn.content.length > 0 ? <div className="message-body assistant-answer">{turn.content}</div> : null}
+      {turn.content.length > 0 ? <div className="message-body assistant-answer"><AssistantAnswer content={turn.content} /></div> : null}
       {turn.status !== "done" && turn.content.length === 0 && !turn.error ? (
         <div className="assistant-placeholder">Waiting for response...</div>
       ) : null}

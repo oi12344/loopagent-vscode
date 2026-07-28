@@ -312,6 +312,49 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
 
+  it("renders assistant markdown as formatted content without control symbols", () => {
+    render(<App />);
+
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "DeepSeek" });
+    postHostMessage({
+      type: "assistantDelta",
+      runId: "run-1",
+      content: "## Summary\n\n### Key path\n- First item\n- **Second item**\n\n```ts\nconst result = 1;\n```\n\n| Name | Value |\n| --- | --- |\n| Result | `1` |\n\n---",
+    });
+    postHostMessage({ type: "assistantFinished", runId: "run-1" });
+
+    const answer = document.querySelector(".assistant-answer");
+    expect(answer).toBeInTheDocument();
+    expect(answer).toHaveTextContent("Summary");
+    expect(answer).toHaveTextContent("First item");
+    expect(answer).toHaveTextContent("Second item");
+    expect(answer).toHaveTextContent("const result = 1;");
+    expect(answer?.textContent).not.toContain("##");
+    expect(answer?.textContent).not.toContain("```");
+    expect(answer?.textContent).not.toContain("---");
+    expect(answer?.textContent).not.toContain("|");
+    expect(screen.getByRole("heading", { name: "Summary" })).toBeInTheDocument();
+    expect(screen.getByRole("list")).toBeInTheDocument();
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.getByText("const result = 1;")).toBeInTheDocument();
+  });
+
+  it("normalizes escaped markdown line breaks in assistant answers", () => {
+    render(<App />);
+
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "DeepSeek" });
+    postHostMessage({
+      type: "assistantDelta",
+      runId: "run-1",
+      content: "## Escaped summary\\n\\n- First item",
+    });
+
+    const answer = document.querySelector(".assistant-answer");
+    expect(screen.getByRole("heading", { name: "Escaped summary" })).toBeInTheDocument();
+    expect(screen.getByText("First item")).toBeInTheDocument();
+    expect(answer?.textContent).not.toContain("\\n");
+  });
+
   it("collapses completed execution steps", () => {
     render(<App />);
     postHostMessage({ type: "runStarted", runId: "run-1", task: "Inspect the project" });

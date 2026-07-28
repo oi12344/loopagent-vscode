@@ -194,6 +194,81 @@ h1 {
   color: var(--vscode-editor-foreground);
 }
 
+.assistant-answer p {
+  margin: 0 0 10px;
+}
+
+.assistant-answer p:last-child {
+  margin-bottom: 0;
+}
+
+.assistant-answer h2,
+.assistant-answer h3,
+.assistant-answer h4 {
+  color: var(--vscode-editor-foreground);
+  line-height: 1.3;
+  margin: 14px 0 6px;
+}
+
+.assistant-answer h2 {
+  font-size: 15px;
+}
+
+.assistant-answer h3 {
+  font-size: 14px;
+}
+
+.assistant-answer h4 {
+  font-size: 13px;
+}
+
+.assistant-answer ul,
+.assistant-answer ol {
+  margin: 4px 0 10px;
+  padding-inline-start: 22px;
+}
+
+.assistant-answer li {
+  margin: 3px 0;
+}
+
+.assistant-answer code {
+  background: var(--vscode-textCodeBlock-background, var(--vscode-textBlockQuote-background));
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family);
+  padding: 1px 4px;
+}
+
+.assistant-code {
+  background: var(--vscode-textCodeBlock-background, var(--vscode-textBlockQuote-background));
+  border-radius: 4px;
+  margin: 8px 0 10px;
+  overflow-x: auto;
+  padding: 10px 12px;
+  white-space: pre;
+}
+
+.assistant-answer table {
+  border-collapse: collapse;
+  display: block;
+  margin: 8px 0 10px;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.assistant-answer th,
+.assistant-answer td {
+  border: 1px solid var(--vscode-panel-border, var(--vscode-textBlockQuote-background));
+  padding: 5px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.assistant-answer th {
+  background: var(--vscode-textBlockQuote-background);
+  font-weight: 600;
+}
+
 .process-details {
   background: var(--vscode-textBlockQuote-background, transparent);
   border-left: 2px solid var(--vscode-textLink-foreground);
