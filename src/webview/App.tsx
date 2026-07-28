@@ -1019,12 +1019,19 @@ function attachRunToUserTurn(
   task: string,
   createTurnId: (prefix: string) => string,
 ): ChatTurn[] {
-  const pendingUserIndex = findLastIndex(
+  const attachedUserIndex = findLastIndex(
     turns,
-    (turn): turn is UserTurn => turn.role === "user" && turn.pending === true && turn.content === task,
+    (turn): turn is UserTurn => turn.role === "user" && turn.runId === runId,
   );
+  const userIndex =
+    attachedUserIndex !== -1
+      ? attachedUserIndex
+      : findLastIndex(
+          turns,
+          (turn): turn is UserTurn => turn.role === "user" && turn.pending === true && turn.content === task,
+        );
 
-  if (pendingUserIndex === -1) {
+  if (userIndex === -1) {
     return [
       ...turns,
       {
@@ -1037,7 +1044,7 @@ function attachRunToUserTurn(
   }
 
   return turns.map((turn, index) => {
-    if (index !== pendingUserIndex || turn.role !== "user") {
+    if (index !== userIndex || turn.role !== "user") {
       return turn;
     }
 

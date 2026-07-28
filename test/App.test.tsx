@@ -47,6 +47,28 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByText("Explain the active file")).toBeInTheDocument();
   });
 
+  it("shows one user message when conversationStarted and runStarted share a run", async () => {
+    const user = userEvent.setup();
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    render(<App vscodeApi={{ postMessage }} />);
+
+    await user.type(screen.getByRole("textbox"), "Inspect the project");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    const startTask = postMessage.mock.calls.at(-1)?.[0];
+    expect(startTask?.type).toBe("startTask");
+    if (!startTask || startTask.type !== "startTask") throw new Error("startTask was not posted");
+
+    postHostMessage({
+      type: "conversationStarted",
+      conversationId: "conv-1",
+      runId: startTask.runId,
+      userMessage: "Inspect the project",
+    });
+    postHostMessage({ type: "runStarted", runId: startTask.runId, task: "Inspect the project" });
+
+    expect(screen.getAllByText("Inspect the project")).toHaveLength(1);
+  });
+
   it("clears the conversation locally and notifies the host when starting a new chat", async () => {
     const user = userEvent.setup();
     const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
