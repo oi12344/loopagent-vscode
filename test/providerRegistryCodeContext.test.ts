@@ -49,6 +49,15 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
       "For a single, well-defined task whose evidence fits in one context",
     );
     expect(systemPrompt).toContain(
+      "For parallel exploration, create only independent read-only nodes and aggregate their results yourself",
+    );
+    expect(systemPrompt).toContain(
+      "Do not add a reviewer unless the user explicitly asks for an independent review",
+    );
+    expect(systemPrompt).not.toContain(
+      "multiple independent, parallelizable explorations followed by an aggregating review",
+    );
+    expect(systemPrompt).toContain(
       "dependsOn only controls scheduling; it does not forward upstream output",
     );
     expect(systemPrompt).toContain(
