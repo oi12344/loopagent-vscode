@@ -265,7 +265,8 @@ describe("code exploration CDP runner contract", () => {
     expect(runner).toContain(".message-assistant");
     expect(runner).toContain(".tool-call-name");
     expect(runner).toContain(".tool-call-input");
-    expect(runner).toContain(".workflow-timeline span");
+    expect(runner).toContain('.workflow-plan-item[data-agent-id]');
+    expect(runner).toContain('getAttribute("data-status")');
     expect(runner).toContain("MutationObserver");
     expect(runner).toContain("workflowEvents");
     expect(runner).toContain(".assistant-answer");

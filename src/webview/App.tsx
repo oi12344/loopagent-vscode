@@ -38,7 +38,15 @@ type AssistantTurn = {
 
 type ChatTurn = UserTurn | AssistantTurn;
 type InterruptedRun = { runId: string; conversationId: string; task: string };
-type WorkflowProgress = { phase?: string; agents: string[] };
+type WorkflowPlanStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+type WorkflowPlanItem = {
+  id: string;
+  task: string;
+  role?: "explorer" | "reviewer" | "planner" | "executor";
+  dependsOn: string[];
+  status: WorkflowPlanStatus;
+};
+type WorkflowProgress = { phase?: string; agents: WorkflowPlanItem[] };
 type PendingCommandApproval = { approvalId: string; command: string; cwd: string };
 type AppliedEditNotification = { notificationId: string; files: string[]; fileStats: EditFileStat[] };
 
@@ -270,11 +278,45 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           return;
         }
 
+        case "subagentPlanCreated": {
+          setWorkflowProgress((current) => {
+            const progress = current[hostMessage.runId] ?? { agents: [] };
+            const item: WorkflowPlanItem = {
+              id: hostMessage.agentId,
+              task: hostMessage.task,
+              role: hostMessage.role,
+              dependsOn: hostMessage.dependsOn,
+              status: "pending",
+            };
+            return {
+              ...current,
+              [hostMessage.runId]: {
+                ...progress,
+                agents: [...progress.agents.filter((agent) => agent.id !== item.id), item],
+              },
+            };
+          });
+          return;
+        }
+
         case "subagentStateChanged": {
           setWorkflowProgress((current) => {
             const progress = current[hostMessage.runId] ?? { agents: [] };
-            const agent = `${hostMessage.agentId}: ${hostMessage.status}`;
-            return { ...current, [hostMessage.runId]: { ...progress, agents: [...progress.agents.filter((item) => !item.startsWith(`${hostMessage.agentId}:`)), agent] } };
+            const hasAgent = progress.agents.some((agent) => agent.id === hostMessage.agentId);
+            const agents = hasAgent
+              ? progress.agents.map((agent) =>
+                  agent.id === hostMessage.agentId ? { ...agent, status: hostMessage.status } : agent,
+                )
+              : [
+                  ...progress.agents,
+                  {
+                    id: hostMessage.agentId,
+                    task: hostMessage.agentId,
+                    dependsOn: [],
+                    status: hostMessage.status,
+                  },
+                ];
+            return { ...current, [hostMessage.runId]: { ...progress, agents } };
           });
           return;
         }
@@ -989,13 +1031,8 @@ function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; w
         </details>
       ) : null}
 
+      {workflow?.agents.length ? <WorkflowPlan workflow={workflow} parentStatus={turn.status} /> : null}
       {turn.content.length > 0 ? <div className="message-body assistant-answer">{turn.content}</div> : null}
-      {workflow && (workflow.phase || workflow.agents.length > 0) ? (
-        <div className="workflow-timeline" aria-label="Workflow progress">
-          <span>{workflow.phase ?? "Workflow"}</span>
-          {workflow.agents.map((agent) => <span key={agent}>{agent}</span>)}
-        </div>
-      ) : null}
       {turn.status !== "done" && turn.content.length === 0 && !turn.error ? (
         <div className="assistant-placeholder">Waiting for response...</div>
       ) : null}
@@ -1011,6 +1048,69 @@ function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; w
       ) : null}
     </article>
   );
+}
+
+function WorkflowPlan({ workflow, parentStatus }: { workflow: WorkflowProgress; parentStatus: AssistantTurn["status"] }) {
+  const allChildrenSettled = workflow.agents.every((agent) =>
+    ["completed", "failed", "cancelled"].includes(agent.status),
+  );
+  const summaryStatus: WorkflowPlanStatus =
+    parentStatus === "done"
+      ? "completed"
+      : parentStatus === "error"
+        ? "failed"
+        : allChildrenSettled
+          ? "running"
+          : "pending";
+  const items: WorkflowPlanItem[] = [
+    ...workflow.agents,
+    { id: "parent-summary", task: "父智能体汇总结果", dependsOn: workflow.agents.map((agent) => agent.id), status: summaryStatus },
+  ];
+  const completedCount = items.filter((item) => item.status === "completed").length;
+
+  return (
+    <section className="workflow-plan" aria-label="执行计划">
+      <div className="workflow-plan-header">
+        <strong>执行计划</strong>
+        {workflow.phase ? <span className="workflow-plan-phase">{workflow.phase}</span> : null}
+        <span className="workflow-plan-count">{completedCount} / {items.length}</span>
+      </div>
+      <ol className="workflow-plan-list">
+        {items.map((item) => (
+          <li
+            key={item.id}
+            className={`workflow-plan-item workflow-plan-${item.status}`}
+            data-agent-id={item.id === "parent-summary" ? undefined : item.id}
+            data-status={item.status}
+            title={item.dependsOn.length > 0 ? `依赖: ${item.dependsOn.join(", ")}` : undefined}
+          >
+            <span className="workflow-plan-icon" aria-hidden="true">{formatWorkflowStatusIcon(item.status)}</span>
+            <span className="workflow-plan-copy">
+              <span className="workflow-plan-task">{item.task}</span>
+              <span className="workflow-plan-meta">
+                {item.role ? `${item.role} · ` : ""}{formatWorkflowStatus(item.status)}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function formatWorkflowStatus(status: WorkflowPlanStatus): string {
+  if (status === "running") return "执行中";
+  if (status === "completed") return "已完成";
+  if (status === "failed") return "失败";
+  if (status === "cancelled") return "已取消";
+  return "等待中";
+}
+
+function formatWorkflowStatusIcon(status: WorkflowPlanStatus): string {
+  if (status === "running") return "●";
+  if (status === "completed") return "✓";
+  if (status === "failed" || status === "cancelled") return "×";
+  return "○";
 }
 
 function attachRunToUserTurn(

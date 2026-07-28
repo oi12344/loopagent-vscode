@@ -234,7 +234,43 @@ describe("LoopAgent webview app", () => {
 
     expect(screen.getByText("Existing answer")).toBeInTheDocument();
     expect(screen.getByText("implement")).toBeInTheDocument();
-    expect(screen.getByText("implementer-1: running")).toBeInTheDocument();
+    expect(screen.getByText("implementer-1")).toBeInTheDocument();
+    expect(screen.getByText("执行中")).toBeInTheDocument();
+  });
+
+  it("renders every graph node and the parent summary inside the assistant message", () => {
+    render(<App />);
+
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "LoopAgent" });
+    postHostMessage({
+      type: "subagentPlanCreated",
+      runId: "run-1",
+      agentId: "subagent-1",
+      task: "分析 Webview 到扩展宿主的调用链",
+      role: "explorer",
+      dependsOn: [],
+    });
+    postHostMessage({
+      type: "subagentPlanCreated",
+      runId: "run-1",
+      agentId: "subagent-2",
+      task: "分析扩展宿主到 DeepSeek 的调用链",
+      role: "explorer",
+      dependsOn: [],
+    });
+
+    expect(screen.getByRole("region", { name: "执行计划" })).toBeInTheDocument();
+    expect(screen.getByText("分析 Webview 到扩展宿主的调用链")).toBeInTheDocument();
+    expect(screen.getByText("分析扩展宿主到 DeepSeek 的调用链")).toBeInTheDocument();
+    expect(screen.getByText("父智能体汇总结果")).toBeInTheDocument();
+    expect(screen.getByText("0 / 3")).toBeInTheDocument();
+
+    postHostMessage({ type: "subagentStateChanged", runId: "run-1", agentId: "subagent-1", status: "completed" });
+    postHostMessage({ type: "subagentStateChanged", runId: "run-1", agentId: "subagent-2", status: "completed" });
+    expect(screen.getByText("2 / 3")).toBeInTheDocument();
+
+    postHostMessage({ type: "assistantFinished", runId: "run-1" });
+    expect(screen.getByText("3 / 3")).toBeInTheDocument();
   });
 
   it("shows dynamic subagent progress before a workflow phase is reported", () => {
@@ -243,8 +279,8 @@ describe("LoopAgent webview app", () => {
     postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "LoopAgent" });
     postHostMessage({ type: "subagentStateChanged", runId: "run-1", agentId: "explorer-1", status: "running" });
 
-    expect(screen.getByText("Workflow")).toBeInTheDocument();
-    expect(screen.getByText("explorer-1: running")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "执行计划" })).toBeInTheDocument();
+    expect(screen.getByText("explorer-1")).toBeInTheDocument();
   });
 
   it("renders assistant process and streamed answer", async () => {

@@ -486,13 +486,88 @@ h1 {
   color: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-errorForeground));
 }
 
-.workflow-timeline {
+.workflow-plan {
   border-left: 2px solid var(--vscode-charts-blue, var(--vscode-textLink-foreground));
+  display: grid;
+  gap: 7px;
+  padding-left: 8px;
+}
+
+.workflow-plan-header {
+  align-items: baseline;
+  color: var(--vscode-foreground);
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  min-width: 0;
+}
+
+.workflow-plan-phase {
   color: var(--vscode-descriptionForeground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-plan-count {
+  color: var(--vscode-descriptionForeground);
+  flex: none;
+  margin-left: auto;
+}
+
+.workflow-plan-list {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.workflow-plan-item {
+  align-items: start;
   display: grid;
   font-size: 12px;
-  gap: 3px;
-  padding-left: 8px;
+  gap: 6px;
+  grid-template-columns: 14px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.workflow-plan-icon {
+  display: grid;
+  font-size: 12px;
+  height: 14px;
+  line-height: 14px;
+  place-items: center;
+  width: 14px;
+}
+
+.workflow-plan-copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.workflow-plan-task {
+  color: var(--vscode-foreground);
+  overflow-wrap: anywhere;
+}
+
+.workflow-plan-meta {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+}
+
+.workflow-plan-running .workflow-plan-icon {
+  color: var(--vscode-progressBar-background, var(--vscode-charts-blue));
+}
+
+.workflow-plan-completed .workflow-plan-icon {
+  color: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-charts-green));
+}
+
+.workflow-plan-failed .workflow-plan-icon,
+.workflow-plan-cancelled .workflow-plan-icon {
+  color: var(--vscode-errorForeground);
 }
 
 .error-message {

@@ -330,12 +330,13 @@ async function submitQuestion(session, question) {
     const workflowEvents = [];
     const workflowStates = new Map();
     const recordWorkflow = () => {
-      const agents = [...webviewDocument.querySelectorAll(".workflow-timeline span")].slice(1);
+      const agents = [...webviewDocument.querySelectorAll(".workflow-plan-item[data-agent-id]")];
       for (const agent of agents) {
-        const match = agent.textContent?.trim().match(/^(.+): (pending|running|completed|failed|cancelled)$/);
-        if (!match || workflowStates.get(match[1]) === match[2]) continue;
-        workflowStates.set(match[1], match[2]);
-        workflowEvents.push({ agentId: match[1], status: match[2], at: Date.now() });
+        const agentId = agent.getAttribute("data-agent-id");
+        const status = agent.getAttribute("data-status");
+        if (!agentId || !status || workflowStates.get(agentId) === status) continue;
+        workflowStates.set(agentId, status);
+        workflowEvents.push({ agentId, status, at: Date.now() });
       }
     };
     const observer = new webviewWindow.MutationObserver(recordWorkflow);
@@ -376,7 +377,7 @@ async function waitForAnswer(session, previousTurnCount) {
       return {
         process: [
           ...toolCalls.map((call) => [call.name, call.input].filter(Boolean).join(" ")),
-          turn?.querySelector(".workflow-timeline")?.innerText ?? "",
+          turn?.querySelector(".workflow-plan")?.innerText ?? "",
           turn?.querySelector(".message-meta")?.innerText ?? "",
         ].filter(Boolean).join("\\n"),
         workflowEvents: webviewWindow.__loopAgentE2eWorkflow?.events ?? [],

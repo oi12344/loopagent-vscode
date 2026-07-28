@@ -144,10 +144,18 @@ export type HostToWebviewMessage =
       phase: string;
     }
   | {
+      type: "subagentPlanCreated";
+      runId: string;
+      agentId: string;
+      task: string;
+      role: "explorer" | "reviewer" | "planner" | "executor";
+      dependsOn: string[];
+    }
+  | {
       type: "subagentStateChanged";
       runId: string;
       agentId: string;
-      status: string;
+      status: "pending" | "running" | "completed" | "failed" | "cancelled";
     }
   | {
       /** Assistant initialization: signals assistant model is starting */

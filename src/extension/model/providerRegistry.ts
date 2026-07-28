@@ -240,7 +240,14 @@ export async function createConfiguredAgentRunner(
 
 function toHostMessage(event: WorkflowEvent, runId: string): HostToWebviewMessage {
   if (event.type === "SubagentCreated") {
-    return { type: "subagentStateChanged", runId, agentId: event.subagentId, status: "pending" };
+    return {
+      type: "subagentPlanCreated",
+      runId,
+      agentId: event.subagentId,
+      task: event.task,
+      role: event.role,
+      dependsOn: [...event.dependsOn],
+    };
   }
   if (event.type === "SubagentStatusChanged") {
     return { type: "subagentStateChanged", runId, agentId: event.subagentId, status: event.status };

@@ -4,12 +4,12 @@ import type { ReactAgentTool } from "./reactTypes";
 import { validateDAG } from "./workflow/dagValidator";
 import { resolveRole } from "./workflow/roleRegistry";
 import { selectTools } from "./workflow/toolRouter";
-import type { CreateSubagentConfig, SubagentResult, SubagentRunnerFactory, SubagentStatus, WorkflowLimits } from "./workflow/types";
+import type { CreateSubagentConfig, SubagentResult, SubagentRoleId, SubagentRunnerFactory, SubagentStatus, WorkflowLimits } from "./workflow/types";
 import type { ProjectMemory } from "../memory/projectMemory";
 import type { ReactAgentRunOutcome } from "../memory/types";
 
 export type WorkflowEvent =
-  | { type: "SubagentCreated"; subagentId: string; task: string; dependsOn: readonly string[] }
+  | { type: "SubagentCreated"; subagentId: string; task: string; role: SubagentRoleId; dependsOn: readonly string[] }
   | { type: "SubagentStatusChanged"; subagentId: string; status: SubagentStatus }
   | { type: "SubagentMessage"; subagentId: string; message: HostToWebviewMessage };
 
@@ -242,7 +242,7 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
       nextId += 1;
       graph.set(id, new Set(dependencies));
       entries.set(id, entry);
-      emit({ type: "SubagentCreated", subagentId: id, task: config.task, dependsOn: dependencies });
+      emit({ type: "SubagentCreated", subagentId: id, task: config.task, role: profile.id, dependsOn: dependencies });
       if (options.signal?.aborted) cancelSubagent(id);
       else schedule();
       return id;

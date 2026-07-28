@@ -477,7 +477,14 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
       }),
     ]));
     expect(hostMessages).toEqual(expect.arrayContaining([
-      { type: "subagentStateChanged", runId: "run-1", agentId: "subagent-1", status: "pending" },
+      {
+        type: "subagentPlanCreated",
+        runId: "run-1",
+        agentId: "subagent-1",
+        task: "Apply the delegated repository task.",
+        role: "executor",
+        dependsOn: [],
+      },
       { type: "subagentStateChanged", runId: "run-1", agentId: "subagent-1", status: "running" },
       { type: "subagentStateChanged", runId: "run-1", agentId: "subagent-1", status: "completed" },
       { type: "agentEvent", runId: "run-1", message: "[subagent-1] child result" },
@@ -614,10 +621,15 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
 
     expect(fixture.childSignal()?.aborted).toBe(true);
     expect(fixture.childAbortCount()).toBe(1);
+    expect(hostMessages).toContainEqual(expect.objectContaining({
+      type: "subagentPlanCreated",
+      agentId: "subagent-1",
+      role: "explorer",
+    }));
     expect(hostMessages
       .filter((message) => message.type === "subagentStateChanged")
       .map((message) => message.status))
-      .toEqual(["pending", "running", "cancelled"]);
+      .toEqual(["running", "cancelled"]);
   }, 2_000);
 
   it("wires tree-sitter parser runtime into VS Code workspace intelligence", async () => {
