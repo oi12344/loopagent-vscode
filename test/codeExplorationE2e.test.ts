@@ -16,7 +16,7 @@ const { CODE_EXPLORATION_QUESTION, evaluateCodeExploration } = require(
     missingStates: string[];
     toolCalls: string[];
     parallelReadOnlyNodes: number;
-    reviewerCompleted: boolean;
+    reviewerAbsent: boolean;
   };
 };
 
@@ -24,21 +24,18 @@ type WorkflowEvent = { agentId: string; status: string; at: number };
 type GraphNode = { id: string; role?: string; dependsOn?: string[] };
 
 const expectedQuestion =
-  "请在不修改代码的前提下，第一张且唯一一张运行图就恰好创建三个节点：两个无依赖、可并行的只读分析节点，每个只聚焦一条调用链；第三个审查节点同时依赖前两个节点并统一核对。不要先做目录结构探索，不要枚举整个仓库或逐文件读取，每个节点使用 60 秒超时。问题：本项目从 Webview 提交请求到 DeepSeek 创建并执行运行时工作流，关键调用链和角色权限边界是什么？请给出关键源码文件和函数证据，并指出并发与串行约束。";
+  "请在不修改代码的前提下，第一张且唯一一张运行图就恰好创建两个无依赖、可并行的只读分析节点，每个只聚焦一条调用链；运行图完成后由父智能体直接核对并汇总两个节点的结果，不要创建 reviewer。不要先做目录结构探索，不要枚举整个仓库或逐文件读取，每个节点使用 60 秒超时。问题：本项目从 Webview 提交请求到 DeepSeek 创建并执行运行时工作流，关键调用链和角色权限边界是什么？请给出关键源码文件和函数证据，并指出并发与串行约束。";
 
-const completeProcess = "runDynamicGraph\nreviewer\nDone";
+const completeProcess = "runDynamicGraph\nDone";
 const completedWorkflow: WorkflowEvent[] = [
   { agentId: "subagent-1", status: "running", at: 1 },
   { agentId: "subagent-2", status: "running", at: 2 },
   { agentId: "subagent-1", status: "completed", at: 5 },
   { agentId: "subagent-2", status: "completed", at: 6 },
-  { agentId: "subagent-3", status: "running", at: 7 },
-  { agentId: "subagent-3", status: "completed", at: 9 },
 ];
 const validGraphNodes: GraphNode[] = [
   { id: "webview", role: "explorer", dependsOn: [] },
   { id: "runtime", role: "planner", dependsOn: [] },
-  { id: "review", role: "reviewer", dependsOn: ["webview", "runtime"] },
 ];
 
 describe("code exploration E2E oracle", () => {
@@ -48,7 +45,7 @@ describe("code exploration E2E oracle", () => {
     expect(CODE_EXPLORATION_QUESTION).not.toContain("runDynamicGraph");
   });
 
-  it("accepts graph controls, parallel readers, a dependent reviewer, and source evidence", () => {
+  it("accepts graph controls, two parallel readers, no reviewer, and source evidence", () => {
     const result = evaluateCodeExploration({
       process: completeProcess,
       workflowEvents: completedWorkflow,
@@ -78,7 +75,7 @@ describe("code exploration E2E oracle", () => {
       missingStates: [],
       toolCalls: ["runDynamicGraph"],
       parallelReadOnlyNodes: 2,
-      reviewerCompleted: true,
+      reviewerAbsent: true,
     });
   });
 
@@ -172,8 +169,6 @@ describe("code exploration E2E oracle", () => {
       { agentId: "subagent-1", status: "completed", at: 2 },
       { agentId: "subagent-2", status: "running", at: 3 },
       { agentId: "subagent-2", status: "completed", at: 4 },
-      { agentId: "subagent-3", status: "running", at: 5 },
-      { agentId: "subagent-3", status: "completed", at: 6 },
     ];
 
     const result = evaluateCodeExploration({
@@ -204,21 +199,24 @@ describe("code exploration E2E oracle", () => {
     expect(result.parallelReadOnlyNodes).toBeLessThan(2);
   });
 
-  it("rejects concurrent executor nodes and a reviewer without both dependencies", () => {
-    const result = evaluateCodeExploration({
-      process: completeProcess,
-      workflowEvents: completedWorkflow,
-      graphNodes: [
-        { id: "write-a", role: "executor", dependsOn: [] },
-        { id: "write-b", role: "executor", dependsOn: [] },
-        { id: "review", role: "reviewer", dependsOn: ["write-a"] },
-      ],
-      answer: "src/extension/model/providerRegistry.ts createConfiguredAgentRunner src/extension/agent/dynamicWorkflowTools.ts createDynamicGraphEngine src/extension.ts executeRun",
-    });
+  it("rejects reviewer, executor, or dependent nodes", () => {
+    const invalidGraphs: GraphNode[][] = [
+      [...validGraphNodes, { id: "review", role: "reviewer", dependsOn: ["webview", "runtime"] }],
+      [{ id: "webview", role: "explorer", dependsOn: [] }, { id: "write", role: "executor", dependsOn: [] }],
+      [{ id: "webview", role: "explorer", dependsOn: [] }, { id: "runtime", role: "planner", dependsOn: ["webview"] }],
+    ];
 
-    expect(result.passed).toBe(false);
-    expect(result.parallelReadOnlyNodes).toBe(0);
-    expect(result.reviewerCompleted).toBe(false);
+    for (const graphNodes of invalidGraphs) {
+      const result = evaluateCodeExploration({
+        process: completeProcess,
+        workflowEvents: completedWorkflow,
+        graphNodes,
+        answer: "src/extension/model/providerRegistry.ts createConfiguredAgentRunner src/extension/agent/dynamicWorkflowTools.ts createDynamicGraphEngine src/extension.ts executeRun",
+      });
+
+      expect(result.passed).toBe(false);
+      expect(result.parallelReadOnlyNodes).toBe(0);
+    }
   });
 });
 

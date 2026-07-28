@@ -1,5 +1,5 @@
 const CODE_EXPLORATION_QUESTION =
-  "请在不修改代码的前提下，第一张且唯一一张运行图就恰好创建三个节点：两个无依赖、可并行的只读分析节点，每个只聚焦一条调用链；第三个审查节点同时依赖前两个节点并统一核对。不要先做目录结构探索，不要枚举整个仓库或逐文件读取，每个节点使用 60 秒超时。问题：本项目从 Webview 提交请求到 DeepSeek 创建并执行运行时工作流，关键调用链和角色权限边界是什么？请给出关键源码文件和函数证据，并指出并发与串行约束。";
+  "请在不修改代码的前提下，第一张且唯一一张运行图就恰好创建两个无依赖、可并行的只读分析节点，每个只聚焦一条调用链；运行图完成后由父智能体直接核对并汇总两个节点的结果，不要创建 reviewer。不要先做目录结构探索，不要枚举整个仓库或逐文件读取，每个节点使用 60 秒超时。问题：本项目从 Webview 提交请求到 DeepSeek 创建并执行运行时工作流，关键调用链和角色权限边界是什么？请给出关键源码文件和函数证据，并指出并发与串行约束。";
 
 const REQUIRED_STATES = [
   "runDynamicGraph",
@@ -47,10 +47,13 @@ function evaluateCodeExploration({ process, answer, workflowEvents = [], graphNo
   const hasRequiredIntelligencePath = matchedPaths.some((path) =>
     REQUIRED_INTELLIGENCE_PATHS.has(path),
   );
+  const reviewerAbsent =
+    Array.isArray(graphNodes) &&
+    graphNodes.length > 0 &&
+    graphNodes.every((node) => node.role !== "reviewer");
   const graphStructureValid = hasRequiredGraphStructure(graphNodes);
-  const { maxConcurrent, hasDependentCompletion } = analyzeWorkflowEvents(workflowEvents);
+  const { maxConcurrent } = analyzeWorkflowEvents(workflowEvents);
   const parallelReadOnlyNodes = graphStructureValid ? maxConcurrent : 0;
-  const reviewerCompleted = graphStructureValid && hasDependentCompletion;
 
   return {
     passed:
@@ -59,25 +62,24 @@ function evaluateCodeExploration({ process, answer, workflowEvents = [], graphNo
       matchedPaths.length >= 2 &&
       hasRequiredIntelligencePath &&
       parallelReadOnlyNodes >= 2 &&
-      reviewerCompleted,
+      reviewerAbsent,
     matchedAnchors,
     matchedPaths,
     missingStates,
     toolCalls,
     parallelReadOnlyNodes,
-    reviewerCompleted,
+    reviewerAbsent,
   };
 }
 
 function hasRequiredGraphStructure(nodes) {
-  if (!Array.isArray(nodes) || nodes.length !== 3) return false;
-  const analyses = nodes.filter(
-    (node) => ["explorer", "planner"].includes(node.role) && (node.dependsOn ?? []).length === 0,
+  return Array.isArray(nodes) &&
+    nodes.length === 2 &&
+    nodes.every(
+      (node) =>
+        ["explorer", "planner"].includes(node.role) &&
+        (node.dependsOn ?? []).length === 0,
   );
-  const reviewer = nodes.find((node) => node.role === "reviewer");
-  if (analyses.length !== 2 || !reviewer) return false;
-  const expectedDependencies = new Set(analyses.map((node) => node.id));
-  return reviewer.dependsOn?.length === 2 && reviewer.dependsOn.every((id) => expectedDependencies.has(id));
 }
 
 function analyzeWorkflowEvents(events) {
@@ -105,10 +107,7 @@ function analyzeWorkflowEvents(events) {
     concurrent += point.delta;
     maxConcurrent = Math.max(maxConcurrent, concurrent);
   }
-  const hasDependentCompletion = completed.some((candidate) =>
-    completed.filter((other) => other !== candidate && other.finishedAt <= candidate.startedAt).length >= 2,
-  );
-  return { maxConcurrent, hasDependentCompletion };
+  return { maxConcurrent };
 }
 
 module.exports = { CODE_EXPLORATION_QUESTION, evaluateCodeExploration };

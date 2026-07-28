@@ -448,7 +448,7 @@ async function main() {
           missingStates: evaluation.missingStates,
           toolCalls: evaluation.toolCalls,
           parallelReadOnlyNodes: evaluation.parallelReadOnlyNodes,
-          reviewerCompleted: evaluation.reviewerCompleted,
+          reviewerAbsent: evaluation.reviewerAbsent,
           answerLength: result.answer.length,
           screenshotPath: SCREENSHOT_PATH,
         },
