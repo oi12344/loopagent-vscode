@@ -29,7 +29,7 @@
 - Consumes: `evaluateCodeExploration({ process, answer, workflowEvents, graphNodes })`
 - Produces: `{ passed, matchedAnchors, matchedPaths, missingStates, toolCalls, parallelReadOnlyNodes, reviewerAbsent }`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 把测试夹具改为两个并行完成的只读节点：
 
@@ -49,13 +49,13 @@ const validGraphNodes: GraphNode[] = [
 
 成功断言改为 `reviewerAbsent: true`，并新增一个用例：包含 reviewer、executor 或任意 `dependsOn` 的图必须 `passed === false`。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `npm.cmd test -- --reporter=dot test/codeExplorationE2e.test.ts`
 
 Expected: FAIL，现有 oracle 仍要求三个节点并返回 `reviewerCompleted`。
 
-- [ ] **Step 3: 最小修改问题和 oracle**
+- [x] **Step 3: 最小修改问题和 oracle**
 
 `CODE_EXPLORATION_QUESTION` 明确要求第一张且唯一一张图恰好包含两个无依赖只读分析节点，并要求父智能体自行核对汇总。
 
@@ -82,13 +82,13 @@ const reviewerAbsent =
 
 通过条件保留源码锚点、路径、`runDynamicGraph` 和 `parallelReadOnlyNodes >= 2`，删除 dependent reviewer 完成条件。`run-code-exploration-e2e.mjs` 的 JSON 输出把 `reviewerCompleted` 改为 `reviewerAbsent`。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `npm.cmd test -- --reporter=dot test/codeExplorationE2e.test.ts`
 
 Expected: 该文件全部 PASS。
 
-- [ ] **Step 5: 提交 oracle 变更**
+- [x] **Step 5: 提交 oracle 变更**
 
 ```powershell
 git add scripts/codeExplorationE2e.js scripts/run-code-exploration-e2e.mjs test/codeExplorationE2e.test.ts
@@ -108,7 +108,7 @@ git commit -m "test: require reviewer-free parallel graph"
 - Consumes: `GRAPH_TOOL_GUIDANCE`、`runDynamicGraph` 的结构化 `results`
 - Produces: 父智能体默认双节点并行聚合规则；显式 reviewer 规则保持可用
 
-- [ ] **Step 1: 写失败提示词测试**
+- [x] **Step 1: 写失败提示词测试**
 
 在父 runner 系统提示测试中增加：
 
@@ -123,13 +123,13 @@ expect(systemPrompt).toContain(
 
 保留 reviewer 使用 `inputMapping` 的现有断言，证明显式审查能力没有被删除。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `npm.cmd test -- --reporter=dot test/providerRegistryCodeContext.test.ts`
 
 Expected: FAIL，系统提示尚未包含父智能体直接聚合约束。
 
-- [ ] **Step 3: 最小修改生产提示词**
+- [x] **Step 3: 最小修改生产提示词**
 
 把 `GRAPH_TOOL_GUIDANCE` 的建图条件改为多路独立并行探索或单次工具预算不足；加入：
 
@@ -141,11 +141,11 @@ Expected: FAIL，系统提示尚未包含父智能体直接聚合约束。
 
 删除“默认需要 aggregating review”的表述，但不改角色、schema 或图执行代码。
 
-- [ ] **Step 4: 更新运行指南**
+- [x] **Step 4: 更新运行指南**
 
 在 `dynamic-graph-runtime.md` 中记录默认父聚合数据流、显式 reviewer 例外，以及 2026-07-28 双节点真实 E2E 验证目标；保留角色权限表。
 
-- [ ] **Step 5: 运行受影响验证**
+- [x] **Step 5: 运行受影响验证**
 
 Run: `npm.cmd test -- --reporter=dot test/providerRegistryCodeContext.test.ts test/codeExplorationE2e.test.ts`
 
@@ -159,7 +159,7 @@ Run: `npm.cmd run compile`
 
 Expected: exit code 0。
 
-- [ ] **Step 6: 提交运行时和文档**
+- [x] **Step 6: 提交运行时和文档**
 
 ```powershell
 git add src/extension/model/providerRegistry.ts test/providerRegistryCodeContext.test.ts docs/superpowers/guides/dynamic-graph-runtime.md
@@ -178,7 +178,7 @@ git commit -m "feat: let parent aggregate parallel graph results"
 - Consumes: 固定端口 `9333`、固定目录 `.local-vscode-user-data` 和 `.local-vscode-extensions`
 - Produces: 真实 `runDynamicGraph` 调用、两个并行只读节点、`reviewerAbsent: true`、完整父智能体答案
 
-- [ ] **Step 1: 运行静态最终检查**
+- [x] **Step 1: 运行静态最终检查**
 
 ```powershell
 npm.cmd test -- --reporter=dot test/providerRegistryCodeContext.test.ts test/codeExplorationE2e.test.ts
@@ -189,13 +189,13 @@ git diff --check
 
 Expected: 所有命令 exit code 0。
 
-- [ ] **Step 2: 刷新唯一调试窗口**
+- [x] **Step 2: 刷新唯一调试窗口**
 
 Run: `npm.cmd run debug:vscode`
 
 Expected: 只存在一个 LoopAgent Extension Development Host，CDP 监听 `127.0.0.1:9333`。
 
-- [ ] **Step 3: 运行真实 API E2E**
+- [x] **Step 3: 运行真实 API E2E**
 
 Run: `npm.cmd run test:e2e:code-exploration`
 
@@ -210,7 +210,7 @@ Expected JSON:
 }
 ```
 
-- [ ] **Step 4: 集中审查并提交完成记录**
+- [x] **Step 4: 集中审查并提交完成记录**
 
 确认 diff 不包含 `.codegraph`、密钥、临时日志或调试代码；在本计划中记录真实 E2E 耗时和结果。
 
@@ -218,3 +218,10 @@ Expected JSON:
 git add docs/superpowers/plans/2026-07-28-remove-default-reviewer-plan.md
 git commit -m "docs: record reviewer-free graph verification"
 ```
+
+## 执行记录
+
+- 2026-07-28：受影响的 Vitest 用例 30/30 通过，`npm.cmd run typecheck`、`npm.cmd run compile` 和 `git diff --check` 通过。
+- 2026-07-28：复用端口 `9333` 的唯一 Extension Development Host 执行真实 DeepSeek E2E，耗时 83.9 秒。首张且唯一运行图调用 `runDynamicGraph`，包含 `webview-to-ext` 与 `ext-to-deepseek` 两个无依赖 `explorer` 节点；两者分别在相差约 2ms 时进入运行态，均完成，`parallelReadOnlyNodes: 2`、`reviewerAbsent: true`。
+- 验证截图：`.artifacts/code-exploration-e2e.png`；E2E 输出会记录运行图节点和时间线事件，供后续复核。
+- 全量 `npm.cmd test -- --reporter=dot --maxWorkers=1` 运行超过 6 分钟仍未输出最终统计，已终止且未重复盲跑；本次受影响范围的验证结果不受影响。

@@ -449,6 +449,8 @@ async function main() {
           toolCalls: evaluation.toolCalls,
           parallelReadOnlyNodes: evaluation.parallelReadOnlyNodes,
           reviewerAbsent: evaluation.reviewerAbsent,
+          workflowEvents: result.workflowEvents,
+          graphNodes: result.graphNodes,
           answerLength: result.answer.length,
           screenshotPath: SCREENSHOT_PATH,
         },
