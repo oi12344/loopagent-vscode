@@ -90,9 +90,10 @@ export function createAnalyzeEditWithVisionTool(
     },
     async invoke({ input, signal }) {
       const changes = parseChanges(input);
-      const captureScreenshot = input.captureScreenshot !== false;
-      const analysisGoal = (input.analysisGoal as HybridAnalysisRequest["analysisGoal"]) || "detect_errors";
-      const customPrompt = typeof input.customPrompt === "string" ? input.customPrompt : undefined;
+      const options = input as Record<string, unknown>;
+      const captureScreenshot = options.captureScreenshot !== false;
+      const analysisGoal = (options.analysisGoal as HybridAnalysisRequest["analysisGoal"]) || "detect_errors";
+      const customPrompt = typeof options.customPrompt === "string" ? options.customPrompt : undefined;
 
       // 捕获截图（如果启用）
       let screenshot;

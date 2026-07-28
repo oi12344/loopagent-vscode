@@ -645,3 +645,10 @@ code --install-extension loopagent-0.0.1.vsix
 **代码行数**：约 500 行新增 + 95 行修改  
 **文档行数**：约 800 行  
 **Token 使用**：约 93K tokens
+
+# 2026-07-28 激活修复记录
+
+- 目标：恢复 LoopAgent Extension Development Host 的正常激活，不改变视觉分析或动态图行为。
+- 根因：`LocalVisionService` 构造函数需要先接收扩展根目录，再接收可选配置；主扩展此前误把配置对象作为首个参数传入，导致 `path.join` 在激活阶段抛错。
+- 修复：使用 `context.extensionPath` 作为视觉服务根目录，并在视觉工具完成输入校验后读取可选字段。
+- 验证：运行扩展生命周期测试、视觉相关测试、类型检查、构建，以及真实 DeepSeek 多子智能体并行 E2E。

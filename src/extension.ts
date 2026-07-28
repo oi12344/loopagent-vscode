@@ -257,7 +257,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     this.runCommandTool = createRunCommandTool(vscode, { approve: this.commandApprovalBroker.approve });
 
     // 初始化视觉服务
-    this.visionService = new LocalVisionService({
+    this.visionService = new LocalVisionService(context.extensionPath, {
       pythonPath: vscode.workspace.getConfiguration("loopagent").get("pythonPath"),
       port: 8765,
     });
