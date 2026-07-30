@@ -1,6 +1,6 @@
 import * as React from "react";
 import type { EditFileStat, HostToWebviewMessage, ModelThinkingMode, RunModelSelection } from "../shared/messages";
-import type { ConversationSummary } from "../shared/chatTypes";
+import type { CodeReviewIssue, CodeReviewReport, ConversationSummary } from "../shared/chatTypes";
 import { createDefaultVsCodeApi, type VsCodeApi } from "./vscodeApi";
 import "./styles.css";
 
@@ -46,9 +46,9 @@ type WorkflowPlanItem = {
   dependsOn: string[];
   status: WorkflowPlanStatus;
 };
-type WorkflowProgress = { phase?: string; agents: WorkflowPlanItem[] };
+type WorkflowProgress = { phase?: string; agents: WorkflowPlanItem[]; step?: number; stateVersion?: number; stopReason?: string };
 type PendingCommandApproval = { approvalId: string; command: string; cwd: string };
-type AppliedEditNotification = { notificationId: string; files: string[]; fileStats: EditFileStat[] };
+type AppliedEditNotification = { notificationId: string; files: string[]; fileStats: EditFileStat[]; error?: string };
 
 type AssistantUpdate = (turn: AssistantTurn) => AssistantTurn;
 
@@ -214,6 +214,14 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           return;
         }
 
+        case "assistantContentReset": {
+          updateAssistantTurn(hostMessage.runId, (turn) => ({
+            ...turn,
+            content: "",
+          }));
+          return;
+        }
+
         case "assistantFinished": {
           updateAssistantTurn(hostMessage.runId, (turn) => ({
             ...turn,
@@ -243,6 +251,24 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         }
 
         case "toolCallFinished": {
+          if (hostMessage.toolName === "runDynamicGraph" && hostMessage.succeeded) {
+            try {
+              const output = JSON.parse(hostMessage.output) as { workflowState?: { step?: number; stateVersion?: number; stopReason?: string } };
+              if (output.workflowState) {
+                setWorkflowProgress((current) => ({
+                  ...current,
+                  [hostMessage.runId]: {
+                    ...(current[hostMessage.runId] ?? { agents: [] }),
+                    step: output.workflowState.step,
+                    stateVersion: output.workflowState.stateVersion,
+                    stopReason: output.workflowState.stopReason,
+                  },
+                }));
+              }
+            } catch {
+              // Tool output may be plain text; the existing tool-call card remains the source of truth.
+            }
+          }
           updateAssistantTurn(hostMessage.runId, (turn) => ({
             ...turn,
             toolCalls: turn.toolCalls.map((entry) =>
@@ -274,6 +300,19 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           setWorkflowProgress((current) => ({
             ...current,
             [hostMessage.runId]: { phase: hostMessage.phase, agents: current[hostMessage.runId]?.agents ?? [] },
+          }));
+          return;
+        }
+
+        case "editRevertResult": {
+          setAppliedEdits((current) => current.flatMap((notification) => {
+            if (notification.notificationId !== hostMessage.notificationId) return [notification];
+            if (!hostMessage.succeeded) return [{ ...notification, error: hostMessage.message }];
+            if (hostMessage.paths.length === 0) return [];
+            const reverted = new Set(hostMessage.paths);
+            const files = notification.files.filter((path) => !reverted.has(path));
+            const fileStats = notification.fileStats.filter((stat) => !reverted.has(stat.path));
+            return files.length > 0 ? [{ ...notification, files, fileStats, error: undefined }] : [];
           }));
           return;
         }
@@ -358,6 +397,15 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         case "conversationRestored": {
           setInterruptedRun(undefined);
           setConversationId(hostMessage.conversationId);
+          setWorkflowProgress(Object.fromEntries(
+            hostMessage.messages.flatMap((chatMessage, index) =>
+              chatMessage.role === "assistant" && chatMessage.workflow
+                ? [[chatMessage.runId ?? `restored-${index}`, chatMessage.workflow]]
+                : [],
+            ),
+          ));
+          setAppliedEdits(hostMessage.messages.flatMap((chatMessage) => chatMessage.appliedEdits ?? []));
+          setPendingApprovals([]);
           setTurns(
             hostMessage.messages.map((chatMessage, index) =>
               chatMessage.role === "user"
@@ -369,7 +417,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
                 : {
                     id: `restored-assistant-${index}`,
                     role: "assistant",
-                    runId: `restored-${index}`,
+                    runId: chatMessage.runId ?? `restored-${index}`,
                     provider: defaultProviderName,
                     reasoning: chatMessage.reasoning ?? "",
                     content: chatMessage.content,
@@ -470,29 +518,20 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
     vscodeApi.postMessage({ type: "commandApprovalResolved", approvalId, approved });
   }
 
-  function dismissAppliedEdit(notificationId: string) {
+  function removeAppliedEdit(notificationId: string) {
     setAppliedEdits((current) => current.filter((notification) => notification.notificationId !== notificationId));
   }
 
+  function dismissAppliedEdit(notificationId: string) {
+    removeAppliedEdit(notificationId);
+    vscodeApi.postMessage({ type: "editDismissRequested", notificationId });
+  }
+
   function revertEditFile(notificationId: string, path: string) {
-    setAppliedEdits((current) =>
-      current
-        .map((notification) =>
-          notification.notificationId === notificationId
-            ? {
-                ...notification,
-                files: notification.files.filter((file) => file !== path),
-                fileStats: notification.fileStats.filter((stat) => stat.path !== path),
-              }
-            : notification,
-        )
-        .filter((notification) => notification.files.length > 0),
-    );
     vscodeApi.postMessage({ type: "editRevertRequested", notificationId, paths: [path] });
   }
 
   function revertAllEditFiles(notificationId: string) {
-    dismissAppliedEdit(notificationId);
     vscodeApi.postMessage({ type: "editRevertRequested", notificationId, paths: [] });
   }
 
@@ -523,6 +562,9 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
     interruptActiveRun();
     setOpenMenu(null);
     setTurns([]);
+    setWorkflowProgress({});
+    setPendingApprovals([]);
+    setAppliedEdits([]);
     setConversationId(undefined);
     vscodeApi.postMessage({ type: "newConversation" });
   }
@@ -640,30 +682,29 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
             );
           })
         )}
+        {pendingApprovals.length > 0 ? (
+          <div className="command-approvals" aria-label="Pending command approvals">
+            {pendingApprovals.map((approval) => (
+              <CommandApprovalCard key={approval.approvalId} approval={approval} onResolve={resolveApproval} />
+            ))}
+          </div>
+        ) : null}
+
+        {appliedEdits.length > 0 ? (
+          <div className="edit-approvals" aria-label="Applied code changes">
+            {appliedEdits.map((notification) => (
+              <EditApprovalCard
+                key={notification.notificationId}
+                notification={notification}
+                onDismiss={dismissAppliedEdit}
+                onRevertFile={revertEditFile}
+                onRevertAll={revertAllEditFiles}
+                onOpenFile={openEditFile}
+              />
+            ))}
+          </div>
+        ) : null}
       </section>
-
-      {pendingApprovals.length > 0 ? (
-        <div className="command-approvals" aria-label="Pending command approvals">
-          {pendingApprovals.map((approval) => (
-            <CommandApprovalCard key={approval.approvalId} approval={approval} onResolve={resolveApproval} />
-          ))}
-        </div>
-      ) : null}
-
-      {appliedEdits.length > 0 ? (
-        <div className="edit-approvals" aria-label="Applied code changes">
-          {appliedEdits.map((notification) => (
-            <EditApprovalCard
-              key={notification.notificationId}
-              notification={notification}
-              onDismiss={dismissAppliedEdit}
-              onRevertFile={revertEditFile}
-              onRevertAll={revertAllEditFiles}
-              onOpenFile={openEditFile}
-            />
-          ))}
-        </div>
-      ) : null}
 
       <form className="chat-composer" aria-label="Chat composer" onSubmit={handleSubmit}>
         <label htmlFor="message-input">Message</label>
@@ -912,6 +953,7 @@ function EditApprovalCard({
           </button>
         </div>
       </div>
+      {notification.error ? <div className="edit-approval-error">{notification.error}</div> : null}
 
       <input
         type="text"
@@ -1154,7 +1196,11 @@ function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; w
           <summary>工具调用</summary>
           <ul className="tool-calls-list">
             {turn.toolCalls.map((entry) => (
-              <li key={entry.callId} className={`tool-call-entry tool-call-${entry.status}`}>
+              <li
+                key={entry.callId}
+                className={`tool-call-entry tool-call-${entry.status}`}
+                data-call-id={entry.callId}
+              >
                 <div className="tool-call-header">
                   <span className="tool-call-status-icon" aria-hidden="true">
                     {entry.status === "running" ? "⏳" : entry.status === "succeeded" ? "✓" : "✗"}
@@ -1174,7 +1220,7 @@ function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; w
         </details>
       ) : null}
 
-      {workflow?.agents.length ? <WorkflowPlan workflow={workflow} parentStatus={turn.status} /> : null}
+      {workflow?.agents.length || workflow?.step !== undefined ? <WorkflowPlan workflow={workflow} parentStatus={turn.status} /> : null}
       {turn.content.length > 0 ? <div className="message-body assistant-answer"><AssistantAnswer content={turn.content} /></div> : null}
       {turn.status !== "done" && turn.content.length === 0 && !turn.error ? (
         <div className="assistant-placeholder">Waiting for response...</div>
@@ -1216,6 +1262,8 @@ function WorkflowPlan({ workflow, parentStatus }: { workflow: WorkflowProgress; 
       <div className="workflow-plan-header">
         <strong>执行计划</strong>
         {workflow.phase ? <span className="workflow-plan-phase">{workflow.phase}</span> : null}
+        {workflow.step !== undefined ? <span className="workflow-plan-phase">step {workflow.step} · v{workflow.stateVersion ?? 0}</span> : null}
+        {workflow.stopReason ? <span className="workflow-plan-phase">{workflow.stopReason}</span> : null}
         <span className="workflow-plan-count">{completedCount} / {items.length}</span>
       </div>
       <ol className="workflow-plan-list">
@@ -1307,6 +1355,200 @@ function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
   }
 
   return -1;
+}
+
+// ---------------------------------------------------------------------------
+// 代码审查报告 UI 组件
+// ---------------------------------------------------------------------------
+
+/** 严重级别对应的显示配置 */
+const SEVERITY_CONFIG: Record<string, { label: string; color: string; icon: string }> = {
+  error: { label: "错误", color: "#e53935", icon: "✕" },
+  warning: { label: "警告", color: "#fb8c00", icon: "⚠" },
+  info: { label: "信息", color: "#1e88e5", icon: "ℹ" },
+};
+
+/** 类别对应的中文标签 */
+const CATEGORY_LABELS: Record<string, string> = {
+  bug: "潜在缺陷",
+  style: "代码风格",
+  performance: "性能问题",
+  security: "安全隐患",
+  maintainability: "可维护性",
+};
+
+/** 严重级别排序权重 */
+const SEVERITY_ORDER: Record<string, number> = {
+  error: 0,
+  warning: 1,
+  info: 2,
+};
+
+function CodeReviewReportView({ report }: { report: CodeReviewReport }) {
+  const [expandedSeverity, setExpandedSeverity] = React.useState<string | null>(null);
+  const [expandedCategories, setExpandedCategories] = React.useState<Set<string>>(new Set());
+
+  // 按严重级别分组
+  const groupedBySeverity = React.useMemo(() => {
+    const groups: Record<string, CodeReviewIssue[]> = { error: [], warning: [], info: [] };
+    for (const issue of report.issues) {
+      const group = groups[issue.severity];
+      if (group) {
+        group.push(issue);
+      }
+    }
+    return groups;
+  }, [report.issues]);
+
+  const toggleSeverity = (severity: string) => {
+    setExpandedSeverity((prev) => (prev === severity ? null : severity));
+  };
+
+  const toggleCategory = (key: string) => {
+    setExpandedCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  // 默认展开 error 级别
+  React.useEffect(() => {
+    if (report.issues.some((i) => i.severity === "error") && expandedSeverity === null) {
+      setExpandedSeverity("error");
+    }
+  }, [report.issues, expandedSeverity]);
+
+  const orderedSeverities = Object.keys(groupedBySeverity).sort(
+    (a, b) => (SEVERITY_ORDER[a] ?? 99) - (SEVERITY_ORDER[b] ?? 99),
+  );
+
+  return (
+    <section className="code-review-report" aria-label="代码审查报告">
+      <div className="code-review-header">
+        <strong>代码审查报告</strong>
+        <span className="code-review-target">{report.targetPath}</span>
+        <span className="code-review-count">
+          共 {report.totalIssues} 个问题
+        </span>
+        <span className="code-review-time">
+          {new Date(report.timestamp).toLocaleString("zh-CN")}
+        </span>
+      </div>
+
+      <div className="code-review-summary">
+        {Object.entries(report.issuesBySeverity).map(([severity, count]) => {
+          const config = SEVERITY_CONFIG[severity];
+          if (!config || count === 0) return null;
+          return (
+            <span
+              key={severity}
+              className="code-review-summary-item"
+              style={{ borderColor: config.color }}
+            >
+              <span style={{ color: config.color }}>{config.icon}</span>
+              <span>{config.label}: {count}</span>
+            </span>
+          );
+        })}
+        {Object.entries(report.issuesByCategory).length > 0 && (
+          <>
+            <span className="code-review-summary-divider" aria-hidden="true" />
+            {Object.entries(report.issuesByCategory).map(([category, count]) => {
+              const label = CATEGORY_LABELS[category] ?? category;
+              return (
+                <span key={category} className="code-review-summary-item">
+                  {label}: {count}
+                </span>
+              );
+            })}
+          </>
+        )}
+      </div>
+
+      {orderedSeverities.map((severity) => {
+        const issues = groupedBySeverity[severity];
+        if (!issues || issues.length === 0) return null;
+        const config = SEVERITY_CONFIG[severity] ?? { label: severity, color: "#999", icon: "?" };
+        const isExpanded = expandedSeverity === severity;
+
+        // 在该严重级别内按类别分组
+        const byCategory: Record<string, CodeReviewIssue[]> = {};
+        for (const issue of issues) {
+          const cat = issue.category;
+          if (!byCategory[cat]) byCategory[cat] = [];
+          byCategory[cat].push(issue);
+        }
+        const sortedCategories = Object.keys(byCategory).sort();
+
+        return (
+          <details
+            key={severity}
+            className={`code-review-severity-group code-review-severity-${severity}`}
+            open={isExpanded}
+          >
+            <summary
+              className="code-review-severity-header"
+              onClick={() => toggleSeverity(severity)}
+              style={{ borderLeftColor: config.color }}
+            >
+              <span className="code-review-severity-icon" style={{ color: config.color }}>
+                {config.icon}
+              </span>
+              <span className="code-review-severity-label">{config.label}</span>
+              <span className="code-review-severity-count">{issues.length} 个</span>
+            </summary>
+
+            <div className="code-review-severity-content">
+              {sortedCategories.map((category) => {
+                const categoryIssues = byCategory[category];
+                const catLabel = CATEGORY_LABELS[category] ?? category;
+                const catKey = `${severity}-${category}`;
+                const isCatExpanded = expandedCategories.has(catKey);
+
+                return (
+                  <details
+                    key={category}
+                    className="code-review-category-group"
+                    open={isCatExpanded}
+                  >
+                    <summary
+                      className="code-review-category-header"
+                      onClick={() => toggleCategory(catKey)}
+                    >
+                      <span className="code-review-category-label">{catLabel}</span>
+                      <span className="code-review-category-count">{categoryIssues.length} 个</span>
+                    </summary>
+
+                    <ul className="code-review-issue-list">
+                      {categoryIssues.map((issue, index) => (
+                        <li key={`${issue.filePath}-${issue.line}-${index}`} className="code-review-issue-item">
+                          <div className="code-review-issue-location">
+                            <span className="code-review-issue-file">{issue.filePath}</span>
+                            <span className="code-review-issue-line">:{issue.line}</span>
+                          </div>
+                          <p className="code-review-issue-message">{issue.message}</p>
+                          {issue.suggestion ? (
+                            <p className="code-review-issue-suggestion">
+                              <strong>建议: </strong>{issue.suggestion}
+                            </p>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                );
+              })}
+            </div>
+          </details>
+        );
+      })}
+    </section>
+  );
 }
 
 function formatAssistantStatus(status: AssistantTurn["status"]): string {
