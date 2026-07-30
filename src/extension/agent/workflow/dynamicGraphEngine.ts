@@ -561,7 +561,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 				for (const source of compiled.contextFrom ?? compiled.after ?? []) {
 					inputData[source] = snapshot.values.get(`outputs.${source}`);
 				}
-				dataFlowManager.recordInput(nodeId, inputData);
+				dataFlowManager.recordInput(nodeId, inputData as Record<string, DataFlowValue>);
 				updateNodeStatus(nodeId, "ready");
 				node.startedAt = new Date();
 				const subagentId = orchestrator.createSubagent({

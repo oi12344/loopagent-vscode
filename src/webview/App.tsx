@@ -251,17 +251,17 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         }
 
         case "toolCallFinished": {
-          if (hostMessage.toolName === "runDynamicGraph" && hostMessage.succeeded) {
+          if (hostMessage.succeeded) {
             try {
-              const output = JSON.parse(hostMessage.output) as { workflowState?: { step?: number; stateVersion?: number; stopReason?: string } };
-              if (output.workflowState) {
+              const workflowState = (JSON.parse(hostMessage.output) as { workflowState?: { step?: number; stateVersion?: number; stopReason?: string } }).workflowState;
+              if (workflowState) {
                 setWorkflowProgress((current) => ({
                   ...current,
                   [hostMessage.runId]: {
                     ...(current[hostMessage.runId] ?? { agents: [] }),
-                    step: output.workflowState.step,
-                    stateVersion: output.workflowState.stateVersion,
-                    stopReason: output.workflowState.stopReason,
+                    step: workflowState.step,
+                    stateVersion: workflowState.stateVersion,
+                    stopReason: workflowState.stopReason,
                   },
                 }));
               }
