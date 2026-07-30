@@ -25,6 +25,7 @@ export type CompiledWorkflowRoute = {
 	from: string;
 	to: string;
 	type: "dependency" | "review";
+	when?: "approve" | "revise";
 };
 
 export type CompiledWorkflowChannel = {
