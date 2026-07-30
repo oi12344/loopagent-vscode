@@ -102,6 +102,7 @@ describe("dynamic workflow tools", () => {
 		expect(reviewRuns).toBe(2);
 		expect(result.completedNodes).toEqual(["draft", "review"]);
 		expect(result.executionOrder).toEqual(["draft", "review", "draft", "review"]);
+		expect(result.workflowState).toEqual(expect.objectContaining({ step: 4, stateVersion: 4 }));
 	});
 
 	it("lists only successfully completed nodes in completedNodes", async () => {

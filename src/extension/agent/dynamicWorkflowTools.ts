@@ -320,8 +320,14 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 					dependsOn: node.dependsOn ?? [],
 				}));
 				const resolverFailures: Array<{ nodeId: string; error: string }> = [];
+				let workflowStopReason: string | undefined;
+				let workflowStep = 0;
+				let workflowStateVersion = 0;
 				const dispose = engine.onEvent((event) => {
 					if (event.type === "ResolverFailed") resolverFailures.push({ nodeId: event.nodeId, error: event.error });
+					if (event.type === "StepStarted") workflowStep = event.step;
+					if (event.type === "StateCommitted") workflowStateVersion = event.stateVersion;
+					if (event.type === "GraphLimitExceeded") workflowStopReason = `${event.limit}:${event.value}`;
 				});
 
 				try {
@@ -356,6 +362,12 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 							.map((node) => node.config.id),
 						results: Object.fromEntries(results),
 						executionOrder: context.executionOrder,
+						workflowState: {
+							step: engine.getStateSnapshot()?.step ?? workflowStep,
+							stateVersion: engine.getStateSnapshot()?.version ?? workflowStateVersion,
+							executionOrder: context.executionOrder,
+							stopReason: workflowStopReason,
+						},
 						resolverFailures,
 						...(include.has("visualization") && { visualization: visualizer.generateVisualization() }),
 						...(include.has("debug") && { debugInfo: serializeDebugInfo(visualizer.generateDebugInfo()) }),
