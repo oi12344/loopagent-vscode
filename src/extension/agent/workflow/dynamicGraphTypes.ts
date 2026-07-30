@@ -1,9 +1,18 @@
 import type { SubagentResult, SubagentRoleId } from "./types";
 import type { DataFlowValue } from "./dataFlowManager";
+import type { CycleEdge } from "./cycleManager";
 
 export type DynamicNodeId = string;
 
-export type NodeStatus = "pending" | "ready" | "running" | "completed" | "failed" | "skipped" | "cancelled";
+export type NodeStatus =
+	| "pending"
+	| "ready"
+	| "running"
+	| "completed"
+	| "failed"
+	| "skipped"
+	| "cancelled"
+	| "pending-retry";  // 新增：等待循环重试（节点已完成但将被重置）
 
 export type DynamicNodeConfig = {
 	id: DynamicNodeId;
@@ -52,8 +61,11 @@ export type DependencyResolver = (
 export type DynamicGraphDefinition = {
 	initialNodes: DynamicNodeConfig[];
 	resolvers?: Map<DynamicNodeId, DependencyResolver>;
+	cycles?: CycleEdge[];  // 新增：循环边定义
 	maxNodes?: number;
 	maxDepth?: number;
+	maxSteps?: number;
+	maxExecutions?: number;
 	initialGlobalData?: Record<string, DataFlowValue>;
 };
 
@@ -63,6 +75,8 @@ export type GraphExecutionEvent =
 	| { type: "NodeCompleted"; nodeId: DynamicNodeId; result: SubagentResult }
 	| { type: "DependenciesResolved"; nodeId: DynamicNodeId; newNodes: DynamicNodeConfig[] }
 	| { type: "ResolverFailed"; nodeId: DynamicNodeId; error: string }
+	| { type: "CycleTriggered"; cycleId: string; fromNode: DynamicNodeId; toNode: DynamicNodeId; iteration: number; reason: string }
+	| { type: "CycleStopped"; cycleId: string; reason: string; totalIterations: number }
 	| {
 			type: "GraphCompleted";
 			finalNodes: ReadonlyMap<DynamicNodeId, SubagentResult>;
