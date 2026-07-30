@@ -11,8 +11,11 @@ import type {
 	GraphExecutionListener,
 	NodeStatus,
 } from "./dynamicGraphTypes";
+import type { CompiledWorkflowRoute } from "./generatedWorkflowTypes";
 import { createDataFlowManager, type DataFlowManager, type DataFlowValue } from "./dataFlowManager";
 import { createGraphVisualizer, type GraphVisualizer } from "./graphVisualizer";
+import { createWorkflowState, type WorkflowStateStore } from "./workflowState";
+import { CycleManager } from "./cycleManager";
 
 export type DynamicGraphEngineOptions = {
 	definition: DynamicGraphDefinition;
@@ -24,6 +27,7 @@ export type DynamicGraphEngineOptions = {
 export type DynamicGraphEngine = {
 	execute(): Promise<ReadonlyMap<DynamicNodeId, SubagentResult>>;
 	getContext(): Readonly<GraphComputationContext>;
+	getStateSnapshot(): ReturnType<WorkflowStateStore["readSnapshot"]> | undefined;
 	getDataFlowManager(): DataFlowManager;
 	getVisualizer(): GraphVisualizer;
 	setGlobalData(key: string, value: DataFlowValue): void;
@@ -123,6 +127,12 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 	const pendingResolvers = new Map<DynamicNodeId, Set<DynamicNodeId>>();
 	const cancellationController = new AbortController();
 	let cancelled = false;
+	const stateStore = definition.compiledGraph ? createWorkflowState(definition.initialState ?? {}) : undefined;
+
+	// 初始化循环管理器
+	const cycleManager = definition.cycles && definition.cycles.length > 0
+		? new CycleManager(definition.cycles, dataFlowManager)
+		: null;
 
 	function emit(event: GraphExecutionEvent): void {
 		for (const listener of listeners) {
@@ -364,8 +374,62 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			const newCompletedNodes = new Map(completedNodes);
 			newCompletedNodes.set(node.config.id, result);
 
+			// 检查是否触发循环边
+			if (cycleManager && result.status === "completed") {
+				const triggeredCycle = cycleManager.checkTrigger(node.config.id, result, context);
+
+				if (triggeredCycle) {
+					const targetNode = context.nodes.get(triggeredCycle.to);
+					if (targetNode) {
+						// 重置目标节点状态以便重新执行
+						resetNodeForCycle(targetNode);
+
+						const iteration = cycleManager.getCurrentIteration(triggeredCycle.id);
+						emit({
+							type: "CycleTriggered",
+							cycleId: triggeredCycle.id,
+							fromNode: triggeredCycle.from,
+							toNode: triggeredCycle.to,
+							iteration,
+							reason: `第 ${iteration} 轮循环`,
+						});
+
+						console.log(
+							`[DynamicGraph] 循环 ${triggeredCycle.id} 触发: ${triggeredCycle.from} → ${triggeredCycle.to} (第 ${iteration} 轮)`,
+						);
+
+						// 注意：launchReadyNodes 会在 executeNode.then() 回调中自动调用
+						// 因此重置的节点会在下次调度时被发现并执行
+					}
+				} else if (cycleManager.getState(node.config.id)) {
+					// 循环已停止，发出事件
+					const state = cycleManager.getState(node.config.id);
+					if (state && state.currentIteration > 0) {
+						emit({
+							type: "CycleStopped",
+							cycleId: node.config.id,
+							reason: "退出条件满足或达到上限",
+							totalIterations: state.currentIteration,
+						});
+					}
+				}
+			}
+
 			await resolveDependencies(node.config.id, newCompletedNodes);
 		}
+	}
+
+	/**
+	 * 重置节点状态以便在循环中重新执行
+	 */
+	function resetNodeForCycle(node: DynamicNode): void {
+		node.status = "pending-retry";
+		node.result = undefined;
+		node.subagentId = undefined;
+		node.startedAt = undefined;
+		node.finishedAt = undefined;
+		// 保留 attempts（累计尝试次数）
+		console.log(`[DynamicGraph] 重置节点 ${node.config.id} 以进行循环重试`);
 	}
 
 	async function resolveDependencies(
@@ -392,7 +456,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 
 	function isNodeReady(node: DynamicNode): boolean {
 		return (
-			node.status === "pending" &&
+			(node.status === "pending" || node.status === "pending-retry") &&
 			Array.from(node.dependencies).every((depId) => {
 				const depNode = context.nodes.get(depId);
 				return depNode?.status === "completed" || depNode?.status === "failed" || depNode?.status === "skipped";
@@ -401,6 +465,8 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 	}
 
 	async function execute(): Promise<ReadonlyMap<DynamicNodeId, SubagentResult>> {
+		if (definition.compiledGraph) return executeCompiledGraph();
+
 		validateInitialDependsOnReferences(definition.initialNodes);
 		for (const config of topologicallySortInitialNodes(definition.initialNodes)) {
 			addNode(config, config.dependsOn ?? []);
@@ -454,6 +520,129 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 		return completedNodes;
 	}
 
+	async function executeCompiledGraph(): Promise<ReadonlyMap<DynamicNodeId, SubagentResult>> {
+		const graph = definition.compiledGraph!;
+		const compiledById = new Map(graph.nodes.map((node) => [node.id, node]));
+		const activatedRoutes = new Set<string>();
+		const results = new Map<DynamicNodeId, SubagentResult>();
+		let frontier = [...graph.entry];
+		let executions = 0;
+		let step = 0;
+
+		for (const compiled of graph.nodes) {
+			if (context.nodes.has(compiled.id)) continue;
+			addNode({
+				id: compiled.id,
+				task: compiled.task,
+				role: compiled.role,
+				dependsOn: compiled.after,
+			}, compiled.after ?? []);
+		}
+
+		while (frontier.length > 0) {
+			if (cancelled || signal?.aborted) break;
+			step++;
+			const maxSteps = definition.maxSteps ?? graph.limits.maxSteps ?? 50;
+			if (step > maxSteps) {
+				emit({ type: "GraphLimitExceeded", limit: "maxSteps", value: maxSteps });
+				throw new Error(`GraphLimitExceeded: maxSteps ${maxSteps}`);
+			}
+			const snapshot = stateStore!.readSnapshot();
+			emit({ type: "StepStarted", step, frontier: [...frontier], stateVersion: snapshot.version });
+
+			const run = async (nodeId: string) => {
+				if (++executions > (definition.maxExecutions ?? graph.limits.maxExecutionsPerNode! * graph.nodes.length)) {
+					emit({ type: "GraphLimitExceeded", limit: "maxExecutions", value: executions });
+					throw new Error("GraphLimitExceeded: maxExecutions");
+				}
+				const compiled = compiledById.get(nodeId)!;
+				const node = context.nodes.get(nodeId)!;
+				const inputData: Record<string, unknown> = {};
+				for (const source of compiled.contextFrom ?? compiled.after ?? []) {
+					inputData[source] = snapshot.values.get(`outputs.${source}`);
+				}
+				dataFlowManager.recordInput(nodeId, inputData);
+				updateNodeStatus(nodeId, "ready");
+				node.startedAt = new Date();
+				const subagentId = orchestrator.createSubagent({
+					task: buildTaskWithInputData(compiled.task, inputData),
+					role: compiled.role,
+				}, availableTools);
+				node.subagentId = subagentId;
+				updateNodeStatus(nodeId, "running");
+				const result = (await orchestrator.waitForSubagents([subagentId])).get(subagentId);
+				if (!result) throw new Error(`Node ${nodeId} returned no result`);
+				node.result = result;
+				node.finishedAt = new Date();
+				updateNodeStatus(nodeId, result.status === "completed" ? "completed" : result.status === "cancelled" ? "cancelled" : "failed");
+				if (result.status === "completed") {
+					results.set(nodeId, result);
+					dataFlowManager.recordOutput(nodeId, result);
+					emit({ type: "NodeCompleted", nodeId, result });
+				}
+				return { nodeId, result };
+			};
+
+			const readOnly = frontier.filter((id) => compiledById.get(id)?.role !== "executor");
+			const effects = frontier.filter((id) => compiledById.get(id)?.role === "executor");
+			const executed = [...await Promise.all(readOnly.map(run))];
+			for (const nodeId of effects) executed.push(await run(nodeId));
+
+			const writes = executed
+				.filter(({ result }) => result.status === "completed")
+				.flatMap(({ nodeId, result }) => [
+					{ channel: `outputs.${nodeId}`, value: result.content ?? result, mode: "single" as const, nodeId },
+					{ channel: "history", value: { nodeId, step, status: result.status }, mode: "append" as const, nodeId },
+				]);
+			const committed = stateStore!.commitWrites(snapshot, writes);
+			for (const write of writes) context.globalData.set(write.channel, write.value as DataFlowValue);
+			emit({ type: "StateCommitted", step, stateVersion: committed.version, channels: [...new Set(writes.map((write) => write.channel))] });
+
+			for (const { nodeId, result } of executed) {
+				if (result.status !== "completed") continue;
+				for (const route of graph.routes.filter((candidate) => candidate.from === nodeId)) {
+					if (route.when && route.when !== getReviewDecision(result)) continue;
+					activatedRoutes.add(routeKey(route));
+				}
+			}
+
+			const candidates = new Set<string>();
+			for (const { nodeId, result } of executed) {
+				if (result.status !== "completed") continue;
+				for (const route of graph.routes.filter((candidate) => candidate.from === nodeId)) {
+					if ((!route.when || route.when === getReviewDecision(result)) && route.to !== "__end__") candidates.add(route.to);
+				}
+			}
+			frontier = [...candidates].filter((nodeId) => isActivated(nodeId));
+			emit({ type: "StepRouted", step, frontier: [...frontier] });
+		}
+
+		if (cancelled || signal?.aborted) emit({ type: "GraphCancelled", finalNodes: results });
+		else emit({ type: "GraphCompleted", finalNodes: results, failedNodes: [], unreachedNodes: [] });
+		return results;
+
+		function isActivated(nodeId: string): boolean {
+			if (frontier.includes(nodeId)) return false;
+			const incoming = graph.routes.filter((route) => route.to === nodeId);
+			if (incoming.length === 0) return false;
+			return incoming.every((route) => activatedRoutes.has(routeKey(route)));
+		}
+	}
+
+	function routeKey(route: CompiledWorkflowRoute): string {
+		return `${route.from}->${route.to}:${route.when ?? "always"}`;
+	}
+
+	function getReviewDecision(result: SubagentResult): "approve" | "revise" | undefined {
+		try {
+			const value = JSON.parse(result.content ?? "") as { decision?: string };
+			if (value.decision === "approve" || value.decision === "revise") return value.decision;
+		} catch {
+			if ((result.content ?? "").includes("APPROVED")) return "approve";
+		}
+		return "revise";
+	}
+
 	function cancel(): void {
 		cancelled = true;
 		cancellationController.abort();
@@ -469,6 +658,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 	return {
 		execute,
 		getContext: () => Object.freeze({ ...context }) as Readonly<GraphComputationContext>,
+		getStateSnapshot: () => stateStore?.readSnapshot(),
 		getDataFlowManager: () => dataFlowManager,
 		getVisualizer: () => visualizer,
 		setGlobalData(key, value) {

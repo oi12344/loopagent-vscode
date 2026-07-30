@@ -84,6 +84,7 @@ export function compileGeneratedWorkflow(plan: GeneratedWorkflowPlan): CompiledW
 
 	return {
 		nodes,
+		entry,
 		routes,
 		channels,
 		expansionRules: [],

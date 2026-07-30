@@ -1,6 +1,7 @@
 import type { SubagentResult, SubagentRoleId } from "./types";
 import type { DataFlowValue } from "./dataFlowManager";
 import type { CycleEdge } from "./cycleManager";
+import type { CompiledWorkflowGraph } from "./generatedWorkflowTypes";
 
 export type DynamicNodeId = string;
 
@@ -67,6 +68,8 @@ export type DynamicGraphDefinition = {
 	maxSteps?: number;
 	maxExecutions?: number;
 	initialGlobalData?: Record<string, DataFlowValue>;
+	compiledGraph?: CompiledWorkflowGraph;
+	initialState?: Record<string, unknown>;
 };
 
 export type WorkflowStateSnapshot = {
@@ -83,6 +86,10 @@ export type StateWrite = {
 };
 
 export type GraphExecutionEvent =
+	| { type: "StepStarted"; step: number; frontier: DynamicNodeId[]; stateVersion: number }
+	| { type: "StateCommitted"; step: number; stateVersion: number; channels: string[] }
+	| { type: "StepRouted"; step: number; frontier: DynamicNodeId[] }
+	| { type: "GraphLimitExceeded"; limit: "maxSteps" | "maxExecutions"; value: number }
 	| { type: "NodeAdded"; nodeId: DynamicNodeId; config: DynamicNodeConfig }
 	| { type: "NodeStatusChanged"; nodeId: DynamicNodeId; status: NodeStatus }
 	| { type: "NodeCompleted"; nodeId: DynamicNodeId; result: SubagentResult }

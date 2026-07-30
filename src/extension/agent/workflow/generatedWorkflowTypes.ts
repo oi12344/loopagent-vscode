@@ -42,6 +42,7 @@ export type CompiledWorkflowExpansionRule = {
 
 export type CompiledWorkflowGraph = {
 	nodes: CompiledWorkflowNode[];
+	entry: string[];
 	routes: CompiledWorkflowRoute[];
 	channels: CompiledWorkflowChannel[];
 	expansionRules: CompiledWorkflowExpansionRule[];
