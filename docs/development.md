@@ -89,6 +89,16 @@ npm run debug:vscode
 
 注意事项：首次启动 VS Code 可能出现登录、欢迎页或扩展推荐弹窗，它们会遮挡 Webview。验证页面时应先关闭遮挡层，再用截图和实际交互确认功能，而不是只依赖 DOM 文本。
 
+## 状态驱动动态工作流
+
+动态工作流的新入口应让模型生成语义计划：节点使用 `after` 描述前置关系，使用 `contextFrom` 声明状态读取，审核节点使用 `reviews` 声明被审核节点。模型不得生成 `cycles`、自由表达式或 reducer。
+
+运行时流程固定为：读取 superstep 快照、执行当前 frontier、收集写入、按通道策略原子提交、根据已提交状态路由下一 frontier。节点输出写入 `outputs.<nodeId>`，运行历史写入 `history`；`single` 写入冲突必须失败，不能依赖 Promise 完成顺序。
+
+`review` 节点必须返回结构化 `{"decision":"approve"|"revise","feedback":string[]}`。`revise` 回到被审核节点，`approve` 进入合法后继或 `END`。`maxSteps` 和 `maxExecutions` 始终生效，即使业务退出条件没有满足也不能无限运行。
+
+旧 `initialNodes/resolvers/cycles` 输入只允许作为兼容入口；新增模型提示不得继续推荐旧循环配置。副作用节点在同一步串行执行，Webview 只展示状态，不负责调度或提交。
+
 ## 稳定 VSIX E2E
 
 需要验证实际安装包而不是开发目录时，先生成固定 VSIX，再启动隔离窗口：

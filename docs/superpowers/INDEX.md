@@ -99,6 +99,11 @@
 - [SuperPowers 代码搜索索引优化设计](specs/2026-07-18-search-index-optimization-design.md)
 - [多轮对话持久化设计](specs/2026-07-19-conversation-persistence-design.md)
 
+## 状态驱动动态工作流
+
+- [状态驱动动态工作流架构规格](specs/2026-07-31-state-driven-dynamic-workflow-design.md)
+- [状态驱动动态工作流改造实施计划](plans/2026-07-31-state-driven-dynamic-workflow-plan.md)
+
 ## 生成脚本
 
 ```bash
