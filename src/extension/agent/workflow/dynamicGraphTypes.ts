@@ -69,6 +69,19 @@ export type DynamicGraphDefinition = {
 	initialGlobalData?: Record<string, DataFlowValue>;
 };
 
+export type WorkflowStateSnapshot = {
+	step: number;
+	version: number;
+	values: ReadonlyMap<string, unknown>;
+};
+
+export type StateWrite = {
+	channel: string;
+	value: unknown;
+	mode: "single" | "append" | "merge";
+	nodeId: DynamicNodeId;
+};
+
 export type GraphExecutionEvent =
 	| { type: "NodeAdded"; nodeId: DynamicNodeId; config: DynamicNodeConfig }
 	| { type: "NodeStatusChanged"; nodeId: DynamicNodeId; status: NodeStatus }
