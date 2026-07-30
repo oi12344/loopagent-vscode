@@ -16,6 +16,9 @@ describe("dynamic workflow tools", () => {
 
 		expect(nodeProperties).toEqual(expect.objectContaining({ dependsOn: expect.anything(), exportTo: expect.anything(), retry: expect.anything() }));
 		expect(properties.initialGlobalData).toBeDefined();
+		expect(properties.nodes).toBeDefined();
+		expect(properties.initialState).toBeDefined();
+		expect(properties.maxSteps).toBeDefined();
 		expect(properties.resolvers.items.required).toEqual(["nodeId", "resolverType", "resolverConfig"]);
 		expect(properties.include.items.enum).toEqual(["visualization", "debug", "mermaid"]);
 		// Running a whole graph -- executor writes included -- must never share a concurrent batch.
@@ -78,6 +81,45 @@ describe("dynamic workflow tools", () => {
 
 		await expect(runGraphRaw(tools, [{ id: "read", task: "Read", role: "explorer" }]))
 			.rejects.toThrow(/No graph node completed \(failed: 1\)/i);
+	});
+
+	it("runs the preferred semantic plan with a state-driven review loop", async () => {
+		let reviewRuns = 0;
+		const tools = createDynamicWorkflowTools({
+			orchestrator: scriptedOrchestrator((config) => config.role === "reviewer"
+				? (++reviewRuns > 1 ? '{"decision":"approve","feedback":[]}' : '{"decision":"revise","feedback":["change it"]}')
+				: "draft output"),
+			availableTools: [],
+		});
+
+		const result = JSON.parse(String(await invoke(tools, "runDynamicGraph", {
+			nodes: [
+				{ id: "draft", task: "Draft", role: "planner" },
+				{ id: "review", task: "Review", role: "reviewer", after: ["draft"], reviews: ["draft"] },
+			],
+		}))); 
+
+		expect(reviewRuns).toBe(2);
+		expect(result.completedNodes).toEqual(["draft", "review"]);
+		expect(result.executionOrder).toEqual(["draft", "review", "draft", "review"]);
+	});
+
+	it("lists only successfully completed nodes in completedNodes", async () => {
+		const tools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator((config) => config.task === "Fail"
+				? { status: "failed", error: "boom" }
+				: { status: "completed", content: "ok" }),
+			availableTools: [],
+		});
+
+		const result = await runGraph(tools, [
+			{ id: "ok", task: "Succeed" },
+			{ id: "failed", task: "Fail" },
+		]);
+
+		expect(result.statusCounts).toEqual({ completed: 1, failed: 1 });
+		expect(result.completedNodes).toEqual(["ok"]);
+		expect(result.results.failed).toEqual({ status: "failed", error: "boom" });
 	});
 
 	it("rejects malformed resolver configuration before execution", async () => {
@@ -199,6 +241,27 @@ function failingOrchestrator(error: string): WorkflowOrchestrator {
 		waitForSubagents: vi.fn(async (ids) => new Map(
 			ids.map((id) => [id, { status: "failed", error } satisfies SubagentResult] as const),
 		)),
+		getSubagent: vi.fn(),
+		cancelSubagent: vi.fn(() => true),
+		cancelAll: vi.fn(),
+		onEvent: vi.fn(() => () => {}),
+	};
+}
+
+function resultOrchestrator(
+	resultFor: (config: CreateSubagentConfig) => SubagentResult | Promise<SubagentResult>,
+): WorkflowOrchestrator {
+	const configs = new Map<string, CreateSubagentConfig>();
+	let nextId = 1;
+	return {
+		createSubagent: vi.fn((config) => {
+			const id = `subagent-${nextId++}`;
+			configs.set(id, config);
+			return id;
+		}),
+		waitForSubagents: vi.fn(async (ids) => new Map(await Promise.all(
+			ids.map(async (id) => [id, await resultFor(configs.get(id)!)] as const),
+		))),
 		getSubagent: vi.fn(),
 		cancelSubagent: vi.fn(() => true),
 		cancelAll: vi.fn(),

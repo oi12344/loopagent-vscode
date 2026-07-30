@@ -6,6 +6,9 @@ import { createDynamicGraphEngine, DEFAULT_DYNAMIC_GRAPH_LIMITS, type DynamicGra
 import type { GraphDebugInfo } from "./workflow/graphVisualizer";
 import { createReflectionResolver } from "./workflow/reflectionResolver";
 import type { SubagentRoleId, SubagentResult } from "./workflow/types";
+import type { CycleEdge } from "./workflow/cycleManager";
+import { compileGeneratedWorkflow } from "./workflow/workflowCompiler";
+import { parseGeneratedWorkflowPlan, type GeneratedWorkflowPlan } from "./workflow/generatedWorkflowTypes";
 
 type DynamicWorkflowToolsOptions = {
 	orchestrator: WorkflowOrchestrator;
@@ -23,6 +26,63 @@ type GraphInclude = "visualization" | "debug" | "mermaid";
 
 const VALID_INCLUDES: ReadonlySet<string> = new Set<GraphInclude>(["visualization", "debug", "mermaid"]);
 
+const CYCLE_EXIT_CONDITION_SCHEMA = {
+	type: "object",
+	properties: {
+		type: {
+			type: "string",
+			enum: ["expression", "cost-limit", "time-limit"],
+			description: "\"expression\" evaluates value against node results; \"cost-limit\" compares accumulated tokens; \"time-limit\" compares elapsed milliseconds.",
+		},
+		value: {
+			description:
+				"For type=expression: a string in the RESTRICTED expression language (see the tool description's EXPRESSION LANGUAGE section). "
+				+ "Use exactly `<nodeId>.content.includes('text')`, optionally prefixed with `!`. "
+				+ "The nodeId MUST be one of the ids you declared in initialNodes -- never invent a new id here. "
+				+ "For type=cost-limit / time-limit: an integer.",
+		},
+		description: { type: "string", description: "Human-readable reason shown when this condition stops the cycle." },
+		priority: { type: "string", enum: ["high", "medium", "low"] },
+	},
+	required: ["type", "value"],
+};
+
+const CYCLE_SCHEMA = {
+	type: "object",
+	description:
+		"A cycle edge: when node `from` completes, node `to` is reset and re-run, until an exit condition holds. "
+		+ "Both `from` and `to` MUST be ids declared in initialNodes. Typical shape: from=the fix node, to=the review node.",
+	properties: {
+		id: { type: "string", minLength: 1, description: "Unique label for this cycle, e.g. \"review-fix-loop\"." },
+		from: { type: "string", minLength: 1, description: "Existing initialNodes id whose completion triggers a new round." },
+		to: { type: "string", minLength: 1, description: "Existing initialNodes id that gets reset and re-run each round." },
+		exit: {
+			type: "object",
+			properties: {
+				hardLimit: { type: "integer", minimum: 1, description: "Absolute maximum rounds. Required. 3 is a sensible default." },
+				breakWhen: {
+					type: "array",
+					description: "Conditions checked before each new round; any match stops the cycle.",
+					items: CYCLE_EXIT_CONDITION_SCHEMA,
+				},
+				adaptive: {
+					type: "object",
+					description: "Optional automatic stop when rounds stop making progress or exceed a token budget.",
+					properties: {
+						detectNoProgress: { type: "boolean" },
+						progressWindow: { type: "integer", minimum: 1, description: "How many recent rounds to compare, e.g. 2." },
+						similarityThreshold: { type: "number", minimum: 0, maximum: 1, description: "Stop when round similarity exceeds this, e.g. 0.85." },
+						costBudget: { type: "integer", minimum: 1 },
+					},
+					required: ["detectNoProgress", "progressWindow"],
+				},
+			},
+			required: ["hardLimit"],
+		},
+	},
+	required: ["id", "from", "to", "exit"],
+};
+
 const RETRY_SCHEMA = {
 	type: "object",
 	properties: {
@@ -35,10 +95,10 @@ const RETRY_SCHEMA = {
 const NODE_SCHEMA = {
 	type: "object",
 	properties: {
-		id: { type: "string", minLength: 1 },
+		id: { type: "string", minLength: 1, description: "Stable identifier other nodes and expressions reference. Keep it short and hyphen-free where possible, e.g. \"review\"." },
 		task: { type: "string", minLength: 1 },
 		role: { type: "string", enum: ["explorer", "reviewer", "planner", "executor"] },
-		dependsOn: { type: "array", items: { type: "string", minLength: 1 } },
+		dependsOn: { type: "array", items: { type: "string", minLength: 1 }, description: "Ids of other initialNodes in this same call." },
 		toolHints: { type: "array", items: { type: "string", minLength: 1 } },
 		timeoutMs: { type: "integer", minimum: 1 },
 		inputMapping: { type: "object", additionalProperties: { type: "string" } },
@@ -46,23 +106,48 @@ const NODE_SCHEMA = {
 			type: "object",
 			properties: {
 				type: { type: "string", enum: ["always", "onSuccess", "onFailure", "custom"] },
-				expression: { type: "string" },
+				expression: {
+					type: "string",
+					description: "Required when type=\"custom\". Restricted expression language -- see the tool description. Typical form: \"!review.content.includes('APPROVED')\".",
+				},
 			},
 			required: ["type"],
 		},
-		exportTo: { type: "string", minLength: 1 },
+		exportTo: { type: "string", minLength: 1, description: "Write this node's content to global data under this key, readable elsewhere as \"$key\"." },
 		retry: RETRY_SCHEMA,
+	},
+	required: ["id", "task"],
+};
+
+const SEMANTIC_NODE_SCHEMA = {
+	type: "object",
+	properties: {
+		id: { type: "string", minLength: 1 },
+		task: { type: "string", minLength: 1 },
+		role: NODE_SCHEMA.properties.role,
+		after: { type: "array", items: { type: "string", minLength: 1 } },
+		contextFrom: { type: "array", items: { type: "string", minLength: 1 } },
+		reviews: { type: "array", maxItems: 1, items: { type: "string", minLength: 1 } },
 	},
 	required: ["id", "task"],
 };
 
 const RESOLVER_SCHEMA = {
 	type: "object",
+	description: "Expands the graph after `nodeId` completes. Prefer `cycles` over resolverType=iterative for review/fix loops -- cycles reuse existing nodes instead of generating new ids.",
 	properties: {
-		nodeId: { type: "string", minLength: 1 },
+		nodeId: { type: "string", minLength: 1, description: "Existing initialNodes id whose completion triggers this resolver." },
 		resolverType: { type: "string", enum: ["fanout", "conditional", "iterative"] },
 		resolverConfig: {
 			type: "object",
+			description: [
+				"Which fields are REQUIRED depends on resolverType -- omitting one fails the whole call:",
+				"  fanout      -> itemsExpression, idPrefix, task, itemInputKey",
+				"  conditional -> expression, nodes",
+				"  iterative   -> maxRounds, approvalText, reviseTask, reviewTask, idPrefix",
+				"All other fields are optional. Nodes created by a resolver get generated ids, so they cannot be",
+				"referenced from expressions written in this call.",
+			].join("\n"),
 			properties: {
 				itemsExpression: { type: "string", minLength: 1 },
 				idPrefix: { type: "string", minLength: 1 },
@@ -89,11 +174,55 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 	return [
 		{
 			name: "runDynamicGraph",
-			description:
-				"Create and execute a dynamic computation graph in one call, then return every node result. Register fanout, conditional, or iterative expansion through the optional resolvers field.",
+			description: [
+				"Create and execute a dynamic computation graph in one call, then return every node result.",
+				"PREFERRED INPUT: nodes with after/contextFrom/reviews. The engine derives loop routes from reviewer state; do not emit cycles or expressions.",
+				"A reviewer must return JSON {\"decision\":\"approve\"|\"revise\",\"feedback\":string[]}; revise returns to the reviewed node.",
+				"LEGACY INPUT: initialNodes/resolvers/cycles remains accepted for compatibility only.",
+				"Register fanout, conditional, or iterative expansion through the optional resolvers field.",
+				"Use the optional cycles field for review->fix->review loops.",
+				"",
+				"EXPRESSION LANGUAGE (used by node.condition.expression and cycles[].exit.breakWhen[].value).",
+				"This is NOT JavaScript. Only these forms parse; anything else fails the whole call:",
+				"  <nodeId>.content                     -- that node's output text",
+				"  <nodeId>.status                      -- \"completed\" | \"failed\" | \"cancelled\"",
+				"  <nodeId>.content.includes('text')    -- substring test, quotes required",
+				"  !<expr>                              -- negation",
+				"  <expr> === 'value' | <expr> !== 'value'",
+				"  <expr> >= 5 | > 5 | <= 5 | < 5",
+				"  <exprA> && <exprB>",
+				"  $globalKey                           -- a value written by another node's exportTo",
+				"NOT supported -- do not write these: nodes.get('x'), optional chaining (?.),",
+				".length, .match(), .trim(), template literals, cycleState.*, arrow functions, ||.",
+				"",
+				"NODE IDS: every id referenced in dependsOn, condition.expression, breakWhen[].value,",
+				"cycles[].from and cycles[].to MUST be an id you declared in this call's initialNodes.",
+				"Referencing an id you did not declare is the most common cause of failure.",
+				"",
+				"MINIMAL CYCLE EXAMPLE (copy this shape):",
+				"  initialNodes: [",
+				"    { id: \"write\",  task: \"...\", role: \"executor\" },",
+				"    { id: \"review\", task: \"Reply exactly APPROVED if it passes, else list problems.\",",
+				"      role: \"reviewer\", dependsOn: [\"write\"] },",
+				"    { id: \"fix\",    task: \"...\", role: \"executor\", dependsOn: [\"review\"],",
+				"      condition: { type: \"custom\", expression: \"!review.content.includes('APPROVED')\" } }",
+				"  ],",
+				"  cycles: [",
+				"    { id: \"review-fix\", from: \"fix\", to: \"review\",",
+				"      exit: { hardLimit: 3,",
+				"              breakWhen: [{ type: \"expression\", value: \"review.content.includes('APPROVED')\" }] } }",
+				"  ]",
+				"",
+				"Tell the reviewer node the exact sentinel string to emit, and match that same string in breakWhen,",
+				"otherwise the loop can only ever end by hitting hardLimit.",
+			].join("\n"),
 			inputSchema: {
 				type: "object",
 				properties: {
+					nodes: { type: "array", items: SEMANTIC_NODE_SCHEMA },
+					entry: { type: "array", items: { type: "string", minLength: 1 } },
+					initialState: { type: "object" },
+					maxSteps: { type: "integer", minimum: 1 },
 					initialNodes: {
 						type: "array",
 						items: NODE_SCHEMA,
@@ -101,6 +230,10 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 					resolvers: {
 						type: "array",
 						items: RESOLVER_SCHEMA,
+					},
+					cycles: {
+						type: "array",
+						items: CYCLE_SCHEMA,
 					},
 					initialGlobalData: { type: "object" },
 					maxNodes: { type: "integer", minimum: 1 },
@@ -110,20 +243,36 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 						items: { type: "string", enum: ["visualization", "debug", "mermaid"] },
 					},
 				},
-				required: ["initialNodes"],
+				required: [],
 			},
 			// The merged tool runs the whole graph, including executor nodes that write to the
-			// workspace. Two concurrent invocations would bypass the orchestrator's single-executor
-			// gate, so this tool must never share a concurrent batch.
+			// workspace. Keep graph runs out of the same concurrent tool batch; the shared
+			// workspace mutation lock still protects edits and approved commands.
 			isConcurrencySafe: () => false,
 			async invoke({ input }) {
 				const record = requireRecord(input);
-				const initialNodes = parseNodeConfigs(record.initialNodes);
+				const semanticPlan = record.nodes !== undefined
+					? parseGeneratedWorkflowPlan({
+						nodes: record.nodes,
+						entry: record.entry,
+						initialState: record.initialState,
+						maxSteps: record.maxSteps,
+					} as unknown as GeneratedWorkflowPlan)
+					: undefined;
+				const initialNodes = semanticPlan
+					? semanticPlan.nodes.map((node) => ({
+						id: node.id,
+						task: node.task,
+						role: node.role,
+						dependsOn: node.after,
+					}))
+					: parseNodeConfigs(record.initialNodes);
 				const maxNodes = record.maxNodes !== undefined ? requirePositiveInteger(record.maxNodes, "maxNodes") : undefined;
 				const maxDepth = record.maxDepth !== undefined ? requirePositiveInteger(record.maxDepth, "maxDepth") : undefined;
 				const initialGlobalData = record.initialGlobalData !== undefined
 					? requireRecord(record.initialGlobalData) as Record<string, DataFlowValue>
 					: undefined;
+				const cycles = semanticPlan ? undefined : record.cycles !== undefined ? parseCycles(record.cycles) : undefined;
 				const include = parseIncludes(record.include);
 				validateInitialGraph(
 					initialNodes,
@@ -136,11 +285,15 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 				// (which need the engine's data-flow manager) and the engine (which needs the map).
 				const resolvers = new Map<string, DependencyResolver>();
 				const definition: DynamicGraphDefinition = {
-					initialNodes,
+					initialNodes: semanticPlan ? [] : initialNodes,
 					resolvers,
+					cycles,
 					maxNodes,
 					maxDepth,
 					initialGlobalData,
+					compiledGraph: semanticPlan ? compileGeneratedWorkflow(semanticPlan) : undefined,
+					initialState: semanticPlan?.initialState,
+					maxSteps: semanticPlan?.maxSteps,
 				};
 				const engine = createDynamicGraphEngine({
 					definition,
@@ -198,7 +351,9 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 						nodes,
 						totalNodes: context.nodes.size,
 						statusCounts,
-						completedNodes: Array.from(results.keys()),
+						completedNodes: Array.from(context.nodes.values())
+							.filter((node) => node.status === "completed")
+							.map((node) => node.config.id),
 						results: Object.fromEntries(results),
 						executionOrder: context.executionOrder,
 						resolverFailures,
@@ -238,6 +393,76 @@ function parseIncludes(value: unknown): ReadonlySet<GraphInclude> {
 		}
 	}
 	return new Set(value as GraphInclude[]);
+}
+
+function parseCycles(value: unknown): CycleEdge[] {
+	if (value === undefined) return [];
+	if (!Array.isArray(value)) throw new Error("cycles must be an array");
+
+	return value.map((item, index) => {
+		const record = requireRecord(item);
+		const path = `cycles[${index}]`;
+
+		const id = requireString(record.id, `${path}.id`);
+		const from = requireString(record.from, `${path}.from`);
+		const to = requireString(record.to, `${path}.to`);
+		const exitConfig = requireRecord(record.exit);
+
+		const hardLimit = requirePositiveInteger(exitConfig.hardLimit, `${path}.exit.hardLimit`);
+
+		// Parse breakWhen conditions
+		const breakWhen = Array.isArray(exitConfig.breakWhen)
+			? exitConfig.breakWhen.map((cond: any, i: number) => {
+					const condRecord = requireRecord(cond);
+					return {
+						type: requireString(condRecord.type, `${path}.exit.breakWhen[${i}].type`) as any,
+						value: condRecord.value,
+						description: condRecord.description as string | undefined,
+						priority: condRecord.priority as "high" | "medium" | "low" | undefined,
+					};
+			  })
+			: undefined;
+
+		// Parse adaptive config
+		const adaptive = exitConfig.adaptive
+			? (() => {
+					const adaptiveRecord = requireRecord(exitConfig.adaptive);
+					return {
+						detectNoProgress: Boolean(adaptiveRecord.detectNoProgress),
+						progressWindow: requirePositiveInteger(adaptiveRecord.progressWindow, `${path}.exit.adaptive.progressWindow`),
+						similarityThreshold: typeof adaptiveRecord.similarityThreshold === "number"
+							? adaptiveRecord.similarityThreshold
+							: undefined,
+						costBudget: typeof adaptiveRecord.costBudget === "number"
+							? adaptiveRecord.costBudget
+							: undefined,
+					};
+			  })()
+			: undefined;
+
+		// Parse interactive config
+		const interactive = exitConfig.interactive
+			? (() => {
+					const interactiveRecord = requireRecord(exitConfig.interactive);
+					return {
+						askAfterRound: requirePositiveInteger(interactiveRecord.askAfterRound, `${path}.exit.interactive.askAfterRound`),
+						showProgressSummary: Boolean(interactiveRecord.showProgressSummary),
+					};
+			  })()
+			: undefined;
+
+		return {
+			id,
+			from,
+			to,
+			exit: {
+				hardLimit,
+				breakWhen,
+				adaptive,
+				interactive,
+			},
+		};
+	});
 }
 
 function parseResolverEntries(value: unknown): Array<{ nodeId: string; resolverType: string; resolverConfig: Record<string, unknown> }> {
