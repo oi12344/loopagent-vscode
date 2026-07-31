@@ -16,6 +16,17 @@ export type ExpressionContext = {
 	currentNode?: DynamicNodeId;
 };
 
+type ComparisonOperator = "===" | "!==" | ">=" | "<=" | ">" | "<";
+
+// 长度降序：三字符的 === / !== 必须先于 >= / <=，两字符的 >= / <= 必须先于 > / <。
+const COMPARISON_OPERATORS: readonly ComparisonOperator[] = ["===", "!==", ">=", "<=", ">", "<"];
+
+// runDynamicGraph 工具描述的 "NOT supported" 清单中，会被 JSON path 正则误吞的 JS 成员名。
+const UNSUPPORTED_MEMBERS: ReadonlySet<string> = new Set([
+	"length", "match", "trim", "split", "toLowerCase", "toUpperCase",
+	"startsWith", "endsWith", "replace", "slice", "indexOf", "test",
+]);
+
 export type DataFlowManager = {
 	recordInput(nodeId: DynamicNodeId, data: Record<string, DataFlowValue>): void;
 	recordOutput(nodeId: DynamicNodeId, result: SubagentResult): void;
@@ -47,14 +58,41 @@ export function createDataFlowManager(): DataFlowManager {
 		nodeDataIndex.get(nodeId)!.push(record);
 	}
 
+	// 递归下降求值，优先级从低到高：&& -> 比较 -> 一元 ! -> .includes() -> 基础项。
+	// 这里支持的形式必须与 runDynamicGraph 工具描述的 EXPRESSION LANGUAGE 段逐条对应：
+	// 描述里出现但此处不支持的形式，会让模型写出永远静默失效的 breakWhen / condition。
 	function evaluateExpression(expression: string, context: ExpressionContext): DataFlowValue {
 		const trimmed = expression.trim();
 		if (!trimmed) throw new Error(`Unsupported expression: ${expression}`);
-		const comparison = findStrictComparison(trimmed);
+
+		// 逻辑与，短路求值。右侧不合法时左侧为假就不会被求值，与 JS 一致。
+		const and = findTopLevelOperator(trimmed, ["&&"]);
+		if (and) {
+			if (!isTruthy(evaluateExpression(trimmed.slice(0, and.index), context))) return false;
+			return isTruthy(evaluateExpression(trimmed.slice(and.index + and.operator.length), context));
+		}
+
+		const comparison = findTopLevelOperator(trimmed, COMPARISON_OPERATORS);
 		if (comparison) {
 			const left = evaluateExpression(trimmed.slice(0, comparison.index), context);
 			const right = evaluateExpression(trimmed.slice(comparison.index + comparison.operator.length), context);
-			return comparison.operator === "===" ? left === right : left !== right;
+			return compareValues(left, right, comparison.operator);
+		}
+
+		// 一元取反。比较运算已在上一层切分，因此走到这里的开头 "!" 一定是取反而非 "!==" 的残片。
+		if (trimmed.startsWith("!")) {
+			return !isTruthy(evaluateExpression(trimmed.slice(1), context));
+		}
+
+		// 子串测试。必须早于下方的 JSON path 分支：JSON path 的正则会把 "includes('x')"
+		// 当成 content 下的嵌套路径吞掉，JSON.parse 失败后静默返回 null，条件永不触发。
+		const includesMatch = trimmed.match(/^(.+?)\.includes\(\s*(['"])([\s\S]*)\2\s*\)$/);
+		if (includesMatch) {
+			const [, target, , needle] = includesMatch;
+			const value = evaluateExpression(target, context);
+			// 节点不存在或无输出时视为“不包含”，不抛错——缺输出本身就是合法的中间状态。
+			if (value === null || value === undefined) return false;
+			return String(value).includes(needle);
 		}
 
 		// Literal values
@@ -89,6 +127,17 @@ export function createDataFlowManager(): DataFlowManager {
 		const jsonPathMatch = trimmed.match(/^([A-Za-z0-9_-]+)\.content\.(.+)$/);
 		if (jsonPathMatch) {
 			const [, nodeId, path] = jsonPathMatch;
+			// 工具描述把这些 JS 成员明确列为不支持。它们作为 JSON 字段名极罕见，作为模型笔误
+			// 却很常见，所以宁可抛错给出指引，也不要沿 JSON path 静默返回 null —— 后者会让
+			// 条件永远为假且不留任何诊断痕迹。
+			const lastSegment = path.split(".").pop() ?? "";
+			if (UNSUPPORTED_MEMBERS.has(lastSegment.replace(/\(.*\)$/, ""))) {
+				throw new Error(
+					`Unsupported expression: ${expression}. `
+					+ `".${lastSegment}" is not available; use <nodeId>.content.includes('text') for substring tests `
+					+ `or compare <nodeId>.content directly.`,
+				);
+			}
 			const nodeResult = context.nodes.get(nodeId);
 			if (!nodeResult?.content) return null;
 
@@ -103,7 +152,9 @@ export function createDataFlowManager(): DataFlowManager {
 		throw new Error(`Unsupported expression: ${expression}`);
 	}
 
-	function findStrictComparison(expression: string): { index: number; operator: "===" | "!==" } | null {
+	// 扫描顶层（引号外）的第一个操作符。candidates 必须按长度降序排列，否则 ">" 会先匹配到
+	// ">=" 的第一个字符，把 "a >= 5" 切成 "a" 和 "= 5"。
+	function findTopLevelOperator<T extends string>(expression: string, candidates: readonly T[]): { index: number; operator: T } | null {
 		let quote: string | undefined;
 		for (let index = 0; index < expression.length; index += 1) {
 			const char = expression[index];
@@ -116,8 +167,45 @@ export function createDataFlowManager(): DataFlowManager {
 				quote = char;
 				continue;
 			}
-			const operator = expression.slice(index, index + 3);
-			if (operator === "===" || operator === "!==") return { index, operator };
+			for (const operator of candidates) {
+				if (!expression.startsWith(operator, index)) continue;
+				// "!" 开头的取反不能被误认成 "!==" 的一部分：只有紧跟 "==" 才是比较操作符。
+				if (operator === "!==" && expression.slice(index, index + 3) !== "!==") continue;
+				return { index, operator };
+			}
+		}
+		return null;
+	}
+
+	function isTruthy(value: DataFlowValue): boolean {
+		return Boolean(value);
+	}
+
+	// === / !== 保持严格比较；数值比较先转数字，无法转换时返回 false 而不抛错，
+	// 避免一个写坏的阈值条件把整张图打挂。
+	function compareValues(left: DataFlowValue, right: DataFlowValue, operator: ComparisonOperator): boolean {
+		if (operator === "===") return left === right;
+		if (operator === "!==") return left !== right;
+
+		const leftNumber = toNumber(left);
+		const rightNumber = toNumber(right);
+		if (leftNumber === null || rightNumber === null) return false;
+
+		switch (operator) {
+			case ">=": return leftNumber >= rightNumber;
+			case "<=": return leftNumber <= rightNumber;
+			case ">": return leftNumber > rightNumber;
+			case "<": return leftNumber < rightNumber;
+		}
+	}
+
+	function toNumber(value: DataFlowValue): number | null {
+		if (typeof value === "number") return Number.isFinite(value) ? value : null;
+		if (typeof value === "string") {
+			const trimmed = value.trim();
+			if (!trimmed) return null;
+			const parsed = Number(trimmed);
+			return Number.isFinite(parsed) ? parsed : null;
 		}
 		return null;
 	}

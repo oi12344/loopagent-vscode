@@ -11,6 +11,8 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    exclude: [...configDefaults.exclude, ".worktrees/**", ".claude/worktrees/**", "test/integration/**", "dist/**"],
+    // .local-vscode-extensions 是本地安装的打包产物，其中含随扩展一起打包的测试文件；
+    // 与 dist 同属构建输出，不能当源码测试跑（依赖未随包安装，加载即失败）。
+    exclude: [...configDefaults.exclude, ".worktrees/**", ".claude/worktrees/**", "test/integration/**", "dist/**", ".local-vscode-extensions/**"],
   },
 });

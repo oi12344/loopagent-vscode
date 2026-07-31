@@ -323,11 +323,21 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 				let workflowStopReason: string | undefined;
 				let workflowStep = 0;
 				let workflowStateVersion = 0;
+				// 两条执行路径都在 GraphCompleted 里汇报真实的失败与未到达节点；工具必须把它们
+				// 透传给父智能体，否则“部分成功”会被当成整图成功。
+				let failedNodeIds: readonly string[] = [];
+				let unreachedNodeIds: readonly string[] = [];
+				let graphCancelled = false;
 				const dispose = engine.onEvent((event) => {
 					if (event.type === "ResolverFailed") resolverFailures.push({ nodeId: event.nodeId, error: event.error });
 					if (event.type === "StepStarted") workflowStep = event.step;
 					if (event.type === "StateCommitted") workflowStateVersion = event.stateVersion;
 					if (event.type === "GraphLimitExceeded") workflowStopReason = `${event.limit}:${event.value}`;
+					if (event.type === "GraphCancelled") graphCancelled = true;
+					if (event.type === "GraphCompleted") {
+						failedNodeIds = event.failedNodes;
+						unreachedNodeIds = event.unreachedNodes;
+					}
 				});
 
 				try {
@@ -352,14 +362,28 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 						);
 					}
 
+					// 失败节点带上错误原文：只给 id 的话父智能体无法判断该重试、换路径还是上报。
+					const failedNodes = failedNodeIds.map((nodeId) => ({
+						nodeId,
+						error: context.nodes.get(nodeId)?.result?.error ?? "unknown error",
+					}));
+					const workflowStatus = graphCancelled || cancelled
+						? "cancelled"
+						: failedNodes.length > 0 || unreachedNodeIds.length > 0
+							? "failed"
+							: "completed";
+
 					const visualizer = engine.getVisualizer();
 					return JSON.stringify({
+						workflowStatus,
 						nodes,
 						totalNodes: context.nodes.size,
 						statusCounts,
 						completedNodes: Array.from(context.nodes.values())
 							.filter((node) => node.status === "completed")
 							.map((node) => node.config.id),
+						failedNodes,
+						unreachedNodes: [...unreachedNodeIds],
 						results: Object.fromEntries(results),
 						executionOrder: context.executionOrder,
 						workflowState: {

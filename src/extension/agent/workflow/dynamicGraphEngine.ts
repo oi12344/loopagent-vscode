@@ -575,8 +575,10 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 				node.result = result;
 				node.finishedAt = new Date();
 				updateNodeStatus(nodeId, result.status === "completed" ? "completed" : result.status === "cancelled" ? "cancelled" : "failed");
+				// 失败结果也要进 results：父智能体需要看到错误原文才能重规划或恢复。只有成功结果
+				// 才写 outputs 通道和发 NodeCompleted，所以下游拿不到失败节点伪造的上下文。
+				results.set(nodeId, result);
 				if (result.status === "completed") {
-					results.set(nodeId, result);
 					dataFlowManager.recordOutput(nodeId, result);
 					emit({ type: "NodeCompleted", nodeId, result });
 				}
@@ -617,8 +619,22 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			emit({ type: "StepRouted", step, frontier: [...frontier] });
 		}
 
-		if (cancelled || signal?.aborted) emit({ type: "GraphCancelled", finalNodes: results });
-		else emit({ type: "GraphCompleted", finalNodes: results, failedNodes: [], unreachedNodes: [] });
+		if (cancelled || signal?.aborted) {
+			emit({ type: "GraphCancelled", finalNodes: results });
+			return results;
+		}
+
+		// 按真实节点状态汇报。此前这里硬编码空数组，父智能体因此看不到任何失败节点，
+		// 只要有一个节点成功就会把整张图当成功并输出总结。
+		const failedNodes: DynamicNodeId[] = [];
+		const unreachedNodes: DynamicNodeId[] = [];
+		for (const compiled of graph.nodes) {
+			const status = context.nodes.get(compiled.id)?.status;
+			if (status === "failed") failedNodes.push(compiled.id);
+			else if (status !== "completed" && status !== "skipped") unreachedNodes.push(compiled.id);
+		}
+
+		emit({ type: "GraphCompleted", finalNodes: results, failedNodes, unreachedNodes });
 		return results;
 
 		function isActivated(nodeId: string): boolean {
@@ -640,7 +656,11 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 		} catch {
 			if ((result.content ?? "").includes("APPROVED")) return "approve";
 		}
-		return "revise";
+		// 无法解析 review 输出时返回 undefined（决策未知），而不是默认 "revise"。
+		// 调用点据此让该 review 的所有带 when 出边都不激活：isActivated 使后继不可达，
+		// superstep 收敛后图正常结束、finalNodes 暴露该 review 结果。这比"默认回退被审
+		// 节点、直到撞 maxSteps 才停"安全得多——后者会把无法理解的 review 输出变成死循环。
+		return undefined;
 	}
 
 	function cancel(): void {

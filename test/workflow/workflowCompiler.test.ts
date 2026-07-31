@@ -40,6 +40,37 @@ describe("compileGeneratedWorkflow", () => {
 		expect(() => compileGeneratedWorkflow(plan)).toThrow(/nodes\[/);
 	});
 
+	it("gives every node a separate error channel so a failure cannot fake downstream input", () => {
+		const graph = compileGeneratedWorkflow({ nodes: [{ id: "read", task: "read" }] });
+
+		expect(graph.nodes[0]).toMatchObject({ outputChannel: "outputs.read", errorChannel: "errors.read" });
+		// append 而非 single：失败节点会被恢复流程重跑，覆盖前几次证据就没法判断"同一个错误又来了"。
+		expect(graph.channels).toEqual(expect.arrayContaining([
+			expect.objectContaining({ name: "errors.read", mode: "append" }),
+			expect.objectContaining({ name: "recovery", mode: "append" }),
+		]));
+	});
+
+	it("restricts an executor node to reconciling instead of retrying", () => {
+		const graph = compileGeneratedWorkflow({
+			nodes: [
+				{ id: "read", task: "read", role: "explorer" },
+				{ id: "write", task: "write", role: "executor", after: ["read"] },
+			],
+		});
+		const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+
+		// 副作用能力由角色静态判定（只有 executor 拿到 applyEdit/runCommand），编译期就定下来。
+		expect(byId.get("write")).toMatchObject({
+			hasSideEffect: true,
+			recoveryActions: ["reconcile_side_effect", "compensate", "request_input", "wait_external"],
+		});
+		expect(byId.get("read")?.hasSideEffect).toBe(false);
+		expect(byId.get("read")?.recoveryActions).toContain("retry");
+		// 只读节点拿不到对账和补偿：它不会留下副作用证据，对账一件没发生的写操作只是白烧预算。
+		expect(byId.get("read")?.recoveryActions).not.toContain("reconcile_side_effect");
+	});
+
 	it("does not mutate the plan and emits stable channels and limits", () => {
 		const plan = { nodes: [{ id: "a", task: "a" }], maxSteps: 7 };
 		const before = JSON.stringify(plan);

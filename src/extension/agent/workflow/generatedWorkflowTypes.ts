@@ -1,4 +1,5 @@
 import type { SubagentRoleId } from "./types";
+import type { RecoveryAction } from "./workflowRecovery";
 
 export type GeneratedWorkflowPlan = {
 	nodes: GeneratedWorkflowNode[];
@@ -19,6 +20,15 @@ export type GeneratedWorkflowNode = {
 export type CompiledWorkflowNode = GeneratedWorkflowNode & {
 	inputChannel: string;
 	outputChannel: string;
+	/** 失败证据写入的通道。与 outputChannel 分开，失败节点因此不会伪造下游可读的输出。 */
+	errorChannel: string;
+	/** 该节点可能产生副作用（写文件、跑命令）。由角色静态判定，不靠运行时猜。 */
+	hasSideEffect: boolean;
+	/**
+	 * 节点级恢复动作上界。运行时按真实错误分类和恢复预算在此之内再收紧，只会更严不会更宽。
+	 * 副作用节点固定只有对账、补偿、请求确认三种。
+	 */
+	recoveryActions: readonly RecoveryAction[];
 };
 
 export type CompiledWorkflowRoute = {
@@ -49,7 +59,6 @@ export type CompiledWorkflowGraph = {
 	limits: {
 		maxSteps?: number;
 		maxExecutionsPerNode?: number;
-		maxConcurrentExecutions?: number;
 	};
 };
 

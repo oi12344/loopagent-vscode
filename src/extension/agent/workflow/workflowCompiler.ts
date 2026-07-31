@@ -8,13 +8,13 @@ import type {
 	WorkflowCompileError,
 } from "./generatedWorkflowTypes";
 import { WorkflowCompileError as CompileError } from "./generatedWorkflowTypes";
+import { nodeRecoveryActions } from "./workflowRecovery";
 
 const NODE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export const DEFAULT_COMPILED_WORKFLOW_LIMITS = Object.freeze({
 	maxSteps: 50,
 	maxExecutionsPerNode: 10,
-	maxConcurrentExecutions: 4,
 });
 
 export function compileGeneratedWorkflow(plan: GeneratedWorkflowPlan): CompiledWorkflowGraph {
@@ -72,14 +72,27 @@ export function compileGeneratedWorkflow(plan: GeneratedWorkflowPlan): CompiledW
 		routes.push({ from: reviewer.id, to: target, type: "review", when: "revise" });
 	}
 
-	const nodes: CompiledWorkflowNode[] = plan.nodes.map((node) => ({
-		...node,
-		inputChannel: `inputs.${node.id}`,
-		outputChannel: `outputs.${node.id}`,
-	}));
+	const nodes: CompiledWorkflowNode[] = plan.nodes.map((node) => {
+		// 只有 executor 角色拿到 applyEdit/runCommand（见 roleRegistry），所以副作用能力由角色
+		// 静态判定。编译期定下来，运行时就不必从错误文本去猜某次失败有没有写过东西。
+		const hasSideEffect = node.role === "executor";
+		return {
+			...node,
+			inputChannel: `inputs.${node.id}`,
+			outputChannel: `outputs.${node.id}`,
+			errorChannel: `errors.${node.id}`,
+			hasSideEffect,
+			recoveryActions: nodeRecoveryActions(hasSideEffect),
+		};
+	});
 	const channels: CompiledWorkflowChannel[] = [
 		...nodes.map((node) => ({ name: node.outputChannel, mode: "single" as const, producer: node.id })),
+		// 错误通道用 append：失败节点会被恢复流程重跑，single 会让前几次的失败证据被覆盖，
+		// 而"同一个错误重复出现"恰恰是 Supervisor 判断该换动作的依据。
+		...nodes.map((node) => ({ name: node.errorChannel, mode: "append" as const, producer: node.id })),
 		{ name: "history", mode: "append" as const },
+		// 恢复决策历史。与 history 分开，便于完成门禁只看"还有没有未解决的错误"。
+		{ name: "recovery", mode: "append" as const },
 	];
 
 	return {
@@ -91,7 +104,6 @@ export function compileGeneratedWorkflow(plan: GeneratedWorkflowPlan): CompiledW
 		limits: {
 			maxSteps: plan.maxSteps ?? DEFAULT_COMPILED_WORKFLOW_LIMITS.maxSteps,
 			maxExecutionsPerNode: DEFAULT_COMPILED_WORKFLOW_LIMITS.maxExecutionsPerNode,
-			maxConcurrentExecutions: DEFAULT_COMPILED_WORKFLOW_LIMITS.maxConcurrentExecutions,
 		},
 	};
 }
