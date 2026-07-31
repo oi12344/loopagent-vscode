@@ -4,6 +4,7 @@ import type {
   ConversationSummary,
   InterruptedRunCheckpoint,
 } from "../../shared/chatTypes";
+import { sanitizeWorkflowCheckpoint, type WorkflowCheckpoint } from "../../shared/workflowCheckpoint";
 
 /**
  * 对话存储服务
@@ -71,6 +72,12 @@ export type ConversationStore = {
   loadInterruptedRun(conversationId: string): InterruptedRunCheckpoint | undefined;
 
   clearInterruptedRun(conversationId: string): void;
+
+  saveWorkflowCheckpoint(checkpoint: WorkflowCheckpoint): boolean;
+
+  loadWorkflowCheckpoint(conversationId: string, runId: string): WorkflowCheckpoint | undefined;
+
+  clearWorkflowCheckpoint(conversationId: string, runId: string): void;
 };
 
 function summarize(context: ConversationContext): ConversationSummary {
@@ -90,6 +97,7 @@ function summarize(context: ConversationContext): ConversationSummary {
 export function createConversationStore(): ConversationStore {
   const conversations = new Map<string, ConversationContext>();
   const interruptedRuns = new Map<string, InterruptedRunCheckpoint>();
+  const workflowCheckpoints = new Map<string, WorkflowCheckpoint>();
 
   /**
    * 生成唯一的对话ID
@@ -166,6 +174,24 @@ export function createConversationStore(): ConversationStore {
 
     clearInterruptedRun(conversationId: string): void {
       interruptedRuns.delete(conversationId);
+    },
+
+    saveWorkflowCheckpoint(checkpoint: WorkflowCheckpoint): boolean {
+      const sanitized = sanitizeWorkflowCheckpoint(checkpoint);
+      const existing = workflowCheckpoints.get(sanitized.conversationId);
+      if (existing && (existing.runId !== sanitized.runId || sanitized.revision <= existing.revision)) return false;
+      workflowCheckpoints.set(sanitized.conversationId, sanitized);
+      return true;
+    },
+
+    loadWorkflowCheckpoint(conversationId: string, runId: string): WorkflowCheckpoint | undefined {
+      const checkpoint = workflowCheckpoints.get(conversationId);
+      if (!checkpoint || checkpoint.runId !== runId) return undefined;
+      return sanitizeWorkflowCheckpoint(checkpoint);
+    },
+
+    clearWorkflowCheckpoint(conversationId: string, runId: string): void {
+      if (workflowCheckpoints.get(conversationId)?.runId === runId) workflowCheckpoints.delete(conversationId);
     },
   };
 }
