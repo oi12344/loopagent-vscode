@@ -7,6 +7,7 @@ import { createDynamicGraphEngine, DEFAULT_DYNAMIC_GRAPH_LIMITS, type DynamicGra
 import type { GraphDebugInfo } from "./workflow/graphVisualizer";
 import { createReflectionResolver } from "./workflow/reflectionResolver";
 import type { SubagentRoleId, SubagentResult } from "./workflow/types";
+import { classifyFailure, type FailureCategory } from "./workflow/workflowRecovery";
 import type { CycleEdge } from "./workflow/cycleManager";
 import { compileGeneratedWorkflow } from "./workflow/workflowCompiler";
 import { parseGeneratedWorkflowPlan, type GeneratedWorkflowPlan } from "./workflow/generatedWorkflowTypes";
@@ -161,6 +162,7 @@ const RESOLVER_SCHEMA = {
 				role: NODE_SCHEMA.properties.role,
 				toolHints: NODE_SCHEMA.properties.toolHints,
 				retry: RETRY_SCHEMA,
+				sideEffect: { type: "string", enum: ["none", "applied", "unknown"] },
 				itemInputKey: { type: "string", minLength: 1 },
 				expression: { type: "string", minLength: 1 },
 				nodes: { type: "array", items: NODE_SCHEMA },
@@ -369,7 +371,7 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 								...resolverFailures.map((entry) => ({ nodeId: entry.nodeId, code: "resolver_failed", message: entry.error })),
 								...([...snapshot.nodes].filter(([, node]) => node.status === "failed").map(([nodeId, node]) => ({
 									nodeId,
-									code: "node_failed",
+									code: classifyNodeFailure(nodeId, node.config.role, node.result?.error, node.config.sideEffect),
 									message: node.result?.error ?? "node failed",
 								}))),
 							],
@@ -439,21 +441,30 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 					const failedNodes = failedNodeIds.map((nodeId) => ({
 						nodeId,
 						error: context.nodes.get(nodeId)?.result?.error ?? "unknown error",
+						category: classifyNodeFailure(
+							nodeId,
+							context.nodes.get(nodeId)?.config.role,
+							context.nodes.get(nodeId)?.result?.error,
+							context.nodes.get(nodeId)?.config.sideEffect,
+						),
+						sideEffect: context.nodes.get(nodeId)?.config.sideEffect
+							?? (context.nodes.get(nodeId)?.config.role === "executor" ? "unknown" : "none"),
 					}));
 					const hasUnknownSideEffect = failedNodeIds.some((nodeId) => {
 						const node = context.nodes.get(nodeId);
-						return node?.config.sideEffect === "unknown" || node?.config.sideEffect === undefined && node?.config.role === "executor";
+						const sideEffect = node?.config.sideEffect ?? (node?.config.role === "executor" ? "unknown" : "none");
+						return sideEffect !== "none";
 					});
 					const workflowStatus = graphCancelled || cancelled
 						? "cancelled"
 						: hasUnknownSideEffect
 							? "recovery_required"
-						: failedNodes.length > 0 || unreachedNodeIds.length > 0 || resolverFailures.length > 0
+							: failedNodes.length > 0 || unreachedNodeIds.length > 0 || resolverFailures.length > 0
 							? "failed"
 							: "completed";
 					const unresolvedFailures = [
 						...resolverFailures.map((entry) => ({ nodeId: entry.nodeId, code: "resolver_failed", message: entry.error })),
-						...failedNodes.map((entry) => ({ nodeId: entry.nodeId, code: "node_failed", message: entry.error })),
+						...failedNodes.map((entry) => ({ nodeId: entry.nodeId, code: entry.category, message: entry.error })),
 					];
 					if (workflowStatus === "recovery_required" && checkpointStore && conversationId && runId) {
 						const latest = checkpointStore.loadWorkflowCheckpoint(conversationId, runId);
@@ -535,6 +546,16 @@ function validateCycleEndpoints(cycles: readonly CycleEdge[], initialNodes: read
 		if (!ids.has(cycle.from)) throw new Error(`Cycle "${cycle.id}" from "${cycle.from}" is not an initial node`);
 		if (!ids.has(cycle.to)) throw new Error(`Cycle "${cycle.id}" to "${cycle.to}" is not an initial node`);
 	}
+}
+
+function classifyNodeFailure(
+	nodeId: string,
+	role: SubagentRoleId | undefined,
+	error: unknown,
+	sideEffect: "none" | "applied" | "unknown" | undefined,
+): FailureCategory {
+	const outcome = sideEffect ?? (role === "executor" ? "unknown" : "none");
+	return classifyFailure({ nodeId, role, error, sideEffect: { outcome } });
 }
 
 function serializeDebugInfo(debugInfo: GraphDebugInfo) {
