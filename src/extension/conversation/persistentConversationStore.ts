@@ -8,12 +8,23 @@ import type {
   ConversationSummary,
   InterruptedRunCheckpoint,
 } from "../../shared/chatTypes";
+import { sanitizeWorkflowCheckpoint, type WorkflowCheckpoint } from "../../shared/workflowCheckpoint";
 import type { ConversationStore } from "./conversationStore";
 
 type ConversationRow = {
   conversation_id: string;
   messages_json: string;
   created_at: number;
+  updated_at: number;
+};
+
+type WorkflowCheckpointRow = {
+  conversation_id: string;
+  run_id: string;
+  plan_hash: string;
+  revision: number;
+  status: string;
+  checkpoint_json: string;
   updated_at: number;
 };
 
@@ -81,6 +92,15 @@ export function createPersistentConversationStore(
   database.exec(`
     CREATE TABLE IF NOT EXISTS interrupted_run (
       conversation_id TEXT PRIMARY KEY,
+      checkpoint_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS workflow_checkpoint (
+      conversation_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      plan_hash TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      status TEXT NOT NULL,
       checkpoint_json TEXT NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -159,6 +179,31 @@ export function createPersistentConversationStore(
     }
   }
 
+  function readWorkflowCheckpoint(conversationId: string, runId: string): WorkflowCheckpoint | undefined {
+    const row = database
+      .prepare(
+        "SELECT conversation_id, run_id, plan_hash, revision, status, checkpoint_json, updated_at FROM workflow_checkpoint WHERE conversation_id = ?",
+      )
+      .get(conversationId) as WorkflowCheckpointRow | undefined;
+    if (!row || row.run_id !== runId) return undefined;
+    try {
+      const checkpoint = sanitizeWorkflowCheckpoint(JSON.parse(row.checkpoint_json));
+      if (
+        checkpoint.conversationId !== row.conversation_id ||
+        checkpoint.runId !== row.run_id ||
+        checkpoint.planHash !== row.plan_hash ||
+        checkpoint.revision !== row.revision ||
+        checkpoint.status !== row.status ||
+        checkpoint.updatedAt !== row.updated_at
+      ) {
+        return undefined;
+      }
+      return checkpoint;
+    } catch {
+      return undefined;
+    }
+  }
+
   if (!hadActiveConversationTable) {
     const legacy = database
       .prepare("SELECT conversation_id FROM conversation ORDER BY updated_at DESC, rowid DESC LIMIT 1")
@@ -227,6 +272,42 @@ export function createPersistentConversationStore(
 
     clearInterruptedRun(conversationId: string): void {
       database.prepare("DELETE FROM interrupted_run WHERE conversation_id = ?").run(conversationId);
+    },
+
+    saveWorkflowCheckpoint(checkpoint: WorkflowCheckpoint): boolean {
+      const sanitized = sanitizeWorkflowCheckpoint(checkpoint);
+      const result = database
+        .prepare(
+          `INSERT INTO workflow_checkpoint (conversation_id, run_id, plan_hash, revision, status, checkpoint_json, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(conversation_id) DO UPDATE SET
+             run_id = excluded.run_id,
+             plan_hash = excluded.plan_hash,
+             revision = excluded.revision,
+             status = excluded.status,
+             checkpoint_json = excluded.checkpoint_json,
+             updated_at = excluded.updated_at
+           WHERE workflow_checkpoint.run_id = excluded.run_id
+             AND excluded.revision > workflow_checkpoint.revision`,
+        )
+        .run(
+          sanitized.conversationId,
+          sanitized.runId,
+          sanitized.planHash,
+          sanitized.revision,
+          sanitized.status,
+          JSON.stringify(sanitized),
+          sanitized.updatedAt,
+        ) as { changes?: number | bigint };
+      return Number(result.changes ?? 0) > 0;
+    },
+
+    loadWorkflowCheckpoint(conversationId: string, runId: string): WorkflowCheckpoint | undefined {
+      return readWorkflowCheckpoint(conversationId, runId);
+    },
+
+    clearWorkflowCheckpoint(conversationId: string, runId: string): void {
+      database.prepare("DELETE FROM workflow_checkpoint WHERE conversation_id = ? AND run_id = ?").run(conversationId, runId);
     },
 
     listConversations(): ConversationSummary[] {
