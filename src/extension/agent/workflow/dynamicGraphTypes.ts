@@ -2,6 +2,8 @@ import type { SubagentResult, SubagentRoleId } from "./types";
 import type { DataFlowValue } from "./dataFlowManager";
 import type { CycleEdge } from "./cycleManager";
 import type { CompiledWorkflowGraph } from "./generatedWorkflowTypes";
+import type { WorkflowCheckpoint } from "../../../shared/workflowCheckpoint";
+import type { WorkflowSideEffect } from "../../../shared/workflowCheckpoint";
 
 export type DynamicNodeId = string;
 
@@ -27,6 +29,7 @@ export type DynamicNodeConfig = {
 	/** On completion, writes this node's result.content into globalData under this key, making it readable via "$key" expressions. */
 	exportTo?: string;
 	retry?: { maxAttempts: number; backoffMs?: number };
+	sideEffect?: WorkflowSideEffect;
 };
 
 export type NodeCondition = {
@@ -70,6 +73,18 @@ export type DynamicGraphDefinition = {
 	initialGlobalData?: Record<string, DataFlowValue>;
 	compiledGraph?: CompiledWorkflowGraph;
 	initialState?: Record<string, unknown>;
+};
+
+export type DynamicGraphCheckpointSnapshot = {
+	status: "running" | "failed" | "completed" | "cancelled" | "recovery_required";
+	frontier: DynamicNodeId[];
+	executionOrder: DynamicNodeId[];
+	nodes: ReadonlyMap<DynamicNodeId, DynamicNode>;
+	state?: WorkflowStateSnapshot;
+};
+
+export type DynamicGraphResume = {
+	checkpoint: WorkflowCheckpoint;
 };
 
 export type WorkflowStateSnapshot = {

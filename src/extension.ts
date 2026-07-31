@@ -525,6 +525,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
         applyEditTool: this.applyEditTool,
         runCommandTool: this.runCommandTool,
         imageAnalysisService: this.imageAnalysisService,
+        workflowCheckpointStore: this.conversationStore,
         onCheckpoint: (checkpoint) => {
           this.conversationManager.saveInterruptedRun({
             ...checkpoint,

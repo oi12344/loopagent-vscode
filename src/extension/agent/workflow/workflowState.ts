@@ -12,12 +12,17 @@ export type WorkflowStateStore = {
 	commitWrites(snapshot: WorkflowStateSnapshot, writes: readonly StateWrite[]): WorkflowStateSnapshot;
 };
 
-export function createWorkflowState(initialValues: Readonly<Record<string, unknown>> = {}): WorkflowStateStore {
-	let current: WorkflowStateSnapshot = {
-		step: 0,
-		version: 0,
-		values: new Map(Object.entries(initialValues)),
-	};
+export function createWorkflowState(
+	initialValues: Readonly<Record<string, unknown>> = {},
+	initialSnapshot?: WorkflowStateSnapshot,
+): WorkflowStateStore {
+	let current: WorkflowStateSnapshot = initialSnapshot
+		? { step: initialSnapshot.step, version: initialSnapshot.version, values: new Map(initialSnapshot.values) }
+		: {
+			step: 0,
+			version: 0,
+			values: new Map(Object.entries(initialValues)),
+		};
 
 	return {
 		readSnapshot: () => current,

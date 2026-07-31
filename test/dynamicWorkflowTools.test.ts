@@ -4,6 +4,7 @@ import { createDynamicWorkflowTools } from "../src/extension/agent/dynamicWorkfl
 import type { ReactAgentTool } from "../src/extension/agent/reactTypes";
 import type { CreateSubagentConfig, SubagentResult } from "../src/extension/agent/workflow/types";
 import type { WorkflowOrchestrator } from "../src/extension/agent/workflowOrchestrator";
+import { createConversationStore } from "../src/extension/conversation/conversationStore";
 
 describe("dynamic workflow tools", () => {
 	it("exposes a single merged tool and rejects invalid initial graphs before execution", async () => {
@@ -40,6 +41,9 @@ describe("dynamic workflow tools", () => {
 		}));
 		await expect(runGraphRaw(tools, deepNodes)).rejects.toThrow(/maximum depth \(10\)/i);
 		await expect(runGraphRaw(tools, [{ id: "a", task: "a" }], { include: ["timeline"] })).rejects.toThrow(/include entries must be one of/i);
+		await expect(runGraphRaw(tools, [{ id: "a", task: "a" }], {
+			cycles: [{ id: "invalid", from: "a", to: "missing", exit: { hardLimit: 1 } }],
+		})).rejects.toThrow(/not an initial node/i);
 
 		const result = await runGraph(tools, [
 			{ id: "read", task: "Read", role: "explorer" },
@@ -121,6 +125,108 @@ describe("dynamic workflow tools", () => {
 		expect(result.statusCounts).toEqual({ completed: 1, failed: 1 });
 		expect(result.completedNodes).toEqual(["ok"]);
 		expect(result.results.failed).toEqual({ status: "failed", error: "boom" });
+	});
+
+	it("resumes a failed graph without rerunning completed nodes", async () => {
+		let aRuns = 0;
+		let bRuns = 0;
+		const store = createConversationStore();
+		const tools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator((config) => {
+				if (config.task === "A") {
+					aRuns++;
+					return { status: "completed", content: "A done" };
+				}
+				bRuns++;
+				return bRuns === 1
+					? { status: "failed", error: "temporary" }
+					: { status: "completed", content: "B done" };
+			}),
+			availableTools: [],
+			conversationId: "conversation-1",
+			runId: "run-1",
+			checkpointStore: store,
+		});
+		const input = {
+			initialNodes: [
+				{ id: "A", task: "A" },
+				{ id: "B", task: "B" },
+			],
+		};
+
+		const first = JSON.parse(String(await invoke(tools, "runDynamicGraph", input)));
+		expect(first.workflowStatus).toBe("failed");
+		expect(first.resumeToken).toEqual(expect.any(String));
+		expect(aRuns).toBe(1);
+		expect(bRuns).toBe(1);
+
+		const second = JSON.parse(String(await invoke(tools, "runDynamicGraph", input)));
+		expect(second.workflowStatus).toBe("completed");
+		expect(second.completedNodes).toEqual(expect.arrayContaining(["A", "B"]));
+		expect(aRuns).toBe(1);
+		expect(bRuns).toBe(2);
+		expect(store.loadWorkflowCheckpoint("conversation-1", "run-1")).toBeUndefined();
+	});
+
+	it("does not automatically repeat an executor with unknown side effects", async () => {
+		let executorRuns = 0;
+		const store = createConversationStore();
+		const tools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator((config) => config.role === "executor"
+				? (++executorRuns, { status: "failed", error: "response lost" })
+				: { status: "completed", content: "read-only result" }),
+			availableTools: [],
+			conversationId: "conversation-side-effect",
+			runId: "run-side-effect",
+			checkpointStore: store,
+		});
+		const input = {
+			initialNodes: [
+				{ id: "read", task: "Read", role: "explorer" },
+				{ id: "write", task: "Write", role: "executor" },
+			],
+		};
+
+		const first = JSON.parse(String(await invoke(tools, "runDynamicGraph", input)));
+		expect(store.loadWorkflowCheckpoint("conversation-side-effect", "run-side-effect")?.nodes.write.sideEffect).toBe("unknown");
+		const second = JSON.parse(String(await invoke(tools, "runDynamicGraph", input)));
+		expect(first.workflowStatus).toBe("recovery_required");
+		expect(second.workflowStatus).toBe("recovery_required");
+		expect(executorRuns).toBe(1);
+	});
+
+	it("resumes a semantic compiled plan from its saved frontier", async () => {
+		let aRuns = 0;
+		let bRuns = 0;
+		const store = createConversationStore();
+		const tools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator((config) => {
+				if (config.task === "A") {
+					aRuns++;
+					return { status: "completed", content: "A done" };
+				}
+				bRuns++;
+				return bRuns === 1 ? { status: "failed", error: "temporary" } : { status: "completed", content: "B done" };
+			}),
+			availableTools: [],
+			conversationId: "conversation-semantic",
+			runId: "run-semantic",
+			checkpointStore: store,
+		});
+		const input = {
+			nodes: [
+				{ id: "A", task: "A", role: "planner" },
+				{ id: "B", task: "B", role: "planner", after: ["A"] },
+			],
+		};
+
+		const first = JSON.parse(String(await invoke(tools, "runDynamicGraph", input)));
+		expect(first.workflowStatus).toBe("failed");
+		expect(first.resumeToken).toEqual(expect.any(String));
+		const second = JSON.parse(String(await invoke(tools, "runDynamicGraph", input)));
+		expect(second.workflowStatus).toBe("completed");
+		expect(aRuns).toBe(1);
+		expect(bRuns).toBe(2);
 	});
 
 	it("rejects malformed resolver configuration before execution", async () => {

@@ -6,6 +6,8 @@ import { createReflectionResolver } from "../src/extension/agent/workflow/reflec
 import type { DynamicGraphDefinition, DynamicNodeConfig } from "../src/extension/agent/workflow/dynamicGraphTypes";
 import type { SubagentResult } from "../src/extension/agent/workflow/types";
 import type { ReactAgentTool } from "../src/extension/agent/reactTypes";
+import type { WorkflowOrchestrator } from "../src/extension/agent/workflowOrchestrator";
+import type { WorkflowCheckpoint } from "../src/shared/workflowCheckpoint";
 
 describe("Dynamic Graph Workflow Integration", () => {
 	let mockTools: ReactAgentTool[];
@@ -61,6 +63,68 @@ describe("Dynamic Graph Workflow Integration", () => {
 
 		expect(results.size).toBeGreaterThan(0);
 		expect(mockRunnerFactory).toHaveBeenCalled();
+	});
+
+	it("should resume only the failed frontier node from a checkpoint", async () => {
+		let nextId = 1;
+		let bAttempts = 0;
+		const configs = new Map<string, { task: string }>();
+		const orchestrator: WorkflowOrchestrator = {
+			createSubagent: vi.fn((config) => {
+				const id = `subagent-${nextId++}`;
+				configs.set(id, config);
+				return id;
+			}),
+			waitForSubagents: vi.fn(async (ids) => new Map(ids.map((id) => {
+				const task = configs.get(id)?.task;
+				if (task === "B" && bAttempts++ === 0) return [id, { status: "failed", error: "temporary" } satisfies SubagentResult] as const;
+				return [id, { status: "completed", content: task } satisfies SubagentResult] as const;
+			}))),
+			getSubagent: vi.fn(),
+			cancelSubagent: vi.fn(() => true),
+			cancelAll: vi.fn(),
+			onEvent: vi.fn(() => () => {}),
+		};
+		let checkpoint: WorkflowCheckpoint | undefined;
+		const save = (snapshot: Parameters<NonNullable<Parameters<typeof createDynamicGraphEngine>[0]["onCheckpoint"]>>[0]) => {
+			checkpoint = {
+				version: 1,
+				conversationId: "conversation-1",
+				runId: "run-1",
+				planHash: "plan-1",
+				revision: (checkpoint?.revision ?? 0) + 1,
+				status: snapshot.status,
+				frontier: snapshot.frontier,
+				executionOrder: snapshot.executionOrder,
+				nodes: Object.fromEntries([...snapshot.nodes].map(([nodeId, node]) => [nodeId, {
+					nodeId,
+					status: node.status === "ready" || node.status === "pending-retry" ? "pending" : node.status,
+					inputHash: nodeId,
+					attempts: node.attempts ?? 0,
+					result: node.result,
+					sideEffect: "none",
+				}])),
+				state: { step: snapshot.state?.step ?? 0, version: snapshot.state?.version ?? 0, values: Object.fromEntries(snapshot.state?.values ?? []) },
+				unresolvedFailures: [],
+				updatedAt: Date.now(),
+			};
+		};
+		const definition: DynamicGraphDefinition = {
+			initialNodes: [
+				{ id: "A", task: "A" },
+				{ id: "B", task: "B", dependsOn: ["A"] },
+			],
+		};
+
+		const first = createDynamicGraphEngine({ definition, orchestrator, availableTools: [], onCheckpoint: save });
+		await first.execute();
+		expect(checkpoint?.frontier).toEqual(["B"]);
+		expect(orchestrator.createSubagent).toHaveBeenCalledTimes(2);
+
+		const second = createDynamicGraphEngine({ definition, orchestrator, availableTools: [], resume: { checkpoint: checkpoint! } });
+		await second.execute();
+		expect(orchestrator.createSubagent).toHaveBeenCalledTimes(3);
+		expect(orchestrator.createSubagent.mock.calls.map(([config]) => config.task)).toEqual(["A", "B", "B"]);
 	});
 
 	it("should handle conditional execution based on node results", async () => {

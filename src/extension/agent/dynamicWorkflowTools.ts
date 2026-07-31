@@ -1,7 +1,8 @@
 import type { ReactAgentTool } from "./reactTypes";
 import type { WorkflowOrchestrator } from "./workflowOrchestrator";
+import type { ConversationStore } from "../conversation/conversationStore";
 import type { DataFlowValue } from "./workflow/dataFlowManager";
-import type { DynamicGraphDefinition, DynamicNodeConfig, DependencyResolver, GraphComputationContext } from "./workflow/dynamicGraphTypes";
+import type { DynamicGraphCheckpointSnapshot, DynamicGraphDefinition, DynamicNode, DynamicNodeConfig, DependencyResolver, GraphComputationContext } from "./workflow/dynamicGraphTypes";
 import { createDynamicGraphEngine, DEFAULT_DYNAMIC_GRAPH_LIMITS, type DynamicGraphEngine } from "./workflow/dynamicGraphEngine";
 import type { GraphDebugInfo } from "./workflow/graphVisualizer";
 import { createReflectionResolver } from "./workflow/reflectionResolver";
@@ -9,11 +10,15 @@ import type { SubagentRoleId, SubagentResult } from "./workflow/types";
 import type { CycleEdge } from "./workflow/cycleManager";
 import { compileGeneratedWorkflow } from "./workflow/workflowCompiler";
 import { parseGeneratedWorkflowPlan, type GeneratedWorkflowPlan } from "./workflow/generatedWorkflowTypes";
+import { createPlanHash, type WorkflowCheckpoint, type WorkflowNodeCheckpointStatus } from "../../shared/workflowCheckpoint";
 
 type DynamicWorkflowToolsOptions = {
 	orchestrator: WorkflowOrchestrator;
 	availableTools: readonly ReactAgentTool[];
 	signal?: AbortSignal;
+	conversationId?: string;
+	runId?: string;
+	checkpointStore?: Pick<ConversationStore, "saveWorkflowCheckpoint" | "loadWorkflowCheckpoint" | "clearWorkflowCheckpoint">;
 };
 
 type ActiveGraph = {
@@ -115,6 +120,7 @@ const NODE_SCHEMA = {
 		},
 		exportTo: { type: "string", minLength: 1, description: "Write this node's content to global data under this key, readable elsewhere as \"$key\"." },
 		retry: RETRY_SCHEMA,
+		sideEffect: { type: "string", enum: ["none", "applied", "unknown"], description: "副作用证据；executor 默认 unknown，避免恢复时盲目重复编辑或命令。" },
 	},
 	required: ["id", "task"],
 };
@@ -170,7 +176,7 @@ const RESOLVER_SCHEMA = {
 	required: ["nodeId", "resolverType", "resolverConfig"],
 };
 
-export function createDynamicWorkflowTools({ orchestrator, availableTools, signal }: DynamicWorkflowToolsOptions): ReactAgentTool[] {
+export function createDynamicWorkflowTools({ orchestrator, availableTools, signal, conversationId, runId, checkpointStore }: DynamicWorkflowToolsOptions): ReactAgentTool[] {
 	return [
 		{
 			name: "runDynamicGraph",
@@ -242,6 +248,7 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 						type: "array",
 						items: { type: "string", enum: ["visualization", "debug", "mermaid"] },
 					},
+					resumeToken: { type: "string", description: "Opaque token returned for a previous resumable graph run." },
 				},
 				required: [],
 			},
@@ -272,15 +279,35 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 				const initialGlobalData = record.initialGlobalData !== undefined
 					? requireRecord(record.initialGlobalData) as Record<string, DataFlowValue>
 					: undefined;
-				const cycles = semanticPlan ? undefined : record.cycles !== undefined ? parseCycles(record.cycles) : undefined;
-				const include = parseIncludes(record.include);
+					const cycles = semanticPlan ? undefined : record.cycles !== undefined ? parseCycles(record.cycles) : undefined;
+					const include = parseIncludes(record.include);
 				validateInitialGraph(
 					initialNodes,
 					maxNodes ?? DEFAULT_DYNAMIC_GRAPH_LIMITS.maxNodes,
-					maxDepth ?? DEFAULT_DYNAMIC_GRAPH_LIMITS.maxDepth,
-				);
+						maxDepth ?? DEFAULT_DYNAMIC_GRAPH_LIMITS.maxDepth,
+					);
+					if (cycles) validateCycleEndpoints(cycles, initialNodes);
+					const planHash = createPlanHash(compactForHash({
+						kind: semanticPlan ? "semantic" : "legacy",
+						semanticPlan,
+						initialNodes,
+						resolvers: record.resolvers,
+						cycles,
+						initialGlobalData,
+						maxNodes,
+						maxDepth,
+						maxSteps: semanticPlan?.maxSteps,
+						initialState: semanticPlan?.initialState,
+					}));
+					const storedCheckpoint = conversationId && runId && checkpointStore
+						? checkpointStore.loadWorkflowCheckpoint(conversationId, runId)
+						: undefined;
+					const resumeCheckpoint = storedCheckpoint?.planHash === planHash ? storedCheckpoint : undefined;
+					if (storedCheckpoint && storedCheckpoint.planHash !== planHash && conversationId && runId) {
+						checkpointStore?.clearWorkflowCheckpoint(conversationId, runId);
+					}
 
-				// The engine reads `definition.resolvers` lazily at execution time, so the map can stay
+					// The engine reads `definition.resolvers` lazily at execution time, so the map can stay
 				// empty here and be filled in below -- that breaks the cycle between resolver closures
 				// (which need the engine's data-flow manager) and the engine (which needs the map).
 				const resolvers = new Map<string, DependencyResolver>();
@@ -293,41 +320,87 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 					initialGlobalData,
 					compiledGraph: semanticPlan ? compileGeneratedWorkflow(semanticPlan) : undefined,
 					initialState: semanticPlan?.initialState,
-					maxSteps: semanticPlan?.maxSteps,
-				};
-				const engine = createDynamicGraphEngine({
-					definition,
-					orchestrator,
-					availableTools,
-					signal,
-				});
-				const activeGraph: ActiveGraph = {
-					engine,
-					resolvers,
-					initialNodeIds: new Set(initialNodes.map((node) => node.id)),
-				};
+						maxSteps: semanticPlan?.maxSteps,
+					};
+					const nodes = initialNodes.map((node) => ({
+						id: node.id,
+						role: node.role ?? "explorer",
+						dependsOn: node.dependsOn ?? [],
+					}));
+					const resolverFailures: Array<{ nodeId: string; error: string }> = [];
+					let workflowStopReason: string | undefined;
+					let workflowStep = 0;
+					let workflowStateVersion = 0;
+					let failedNodeIds: readonly string[] = [];
+					let unreachedNodeIds: readonly string[] = [];
+					let graphCancelled = false;
+					let checkpointRevision = resumeCheckpoint?.revision ?? 0;
+					const saveSnapshot = async (snapshot: DynamicGraphCheckpointSnapshot): Promise<void> => {
+						if (!checkpointStore || !conversationId || !runId) return;
+						const checkpoint: WorkflowCheckpoint = {
+							version: 1,
+							conversationId,
+							runId,
+							planHash,
+							revision: ++checkpointRevision,
+							status: snapshot.status,
+							frontier: snapshot.frontier,
+							executionOrder: snapshot.executionOrder,
+							nodes: Object.fromEntries([...snapshot.nodes].map(([nodeId, node]) => [nodeId, {
+								nodeId,
+								status: checkpointNodeStatus(node.status),
+								inputHash: createPlanHash({ nodeId, task: node.config.task, context: compactForHash(node.context) }),
+								attempts: node.attempts ?? 0,
+								...(node.result && {
+									result: {
+										status: node.result.status,
+										...(node.result.content !== undefined && { content: node.result.content }),
+										...(node.result.error !== undefined && { error: node.result.error }),
+									},
+								}),
+								sideEffect: node.config.sideEffect ?? (node.config.role === "executor" ? "unknown" : "none"),
+							}])),
+							state: {
+								step: snapshot.state?.step ?? workflowStep,
+								version: snapshot.state?.version ?? workflowStateVersion,
+								values: Object.fromEntries(snapshot.state?.values ?? []),
+							},
+							unresolvedFailures: [
+								...resolverFailures.map((entry) => ({ nodeId: entry.nodeId, code: "resolver_failed", message: entry.error })),
+								...([...snapshot.nodes].filter(([, node]) => node.status === "failed").map(([nodeId, node]) => ({
+									nodeId,
+									code: "node_failed",
+									message: node.result?.error ?? "node failed",
+								}))),
+							],
+							updatedAt: Date.now(),
+						};
+						checkpointStore.saveWorkflowCheckpoint(checkpoint);
+					};
+					let engine!: DynamicGraphEngine;
+					const activeGraph: ActiveGraph = {
+						engine: undefined as unknown as DynamicGraphEngine,
+						resolvers,
+						initialNodeIds: new Set(initialNodes.map((node) => node.id)),
+					};
 
 				for (const entry of parseResolverEntries(record.resolvers)) {
 					if (!activeGraph.initialNodeIds.has(entry.nodeId)) {
 						throw new Error(`Resolver nodeId "${entry.nodeId}" is not an initial node`);
 					}
-					resolvers.set(entry.nodeId, createConfiguredResolver(entry.resolverType, entry.resolverConfig, activeGraph));
-				}
-
-				const nodes = initialNodes.map((node) => ({
-					id: node.id,
-					role: node.role ?? "explorer",
-					dependsOn: node.dependsOn ?? [],
-				}));
-				const resolverFailures: Array<{ nodeId: string; error: string }> = [];
-				let workflowStopReason: string | undefined;
-				let workflowStep = 0;
-				let workflowStateVersion = 0;
-				// 两条执行路径都在 GraphCompleted 里汇报真实的失败与未到达节点；工具必须把它们
-				// 透传给父智能体，否则“部分成功”会被当成整图成功。
-				let failedNodeIds: readonly string[] = [];
-				let unreachedNodeIds: readonly string[] = [];
-				let graphCancelled = false;
+						resolvers.set(entry.nodeId, createConfiguredResolver(entry.resolverType, entry.resolverConfig, activeGraph));
+					}
+					engine = createDynamicGraphEngine({
+						definition,
+						orchestrator,
+						availableTools,
+						signal,
+						resume: resumeCheckpoint ? { checkpoint: resumeCheckpoint } : undefined,
+						onCheckpoint: saveSnapshot,
+					});
+					activeGraph.engine = engine;
+					// 两条执行路径都在 GraphCompleted 里汇报真实的失败与未到达节点；工具必须把它们
+					// 透传给父智能体，否则“部分成功”会被当成整图成功。
 				const dispose = engine.onEvent((event) => {
 					if (event.type === "ResolverFailed") resolverFailures.push({ nodeId: event.nodeId, error: event.error });
 					if (event.type === "StepStarted") workflowStep = event.step;
@@ -367,15 +440,40 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 						nodeId,
 						error: context.nodes.get(nodeId)?.result?.error ?? "unknown error",
 					}));
+					const hasUnknownSideEffect = failedNodeIds.some((nodeId) => {
+						const node = context.nodes.get(nodeId);
+						return node?.config.sideEffect === "unknown" || node?.config.sideEffect === undefined && node?.config.role === "executor";
+					});
 					const workflowStatus = graphCancelled || cancelled
 						? "cancelled"
-						: failedNodes.length > 0 || unreachedNodeIds.length > 0
+						: hasUnknownSideEffect
+							? "recovery_required"
+						: failedNodes.length > 0 || unreachedNodeIds.length > 0 || resolverFailures.length > 0
 							? "failed"
 							: "completed";
+					const unresolvedFailures = [
+						...resolverFailures.map((entry) => ({ nodeId: entry.nodeId, code: "resolver_failed", message: entry.error })),
+						...failedNodes.map((entry) => ({ nodeId: entry.nodeId, code: "node_failed", message: entry.error })),
+					];
+					if (workflowStatus === "recovery_required" && checkpointStore && conversationId && runId) {
+						const latest = checkpointStore.loadWorkflowCheckpoint(conversationId, runId);
+						if (latest) {
+							checkpointRevision = latest.revision + 1;
+							checkpointStore.saveWorkflowCheckpoint({ ...latest, revision: checkpointRevision, status: "recovery_required", updatedAt: Date.now() });
+						}
+					}
+					const resumeToken = conversationId && runId && workflowStatus !== "completed"
+						? createResumeToken(conversationId, runId, planHash, checkpointRevision)
+						: undefined;
+					if (workflowStatus === "completed" && conversationId && runId) {
+						checkpointStore?.clearWorkflowCheckpoint(conversationId, runId);
+					}
 
 					const visualizer = engine.getVisualizer();
 					return JSON.stringify({
 						workflowStatus,
+						planHash,
+						...(resumeToken && { resumeToken }),
 						nodes,
 						totalNodes: context.nodes.size,
 						statusCounts,
@@ -393,6 +491,7 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 							stopReason: workflowStopReason,
 						},
 						resolverFailures,
+						unresolvedFailures,
 						...(include.has("visualization") && { visualization: visualizer.generateVisualization() }),
 						...(include.has("debug") && { debugInfo: serializeDebugInfo(visualizer.generateDebugInfo()) }),
 						...(include.has("mermaid") && { mermaid: visualizer.exportToMermaid() }),
@@ -408,6 +507,34 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 function formatStatusCounts(statusCounts: Record<string, number>): string {
 	const entries = Object.entries(statusCounts);
 	return entries.length > 0 ? entries.map(([status, count]) => `${status}: ${count}`).join(", ") : "no nodes";
+}
+
+function checkpointNodeStatus(status: DynamicNode["status"]): WorkflowNodeCheckpointStatus {
+	return status === "ready" || status === "pending-retry" ? "pending" : status;
+}
+
+function compactForHash(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(compactForHash);
+	if (value !== null && typeof value === "object") {
+		return Object.fromEntries(
+			Object.entries(value as Record<string, unknown>)
+				.filter(([, entry]) => entry !== undefined)
+				.map(([key, entry]) => [key, compactForHash(entry)]),
+		);
+	}
+	return value;
+}
+
+function createResumeToken(conversationId: string, runId: string, planHash: string, revision: number): string {
+	return Buffer.from(JSON.stringify({ version: 1, conversationId, runId, planHash, revision }), "utf8").toString("base64url");
+}
+
+function validateCycleEndpoints(cycles: readonly CycleEdge[], initialNodes: readonly DynamicNodeConfig[]): void {
+	const ids = new Set(initialNodes.map((node) => node.id));
+	for (const cycle of cycles) {
+		if (!ids.has(cycle.from)) throw new Error(`Cycle "${cycle.id}" from "${cycle.from}" is not an initial node`);
+		if (!ids.has(cycle.to)) throw new Error(`Cycle "${cycle.id}" to "${cycle.to}" is not an initial node`);
+	}
 }
 
 function serializeDebugInfo(debugInfo: GraphDebugInfo) {
@@ -538,6 +665,7 @@ function parseNodeConfigs(value: unknown, property = "initialNodes"): DynamicNod
 		const condition = record.condition !== undefined ? parseCondition(record.condition, path) : undefined;
 		const exportTo = record.exportTo !== undefined ? requireString(record.exportTo, `${path}.exportTo`) : undefined;
 		const retry = record.retry !== undefined ? parseRetry(record.retry, `${path}.retry`) : undefined;
+		const sideEffect = record.sideEffect !== undefined ? requireSideEffect(record.sideEffect, `${path}.sideEffect`) : undefined;
 
 		return {
 			id,
@@ -550,6 +678,7 @@ function parseNodeConfigs(value: unknown, property = "initialNodes"): DynamicNod
 			...(condition && { condition }),
 			...(exportTo && { exportTo }),
 			...(retry && { retry }),
+			...(sideEffect && { sideEffect }),
 		};
 	});
 	const ids = new Set<string>();
@@ -629,6 +758,7 @@ function createFanoutResolver(config: Record<string, unknown>, activeGraph: Acti
 	const role = config.role !== undefined ? requireRole(config.role) : undefined;
 	const toolHints = config.toolHints !== undefined ? requireStringArray(config.toolHints, "resolverConfig.toolHints") : undefined;
 	const retry = config.retry !== undefined ? parseRetry(config.retry, "resolverConfig.retry") : undefined;
+	const sideEffect = config.sideEffect !== undefined ? requireSideEffect(config.sideEffect, "resolverConfig.sideEffect") : undefined;
 
 	return async (_nodeId, completedNodes, context) => {
 		const value = activeGraph.engine.getDataFlowManager().evaluateExpression(itemsExpression, expressionContext(completedNodes, context));
@@ -652,6 +782,7 @@ function createFanoutResolver(config: Record<string, unknown>, activeGraph: Acti
 				...(role && { role }),
 				...(toolHints && { toolHints }),
 				...(retry && { retry }),
+				...(sideEffect && { sideEffect }),
 				inputMapping: { [itemInputKey]: `$${globalKey}` },
 			};
 		});
@@ -755,4 +886,11 @@ function requireRole(value: unknown): SubagentRoleId {
 		throw new Error(`role must be one of: ${[...VALID_ROLES].join(", ")}`);
 	}
 	return value as SubagentRoleId;
+}
+
+function requireSideEffect(value: unknown, property: string): "none" | "applied" | "unknown" {
+	if (value !== "none" && value !== "applied" && value !== "unknown") {
+		throw new Error(`${property} must be one of: none, applied, unknown`);
+	}
+	return value;
 }

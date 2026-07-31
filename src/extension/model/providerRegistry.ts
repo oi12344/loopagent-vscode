@@ -21,6 +21,7 @@ import { createDeepSeekProvider } from "./providers/deepseekProvider";
 import { resolveRole } from "../agent/workflow/roleRegistry";
 import type { ImageAnalysisService } from "../vision/imageAnalysisService";
 import type { ImageAnalysisContext } from "../vision/imageAnalysisService";
+import type { ConversationStore } from "../conversation/conversationStore";
 
 const DIRECT_TOOL_GUIDANCE = [
   "Use exploreCode when answering questions about repository implementation, symbol locations, call paths, or project facts.",
@@ -87,6 +88,7 @@ export type CreateConfiguredAgentRunnerDeps = {
   projectMemory?: ProjectMemory;
   enableWorkflowTools?: boolean;
   imageAnalysisService?: ImageAnalysisService;
+  workflowCheckpointStore?: Pick<ConversationStore, "saveWorkflowCheckpoint" | "loadWorkflowCheckpoint" | "clearWorkflowCheckpoint">;
 };
 
 export async function createConfiguredAgentRunner(
@@ -209,7 +211,14 @@ export async function createConfiguredAgentRunner(
         },
       });
       const unsubscribe = orchestrator.onEvent((event) => events.push(toHostMessage(event, request.runId)));
-      const graphTools = createDynamicWorkflowTools({ orchestrator, availableTools: parentTools, signal: request.signal });
+      const graphTools = createDynamicWorkflowTools({
+        orchestrator,
+        availableTools: parentTools,
+        signal: request.signal,
+        conversationId: request.conversationId,
+        runId: request.runId,
+        checkpointStore: deps.workflowCheckpointStore,
+      });
       const tools = [...parentTools, ...graphTools];
       const parentRunner = createParentRunner(
         tools,

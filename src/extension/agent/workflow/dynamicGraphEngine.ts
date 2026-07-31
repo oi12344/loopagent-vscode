@@ -10,6 +10,8 @@ import type {
 	GraphExecutionEvent,
 	GraphExecutionListener,
 	NodeStatus,
+	DynamicGraphCheckpointSnapshot,
+	DynamicGraphResume,
 } from "./dynamicGraphTypes";
 import type { CompiledWorkflowRoute } from "./generatedWorkflowTypes";
 import { createDataFlowManager, type DataFlowManager, type DataFlowValue } from "./dataFlowManager";
@@ -22,6 +24,8 @@ export type DynamicGraphEngineOptions = {
 	orchestrator: WorkflowOrchestrator;
 	availableTools: readonly ReactAgentTool[];
 	signal?: AbortSignal;
+	resume?: DynamicGraphResume;
+	onCheckpoint?: (snapshot: DynamicGraphCheckpointSnapshot) => void | Promise<void>;
 };
 
 export type DynamicGraphEngine = {
@@ -111,7 +115,7 @@ function buildTaskWithInputData(task: string, inputData: Record<string, unknown>
 }
 
 export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): DynamicGraphEngine {
-	const { definition, orchestrator, availableTools, signal } = options;
+	const { definition, orchestrator, availableTools, signal, resume, onCheckpoint } = options;
 	const maxNodes = definition.maxNodes ?? DEFAULT_DYNAMIC_GRAPH_LIMITS.maxNodes;
 	const maxDepth = definition.maxDepth ?? DEFAULT_DYNAMIC_GRAPH_LIMITS.maxDepth;
 
@@ -127,7 +131,20 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 	const pendingResolvers = new Map<DynamicNodeId, Set<DynamicNodeId>>();
 	const cancellationController = new AbortController();
 	let cancelled = false;
-	const stateStore = definition.compiledGraph ? createWorkflowState(definition.initialState ?? {}) : undefined;
+	const resumeCheckpoint = resume?.checkpoint;
+	const resumeNodeIds = resumeCheckpoint ? new Set(Object.keys(resumeCheckpoint.nodes)) : undefined;
+	const stateStore = definition.compiledGraph
+		? createWorkflowState(
+			definition.initialState ?? {},
+			resumeCheckpoint
+				? {
+					step: resumeCheckpoint.state.step,
+					version: resumeCheckpoint.state.version,
+					values: new Map(Object.entries(resumeCheckpoint.state.values)),
+				}
+				: undefined,
+		  )
+		: undefined;
 
 	// 初始化循环管理器
 	const cycleManager = definition.cycles && definition.cycles.length > 0
@@ -142,6 +159,83 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 				continue;
 			}
 		}
+	}
+
+	function checkpointSnapshot(
+		status: DynamicGraphCheckpointSnapshot["status"],
+		frontier: readonly DynamicNodeId[],
+	): DynamicGraphCheckpointSnapshot {
+		return {
+			status,
+			frontier: [...frontier],
+			executionOrder: [...context.executionOrder],
+			nodes: new Map(context.nodes),
+			state: stateStore?.readSnapshot(),
+		};
+	}
+
+	async function persistCheckpoint(
+		status: DynamicGraphCheckpointSnapshot["status"],
+		frontier: readonly DynamicNodeId[],
+	): Promise<void> {
+		if (!onCheckpoint) return;
+		await onCheckpoint(checkpointSnapshot(status, frontier));
+	}
+
+	function restoreSeededNodes(): Set<DynamicNodeId> | undefined {
+		if (!resumeCheckpoint) return undefined;
+		const allowed = new Set(resumeCheckpoint.frontier);
+		for (const [nodeId, node] of context.nodes) {
+			const saved = resumeCheckpoint.nodes[nodeId];
+			if (!saved) continue;
+			node.attempts = saved.attempts;
+			if (saved.status === "completed" && saved.result) {
+				const result = toSubagentResult(saved.result);
+				if (!result) continue;
+				node.status = "completed";
+				node.result = result;
+				dataFlowManager.recordOutput(nodeId, result);
+				if (node.config.exportTo && result.content !== undefined) context.globalData.set(node.config.exportTo, result.content);
+			} else if (saved.status === "skipped") {
+				node.status = "skipped";
+			} else if (saved.status === "failed" && allowed.has(nodeId)) {
+				// A failed node is a recovery frontier only when retry is safe. Unknown/applied
+				// side effects stay terminal until an explicit reconciliation step.
+				node.status = saved.sideEffect === "none" ? "pending" : "failed";
+			}
+		}
+		context.executionOrder.push(...resumeCheckpoint.executionOrder.filter((nodeId) => context.nodes.has(nodeId)));
+
+		// A saved frontier is the only automatic entry point for recovery. Include its
+		// downstream nodes so a recovered result can continue the graph normally.
+		let changed = true;
+		while (changed) {
+			changed = false;
+			for (const [nodeId, node] of context.nodes) {
+				if (node.status === "completed" || node.status === "skipped" || allowed.has(nodeId)) continue;
+				if ([...node.dependencies].some((dependencyId) => allowed.has(dependencyId))) {
+					allowed.add(nodeId);
+					changed = true;
+				}
+			}
+		}
+		return allowed;
+	}
+
+	function toSubagentResult(result: { status: string; content?: string; error?: string }): SubagentResult | undefined {
+		if (result.status !== "completed" && result.status !== "failed" && result.status !== "cancelled") return undefined;
+		return { status: result.status, content: result.content, error: result.error };
+	}
+
+	let allowedRecoveryNodes: Set<DynamicNodeId> | undefined;
+
+	function currentLegacyFrontier(): DynamicNodeId[] {
+		return [...context.nodes.values()]
+			.filter((node) =>
+				(node.status === "pending" || node.status === "pending-retry" || node.status === "failed")
+				&& (!allowedRecoveryNodes || allowedRecoveryNodes.has(node.config.id)),
+			)
+			.map((node) => node.config.id);
 	}
 
 	function addNode(config: DynamicNodeConfig, dependencies: DynamicNodeId[] = []): DynamicNodeId {
@@ -321,13 +415,15 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 		updateNodeStatus(node.config.id, "ready");
 		node.startedAt = new Date();
 
-		const maxAttempts = Math.max(1, node.config.retry?.maxAttempts ?? 1);
+		const sideEffect = node.config.sideEffect ?? (node.config.role === "executor" ? "unknown" : "none");
+		const maxAttempts = sideEffect === "none" ? Math.max(1, node.config.retry?.maxAttempts ?? 1) : 1;
+		const previousAttempts = node.attempts ?? 0;
 		const backoffMs = node.config.retry?.backoffMs ?? 0;
 		const task = buildTaskWithInputData(node.config.task, inputData);
 		let result: SubagentResult | undefined;
 
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-			node.attempts = attempt;
+			node.attempts = previousAttempts + attempt;
 
 			// No `dependsOn` forwarded to the orchestrator: the readyNodes gate in execute() already
 			// guarantees every dependency is terminal before executeNode runs. Forwarding it would
@@ -416,6 +512,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			}
 
 			await resolveDependencies(node.config.id, newCompletedNodes);
+			await persistCheckpoint("running", currentLegacyFrontier());
 		}
 	}
 
@@ -457,6 +554,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 	function isNodeReady(node: DynamicNode): boolean {
 		return (
 			(node.status === "pending" || node.status === "pending-retry") &&
+			(!allowedRecoveryNodes || allowedRecoveryNodes.has(node.config.id)) &&
 			Array.from(node.dependencies).every((depId) => {
 				const depNode = context.nodes.get(depId);
 				return depNode?.status === "completed" || depNode?.status === "failed" || depNode?.status === "skipped";
@@ -472,7 +570,11 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			addNode(config, config.dependsOn ?? []);
 		}
 
+		allowedRecoveryNodes = restoreSeededNodes();
 		const completedNodes = new Map<DynamicNodeId, SubagentResult>();
+		for (const [nodeId, node] of context.nodes) {
+			if (node.status === "completed" && node.result) completedNodes.set(nodeId, node.result);
+		}
 		const inFlight = new Set<Promise<void>>();
 
 		// Event-driven scheduling: a node is launched the instant its dependencies are terminal,
@@ -489,9 +591,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 
 				const run: Promise<void> = executeNode(node, completedNodes).then(() => {
 					inFlight.delete(run);
-					if (node.result && !completedNodes.has(node.config.id)) {
-						completedNodes.set(node.config.id, node.result);
-					}
+					if (node.result) completedNodes.set(node.config.id, node.result);
 					launchReadyNodes();
 				});
 				inFlight.add(run);
@@ -506,6 +606,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 
 		if (cancelled) {
 			emit({ type: "GraphCancelled", finalNodes: completedNodes });
+			await persistCheckpoint("cancelled", currentLegacyFrontier());
 			return completedNodes;
 		}
 
@@ -517,6 +618,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 		}
 
 		emit({ type: "GraphCompleted", finalNodes: completedNodes, failedNodes, unreachedNodes });
+		await persistCheckpoint(failedNodes.length > 0 || unreachedNodes.length > 0 ? "failed" : "completed", currentLegacyFrontier());
 		return completedNodes;
 	}
 
@@ -525,9 +627,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 		const compiledById = new Map(graph.nodes.map((node) => [node.id, node]));
 		const activatedRoutes = new Set<string>();
 		const results = new Map<DynamicNodeId, SubagentResult>();
-		let frontier = [...graph.entry];
 		let executions = 0;
-		let step = 0;
 
 		for (const compiled of graph.nodes) {
 			if (context.nodes.has(compiled.id)) continue;
@@ -538,6 +638,19 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 				dependsOn: compiled.after,
 			}, compiled.after ?? []);
 		}
+		allowedRecoveryNodes = restoreSeededNodes();
+		for (const [nodeId, node] of context.nodes) {
+			if (node.status === "completed" && node.result) results.set(nodeId, node.result);
+		}
+		for (const node of graph.nodes) {
+			const result = results.get(node.id);
+			if (!result || result.status !== "completed") continue;
+			for (const route of graph.routes.filter((candidate) => candidate.from === node.id)) {
+				if (!route.when || route.when === getReviewDecision(result)) activatedRoutes.add(routeKey(route));
+			}
+		}
+		let frontier = resumeCheckpoint ? [...resumeCheckpoint.frontier] : [...graph.entry];
+		let step = resumeCheckpoint?.state.step ?? 0;
 
 		while (frontier.length > 0) {
 			if (cancelled || signal?.aborted) break;
@@ -551,6 +664,13 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			emit({ type: "StepStarted", step, frontier: [...frontier], stateVersion: snapshot.version });
 
 			const run = async (nodeId: string) => {
+				if (
+					resumeCheckpoint
+					&& (context.nodes.get(nodeId)?.status === "completed" || context.nodes.get(nodeId)?.status === "skipped")
+					&& !resumeCheckpoint.frontier.includes(nodeId)
+				) {
+					return { nodeId, result: results.get(nodeId) ?? { status: "completed" as const } };
+				}
 				if (++executions > (definition.maxExecutions ?? graph.limits.maxExecutionsPerNode! * graph.nodes.length)) {
 					emit({ type: "GraphLimitExceeded", limit: "maxExecutions", value: executions });
 					throw new Error("GraphLimitExceeded: maxExecutions");
@@ -617,10 +737,12 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			}
 			frontier = [...candidates].filter((nodeId) => isActivated(nodeId));
 			emit({ type: "StepRouted", step, frontier: [...frontier] });
+			await persistCheckpoint("running", frontier);
 		}
 
 		if (cancelled || signal?.aborted) {
 			emit({ type: "GraphCancelled", finalNodes: results });
+			await persistCheckpoint("cancelled", frontier);
 			return results;
 		}
 
@@ -635,6 +757,10 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 		}
 
 		emit({ type: "GraphCompleted", finalNodes: results, failedNodes, unreachedNodes });
+		await persistCheckpoint(
+			failedNodes.length > 0 || unreachedNodes.length > 0 ? "failed" : "completed",
+			failedNodes.length > 0 ? failedNodes : frontier,
+		);
 		return results;
 
 		function isActivated(nodeId: string): boolean {
