@@ -20,9 +20,9 @@ const cases = [
     prompt: `只调用一次 runDynamicGraph，严格使用下面的 JSON，不要改写字段，不要调用其它工具：
 {"initialNodes":[{"id":"only","task":"返回 ok","role":"explorer"}],"cycles":[{"id":"bad","from":"only","to":"missing","exit":{"hardLimit":1}}]}
 期望工具直接报告 cycle 端点 missing 未声明。`,
-    validate: (text) => text.includes("runDynamicGraph")
+    validate: (text) => /(?:runDynamicGraph|Tool error)/i.test(text)
       && /(?:Tool error|错误|失败)/i.test(text)
-      && /not an initial node|未声明|不是.*节点/i.test(text)
+      && /(?:Cycle|cycle)[^\n]{0,160}(?:bad|missing)[^\n]{0,160}(?:not an initial node|未声明|不是.*节点)/i.test(text)
       && !/静默忽略|没有被校验|不符/i.test(text),
   },
   {
