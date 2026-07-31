@@ -288,6 +288,7 @@ export function createPersistentConversationStore(
              checkpoint_json = excluded.checkpoint_json,
              updated_at = excluded.updated_at
            WHERE workflow_checkpoint.run_id = excluded.run_id
+             AND workflow_checkpoint.plan_hash = excluded.plan_hash
              AND excluded.revision > workflow_checkpoint.revision`,
         )
         .run(

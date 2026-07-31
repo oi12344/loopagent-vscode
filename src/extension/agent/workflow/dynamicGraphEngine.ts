@@ -68,6 +68,16 @@ function validateInitialDependsOnReferences(configs: readonly DynamicNodeConfig[
 	}
 }
 
+function validateCycleReferences(configs: readonly DynamicNodeConfig[], cycles: readonly { id: string; from: string; to: string }[] | undefined): void {
+	if (!cycles) return;
+	const ids = new Set(configs.map((config) => config.id));
+	for (const cycle of cycles) {
+		if (!ids.has(cycle.from) || !ids.has(cycle.to)) {
+			throw new Error(`Cycle "${cycle.id}" references undeclared node "${!ids.has(cycle.from) ? cycle.from : cycle.to}"`);
+		}
+	}
+}
+
 // Initial nodes must be registered dependency-first: addNode() links a new node's reverse
 // `dependents` edge onto each dependency it finds already in context.nodes, and depth
 // calculation walks up via already-registered nodes, so a dependency added after its
@@ -201,6 +211,10 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			} else if (saved.status === "failed" && allowed.has(nodeId)) {
 				// A failed node is a recovery frontier only when retry is safe. Unknown/applied
 				// side effects stay terminal until an explicit reconciliation step.
+				node.status = saved.sideEffect === "none" ? "pending" : "failed";
+			} else if (saved.status === "running" && allowed.has(nodeId)) {
+				// A process crash can leave an executor after its side effect was sent but
+				// before the response was persisted. Treat it as requiring reconciliation.
 				node.status = saved.sideEffect === "none" ? "pending" : "failed";
 			}
 		}
@@ -566,6 +580,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 		if (definition.compiledGraph) return executeCompiledGraph();
 
 		validateInitialDependsOnReferences(definition.initialNodes);
+		validateCycleReferences(definition.initialNodes, definition.cycles);
 		for (const config of topologicallySortInitialNodes(definition.initialNodes)) {
 			addNode(config, config.dependsOn ?? []);
 		}

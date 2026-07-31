@@ -179,7 +179,12 @@ export function createConversationStore(): ConversationStore {
     saveWorkflowCheckpoint(checkpoint: WorkflowCheckpoint): boolean {
       const sanitized = sanitizeWorkflowCheckpoint(checkpoint);
       const existing = workflowCheckpoints.get(sanitized.conversationId);
-      if (existing && (existing.runId !== sanitized.runId || sanitized.revision <= existing.revision)) return false;
+      if (
+        existing
+        && (existing.runId !== sanitized.runId
+          || existing.planHash !== sanitized.planHash
+          || sanitized.revision <= existing.revision)
+      ) return false;
       workflowCheckpoints.set(sanitized.conversationId, sanitized);
       return true;
     },

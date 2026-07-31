@@ -80,11 +80,13 @@ describe("workflow checkpoint contract", () => {
     const newer = makeCheckpoint({ revision: 2, updatedAt: 101 });
     const stale = makeCheckpoint({ revision: 1, updatedAt: 102 });
     const otherRun = makeCheckpoint({ runId: "run-2", revision: 1 });
+    const otherPlan = makeCheckpoint({ planHash: "plan-2", revision: 3 });
 
     expect(store.saveWorkflowCheckpoint(first)).toBe(true);
     expect(store.saveWorkflowCheckpoint(newer)).toBe(true);
     expect(store.saveWorkflowCheckpoint(stale)).toBe(false);
     expect(store.saveWorkflowCheckpoint(otherRun)).toBe(false);
+    expect(store.saveWorkflowCheckpoint(otherPlan)).toBe(false);
     expect(store.loadWorkflowCheckpoint(first.conversationId, first.runId)).toEqual(newer);
 
     store.clearWorkflowCheckpoint(first.conversationId, "run-2");

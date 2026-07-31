@@ -6,6 +6,8 @@
 
 ## 实施计划（plans/）
 
+- [动态工作流检查点与可恢复执行实施计划](plans/2026-08-01-workflow-checkpoint-recovery-plan.md)
+
 - [React Webview 最小模块实施计划](plans/2026-07-04-react-webview-plan.md)
 - [VS Code 本地调试复盘与经验](plans/2026-07-05-vscode-local-debugging-lessons.md)
 - [Webview 空白面板修复记录](plans/2026-07-05-webview-blank-panel-fix-plan.md)
@@ -57,6 +59,8 @@
 - [搜索索引优化实施计划](plans/2026-07-18-search-index-optimization-plan.md)
 
 ## 设计文档（specs/）
+
+- [动态工作流检查点与可恢复执行设计](specs/2026-08-01-workflow-checkpoint-recovery-design.md)
 
 - [历史菜单定位修复设计](specs/2026-07-21-history-menu-position-design.md)
 - [移除 Fake 模型提供方设计](specs/2026-07-21-remove-fake-provider-design.md)

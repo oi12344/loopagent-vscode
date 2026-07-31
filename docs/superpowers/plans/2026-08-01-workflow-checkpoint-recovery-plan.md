@@ -8,6 +8,15 @@
 
 **Tech Stack:** TypeScript, Node `node:sqlite`, React agent runtime, VS Code Extension Development Host, CDP scripts, Vitest/Jest repository test commands.
 
+**实施状态：**
+
+- [x] 检查点契约、内存存储和 SQLite 持久化
+- [x] provider 会话身份注入、legacy/compiled frontier 恢复和 cycle 校验
+- [x] 失败分类、完成门禁和不确定副作用保护
+- [x] 扩展重启入口复用同一 `runId`，并完成存储/工具级恢复验证
+- [x] 文档、CDP 矩阵和验证记录
+- [ ] 将现有仓库基线的无关 typecheck/test 失败另行清理
+
 ---
 
 ## 任务 1：建立 JSON-safe 检查点契约和内存实现
