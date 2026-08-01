@@ -227,6 +227,16 @@ describe("parseRecoveryPlan", () => {
 		});
 	});
 
+	it("accepts a bounded timeout override for a repair attempt", () => {
+		expect(parseRecoveryPlan({
+			action: "replace_node",
+			targetNodeId: "read",
+			reason: "the original attempt timed out",
+			task: "Return the required output",
+			timeoutMs: 60_000,
+		}, baseContext)).toEqual(expect.objectContaining({ timeoutMs: 60_000 }));
+	});
+
 	it("names the offending path so the model can correct one field", () => {
 		expect(() => parseRecoveryPlan({
 			action: "replace_node",
@@ -414,5 +424,28 @@ describe("recoveryNodeId", () => {
 	it("keeps attempts distinct so a second recovery cannot overwrite the first", () => {
 		expect(recoveryNodeId("read", 1)).toBe("read__recovery_1");
 		expect(recoveryNodeId("read", 2)).not.toBe(recoveryNodeId("read", 1));
+	});
+});
+
+describe("recovery timeout validation", () => {
+	it("rejects non-positive and over-limit timeout overrides", () => {
+		for (const timeoutMs of [0, DEFAULT_RECOVERY_POLICY.maxTimeoutMs + 1]) {
+			expect(() => parseRecoveryPlan({
+				action: "replace_node",
+				targetNodeId: "read",
+				reason: "r",
+				task: "t",
+				timeoutMs,
+			}, baseContext)).toThrow("recovery.timeoutMs");
+		}
+	});
+
+	it("rejects timeout overrides on waiting actions", () => {
+		expect(() => parseRecoveryPlan({
+			action: "request_input",
+			targetNodeId: "read",
+			reason: "r",
+			timeoutMs: 1_000,
+		}, baseContext)).toThrow("recovery.timeoutMs");
 	});
 });

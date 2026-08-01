@@ -7,11 +7,17 @@ import { createDynamicGraphEngine, DEFAULT_DYNAMIC_GRAPH_LIMITS, type DynamicGra
 import type { GraphDebugInfo } from "./workflow/graphVisualizer";
 import { createReflectionResolver } from "./workflow/reflectionResolver";
 import type { SubagentRoleId, SubagentResult } from "./workflow/types";
-import { classifyFailure, type FailureCategory } from "./workflow/workflowRecovery";
+import { allowedRecoveryActions, classifyFailure, DEFAULT_RECOVERY_POLICY, parseRecoveryPlan, RecoveryPlanError, type FailureCategory, type RecoveryPlan } from "./workflow/workflowRecovery";
 import type { CycleEdge } from "./workflow/cycleManager";
 import { compileGeneratedWorkflow } from "./workflow/workflowCompiler";
 import { parseGeneratedWorkflowPlan, type GeneratedWorkflowPlan } from "./workflow/generatedWorkflowTypes";
-import { createPlanHash, type WorkflowCheckpoint, type WorkflowNodeCheckpointStatus } from "../../shared/workflowCheckpoint";
+import {
+	createPlanHash,
+	type WorkflowCheckpoint,
+	type WorkflowFailureEvidence,
+	type WorkflowNodeCheckpointDefinition,
+	type WorkflowNodeCheckpointStatus,
+} from "../../shared/workflowCheckpoint";
 
 type DynamicWorkflowToolsOptions = {
 	orchestrator: WorkflowOrchestrator;
@@ -19,7 +25,7 @@ type DynamicWorkflowToolsOptions = {
 	signal?: AbortSignal;
 	conversationId?: string;
 	runId?: string;
-	checkpointStore?: Pick<ConversationStore, "saveWorkflowCheckpoint" | "loadWorkflowCheckpoint" | "clearWorkflowCheckpoint">;
+	checkpointStore?: Pick<ConversationStore, "claimWorkflowCheckpoint" | "saveWorkflowCheckpoint" | "loadWorkflowCheckpoint" | "getWorkflowCheckpointRunId" | "clearWorkflowCheckpoint">;
 };
 
 type ActiveGraph = {
@@ -29,6 +35,15 @@ type ActiveGraph = {
 };
 
 type GraphInclude = "visualization" | "debug" | "mermaid";
+
+type RecoveryDiagnostic = {
+	nodeId: string;
+	category: FailureCategory;
+	action?: RecoveryPlan["action"];
+	reason?: string;
+	timeoutMs?: number;
+	error?: string;
+};
 
 const VALID_INCLUDES: ReadonlySet<string> = new Set<GraphInclude>(["visualization", "debug", "mermaid"]);
 
@@ -98,6 +113,17 @@ const RETRY_SCHEMA = {
 	required: ["maxAttempts"],
 };
 
+const OUTPUT_CONTRACT_SCHEMA = {
+	type: "object",
+	properties: {
+		exactText: { type: "string", minLength: 1 },
+		requiredText: { type: "string", minLength: 1 },
+		requiredFields: { type: "array", items: { type: "string", minLength: 1 }, minItems: 1 },
+		minLength: { type: "integer", minimum: 0 },
+	},
+	additionalProperties: false,
+};
+
 const NODE_SCHEMA = {
 	type: "object",
 	properties: {
@@ -121,6 +147,7 @@ const NODE_SCHEMA = {
 		},
 		exportTo: { type: "string", minLength: 1, description: "Write this node's content to global data under this key, readable elsewhere as \"$key\"." },
 		retry: RETRY_SCHEMA,
+		outputContract: OUTPUT_CONTRACT_SCHEMA,
 		sideEffect: { type: "string", enum: ["none", "applied", "unknown"], description: "副作用证据；executor 默认 unknown，避免恢复时盲目重复编辑或命令。" },
 	},
 	required: ["id", "task"],
@@ -135,6 +162,8 @@ const SEMANTIC_NODE_SCHEMA = {
 		after: { type: "array", items: { type: "string", minLength: 1 } },
 		contextFrom: { type: "array", items: { type: "string", minLength: 1 } },
 		reviews: { type: "array", maxItems: 1, items: { type: "string", minLength: 1 } },
+		timeoutMs: { type: "integer", minimum: 1 },
+		outputContract: OUTPUT_CONTRACT_SCHEMA,
 	},
 	required: ["id", "task"],
 };
@@ -260,6 +289,8 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 			isConcurrencySafe: () => false,
 			async invoke({ input }) {
 				const record = requireRecord(input);
+				const requestedResumeToken = record.resumeToken === undefined ? undefined : requireString(record.resumeToken, "resumeToken");
+				const parsedResumeToken = requestedResumeToken ? parseResumeToken(requestedResumeToken) : undefined;
 				const semanticPlan = record.nodes !== undefined
 					? parseGeneratedWorkflowPlan({
 						nodes: record.nodes,
@@ -273,7 +304,9 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 						id: node.id,
 						task: node.task,
 						role: node.role,
+						timeoutMs: node.timeoutMs,
 						dependsOn: node.after,
+						outputContract: node.outputContract,
 					}))
 					: parseNodeConfigs(record.initialNodes);
 				const maxNodes = record.maxNodes !== undefined ? requirePositiveInteger(record.maxNodes, "maxNodes") : undefined;
@@ -289,6 +322,19 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 						maxDepth ?? DEFAULT_DYNAMIC_GRAPH_LIMITS.maxDepth,
 					);
 					if (cycles) validateCycleEndpoints(cycles, initialNodes);
+					const resolvers = new Map<string, DependencyResolver>();
+					const activeGraph: ActiveGraph = {
+						engine: undefined as unknown as DynamicGraphEngine,
+						resolvers,
+						initialNodeIds: new Set(initialNodes.map((node) => node.id)),
+					};
+					for (const entry of parseResolverEntries(record.resolvers)) {
+						if (!activeGraph.initialNodeIds.has(entry.nodeId)) {
+							throw new Error(`Resolver nodeId "${entry.nodeId}" is not an initial node`);
+						}
+						resolvers.set(entry.nodeId, createConfiguredResolver(entry.resolverType, entry.resolverConfig, activeGraph));
+					}
+					const compiledGraph = semanticPlan ? compileGeneratedWorkflow(semanticPlan) : undefined;
 					const planHash = createPlanHash(compactForHash({
 						kind: semanticPlan ? "semantic" : "legacy",
 						semanticPlan,
@@ -301,18 +347,39 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 						maxSteps: semanticPlan?.maxSteps,
 						initialState: semanticPlan?.initialState,
 					}));
+					if (parsedResumeToken) {
+						if (!conversationId || !runId || !checkpointStore) throw new Error("resumeToken cannot be used without a checkpoint context");
+						if (parsedResumeToken.conversationId !== conversationId || parsedResumeToken.runId !== runId || parsedResumeToken.planHash !== planHash) {
+							throw new Error("resumeToken does not match this workflow");
+						}
+					}
+					const checkpointRunId = conversationId && runId && checkpointStore
+						? checkpointStore.getWorkflowCheckpointRunId(conversationId)
+						: undefined;
 					const storedCheckpoint = conversationId && runId && checkpointStore
 						? checkpointStore.loadWorkflowCheckpoint(conversationId, runId)
 						: undefined;
+					if (parsedResumeToken) {
+						if (!storedCheckpoint || storedCheckpoint.revision !== parsedResumeToken.revision) {
+							throw new Error("resumeToken is stale or no longer available");
+						}
+					}
 					const resumeCheckpoint = storedCheckpoint?.planHash === planHash ? storedCheckpoint : undefined;
-					if (storedCheckpoint && storedCheckpoint.planHash !== planHash && conversationId && runId) {
-						checkpointStore?.clearWorkflowCheckpoint(conversationId, runId);
+					if (conversationId && runId && checkpointStore) {
+						const claimed = checkpointStore.claimWorkflowCheckpoint(
+							conversationId,
+							runId,
+							planHash,
+							checkpointRunId,
+							resumeCheckpoint?.revision,
+						);
+						if (!claimed) {
+							throw new Error(parsedResumeToken
+								? "resumeToken is stale or no longer available"
+								: "workflow checkpoint ownership changed before execution");
+						}
 					}
 
-					// The engine reads `definition.resolvers` lazily at execution time, so the map can stay
-				// empty here and be filled in below -- that breaks the cycle between resolver closures
-				// (which need the engine's data-flow manager) and the engine (which needs the map).
-				const resolvers = new Map<string, DependencyResolver>();
 				const definition: DynamicGraphDefinition = {
 					initialNodes: semanticPlan ? [] : initialNodes,
 					resolvers,
@@ -320,7 +387,7 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 					maxNodes,
 					maxDepth,
 					initialGlobalData,
-					compiledGraph: semanticPlan ? compileGeneratedWorkflow(semanticPlan) : undefined,
+					compiledGraph,
 					initialState: semanticPlan?.initialState,
 						maxSteps: semanticPlan?.maxSteps,
 					};
@@ -330,6 +397,14 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 						dependsOn: node.dependsOn ?? [],
 					}));
 					const resolverFailures: Array<{ nodeId: string; error: string }> = [];
+					const recoveryDiagnostics: RecoveryDiagnostic[] = (resumeCheckpoint?.recoveryDiagnostics ?? []).map((entry) => ({
+						nodeId: entry.nodeId,
+						category: entry.category as FailureCategory,
+						action: entry.action as RecoveryPlan["action"] | undefined,
+						reason: entry.reason,
+						timeoutMs: entry.timeoutMs,
+						error: entry.error,
+					}));
 					let workflowStopReason: string | undefined;
 					let workflowStep = 0;
 					let workflowStateVersion = 0;
@@ -337,6 +412,7 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 					let unreachedNodeIds: readonly string[] = [];
 					let graphCancelled = false;
 					let checkpointRevision = resumeCheckpoint?.revision ?? 0;
+					let checkpointSaveError: string | undefined;
 					const saveSnapshot = async (snapshot: DynamicGraphCheckpointSnapshot): Promise<void> => {
 						if (!checkpointStore || !conversationId || !runId) return;
 						const checkpoint: WorkflowCheckpoint = {
@@ -353,11 +429,14 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 								status: checkpointNodeStatus(node.status),
 								inputHash: createPlanHash({ nodeId, task: node.config.task, context: compactForHash(node.context) }),
 								attempts: node.attempts ?? 0,
+								recoveryAttempts: node.recoveryAttempts ?? 0,
+								...(node.pendingRecovery && { pendingRecovery: { ...node.pendingRecovery, contextFrom: node.pendingRecovery.contextFrom ? [...node.pendingRecovery.contextFrom] : undefined } }),
+								definition: checkpointNodeDefinition(node),
 								...(node.result && {
 									result: {
 										status: node.result.status,
-										...(node.result.content !== undefined && { content: node.result.content }),
-										...(node.result.error !== undefined && { error: node.result.error }),
+										...(node.result.content !== undefined && { content: checkpointText(node.result.content) }),
+										...(node.result.error !== undefined && { error: checkpointText(node.result.error, 2_000) }),
 									},
 								}),
 								sideEffect: node.config.sideEffect ?? (node.config.role === "executor" ? "unknown" : "none"),
@@ -365,33 +444,107 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 							state: {
 								step: snapshot.state?.step ?? workflowStep,
 								version: snapshot.state?.version ?? workflowStateVersion,
-								values: Object.fromEntries(snapshot.state?.values ?? []),
+								values: compactCheckpointValue(Object.fromEntries(snapshot.state?.values ?? [])) as Record<string, unknown>,
 							},
 							unresolvedFailures: [
-								...resolverFailures.map((entry) => ({ nodeId: entry.nodeId, code: "resolver_failed", message: entry.error })),
-								...([...snapshot.nodes].filter(([, node]) => node.status === "failed").map(([nodeId, node]) => ({
+								...resolverFailures.map((entry) => ({ nodeId: entry.nodeId, code: "resolver_failed", message: checkpointText(entry.error, 2_000) })),
+								...([...snapshot.nodes].filter(([, node]) => node.status === "failed" || node.result?.status === "failed").map(([nodeId, node]) => ({
 									nodeId,
 									code: classifyNodeFailure(nodeId, node.config.role, node.result?.error, node.config.sideEffect),
-									message: node.result?.error ?? "node failed",
+									message: checkpointText(node.result?.error ?? "node failed", 2_000),
+									attempt: node.attempts ?? 0,
+									timeoutMs: node.lastAttemptTimeoutMs ?? node.config.timeoutMs,
+									logs: node.result?.diagnosticLog ? [...node.result.diagnosticLog] : undefined,
+									input: compactCheckpointValue(redactRecoveryValue(node.context ?? {})) as Record<string, unknown>,
 								}))),
 							],
+							recoveryDiagnostics: recoveryDiagnostics.slice(-32),
 							updatedAt: Date.now(),
 						};
-						checkpointStore.saveWorkflowCheckpoint(checkpoint);
+						try {
+							if (!checkpointStore.saveWorkflowCheckpoint(checkpoint)) checkpointSaveError = "checkpoint was rejected as stale";
+							else checkpointSaveError = undefined;
+						} catch (error) {
+							checkpointSaveError = error instanceof Error ? error.message : "checkpoint could not be saved";
+						}
 					};
 					let engine!: DynamicGraphEngine;
-					const activeGraph: ActiveGraph = {
-						engine: undefined as unknown as DynamicGraphEngine,
-						resolvers,
-						initialNodeIds: new Set(initialNodes.map((node) => node.id)),
+					const recoverFailure = async (evidence: WorkflowFailureEvidence): Promise<RecoveryPlan | undefined> => {
+						const failedNode = engine.getContext().nodes.get(evidence.nodeId);
+						const category = classifyNodeFailure(
+							evidence.nodeId,
+							failedNode?.config.role,
+							evidence.error,
+							failedNode?.config.sideEffect,
+						);
+						const plannerId = orchestrator.createSubagent(
+							{
+								task: buildRecoveryDiagnosisTask(evidence, category, [...engine.getContext().nodes.keys()]),
+								role: "planner",
+							},
+							availableTools,
+						);
+						const plannerResult = (await orchestrator.waitForSubagents([plannerId])).get(plannerId);
+						if (!plannerResult || plannerResult.status !== "completed" || !plannerResult.content) {
+							recoveryDiagnostics.push({ nodeId: evidence.nodeId, category, error: checkpointText(plannerResult?.error ?? "Recovery diagnosis did not return a plan", 2_000) });
+							return undefined;
+						}
+						try {
+							const parsedCandidate = parseRecoveryJson(plannerResult.content);
+							const candidate = isRecoveryRecord(parsedCandidate) && parsedCandidate.action === "retry" && typeof parsedCandidate.task === "string" && parsedCandidate.task.trim()
+								? { ...parsedCandidate, action: "replace_node" }
+								: parsedCandidate;
+							let plan: RecoveryPlan;
+							try {
+								plan = parseRecoveryPlan(candidate, {
+									category,
+									failedNodeId: evidence.nodeId,
+									knownNodeIds: [...engine.getContext().nodes.keys()],
+									attempt: evidence.recoveryAttempt,
+									hasSideEffect: evidence.sideEffect !== "none",
+									failedRole: failedNode?.config.role,
+								});
+							} catch (error) {
+								// reason is diagnostic metadata only; cap an overlong model explanation
+								// while keeping action/task/target validation strict.
+								if (!(error instanceof RecoveryPlanError) || error.path !== "recovery.reason" || !isRecoveryRecord(candidate) || typeof candidate.reason !== "string") {
+									throw error;
+								}
+								plan = parseRecoveryPlan({
+									...candidate,
+									reason: redactRecoveryText(candidate.reason.slice(0, DEFAULT_RECOVERY_POLICY.maxReasonChars).trim()),
+								}, {
+								category,
+								failedNodeId: evidence.nodeId,
+								knownNodeIds: [...engine.getContext().nodes.keys()],
+								attempt: evidence.recoveryAttempt,
+								hasSideEffect: evidence.sideEffect !== "none",
+								failedRole: failedNode?.config.role,
+								});
+							}
+							const safePlan = { ...plan, reason: redactRecoveryText(plan.reason) };
+							const diagnostic: RecoveryDiagnostic = {
+								nodeId: evidence.nodeId,
+								category,
+								action: safePlan.action,
+								reason: safePlan.reason,
+								timeoutMs: safePlan.timeoutMs,
+							};
+							recoveryDiagnostics.push(diagnostic);
+							if (!["retry", "replace_node", "replace_tool", "replan"].includes(safePlan.action)) {
+								diagnostic.error = `Recovery action '${safePlan.action}' is diagnostic-only and requires explicit follow-up`;
+								return undefined;
+							}
+							if (safePlan.action === "replan" && safePlan.targetNodeId !== evidence.nodeId) {
+								diagnostic.error = "Graph-level replan requires a new workflow invocation";
+								return undefined;
+							}
+							return safePlan;
+						} catch (error) {
+							recoveryDiagnostics.push({ nodeId: evidence.nodeId, category, error: checkpointText(error instanceof Error ? error.message : "Invalid recovery plan", 2_000) });
+							return undefined;
+						}
 					};
-
-				for (const entry of parseResolverEntries(record.resolvers)) {
-					if (!activeGraph.initialNodeIds.has(entry.nodeId)) {
-						throw new Error(`Resolver nodeId "${entry.nodeId}" is not an initial node`);
-					}
-						resolvers.set(entry.nodeId, createConfiguredResolver(entry.resolverType, entry.resolverConfig, activeGraph));
-					}
 					engine = createDynamicGraphEngine({
 						definition,
 						orchestrator,
@@ -399,6 +552,7 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 						signal,
 						resume: resumeCheckpoint ? { checkpoint: resumeCheckpoint } : undefined,
 						onCheckpoint: saveSnapshot,
+						recoverFailure,
 					});
 					activeGraph.engine = engine;
 					// 两条执行路径都在 GraphCompleted 里汇报真实的失败与未到达节点；工具必须把它们
@@ -440,7 +594,7 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 					// 失败节点带上错误原文：只给 id 的话父智能体无法判断该重试、换路径还是上报。
 					const failedNodes = failedNodeIds.map((nodeId) => ({
 						nodeId,
-						error: context.nodes.get(nodeId)?.result?.error ?? "unknown error",
+						error: checkpointText(context.nodes.get(nodeId)?.result?.error ?? "unknown error", 2_000),
 						category: classifyNodeFailure(
 							nodeId,
 							context.nodes.get(nodeId)?.config.role,
@@ -449,31 +603,45 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 						),
 						sideEffect: context.nodes.get(nodeId)?.config.sideEffect
 							?? (context.nodes.get(nodeId)?.config.role === "executor" ? "unknown" : "none"),
+						diagnosticLog: context.nodes.get(nodeId)?.result?.diagnosticLog ?? [],
 					}));
 					const hasUnknownSideEffect = failedNodeIds.some((nodeId) => {
 						const node = context.nodes.get(nodeId);
 						const sideEffect = node?.config.sideEffect ?? (node?.config.role === "executor" ? "unknown" : "none");
 						return sideEffect !== "none";
 					});
+					const hasExhaustedRetryBudget = failedNodeIds.some((nodeId) => {
+						const node = context.nodes.get(nodeId);
+						const sideEffect = node?.config.sideEffect ?? (node?.config.role === "executor" ? "unknown" : "none");
+						const maxAttempts = sideEffect === "none" ? Math.max(1, node?.config.retry?.maxAttempts ?? 1) : 1;
+						return (node?.attempts ?? 0) >= maxAttempts;
+					});
+					const hasFailedRecovery = failedNodeIds.some((nodeId) => recoveryDiagnostics.some((entry) => entry.nodeId === nodeId));
 					const workflowStatus = graphCancelled || cancelled
 						? "cancelled"
-						: hasUnknownSideEffect
+						: hasUnknownSideEffect || hasExhaustedRetryBudget || hasFailedRecovery
 							? "recovery_required"
 							: failedNodes.length > 0 || unreachedNodeIds.length > 0 || resolverFailures.length > 0
 							? "failed"
 							: "completed";
 					const unresolvedFailures = [
-						...resolverFailures.map((entry) => ({ nodeId: entry.nodeId, code: "resolver_failed", message: entry.error })),
+						...resolverFailures.map((entry) => ({ nodeId: entry.nodeId, code: "resolver_failed", message: checkpointText(entry.error, 2_000) })),
 						...failedNodes.map((entry) => ({ nodeId: entry.nodeId, code: entry.category, message: entry.error })),
 					];
 					if (workflowStatus === "recovery_required" && checkpointStore && conversationId && runId) {
 						const latest = checkpointStore.loadWorkflowCheckpoint(conversationId, runId);
 						if (latest) {
 							checkpointRevision = latest.revision + 1;
-							checkpointStore.saveWorkflowCheckpoint({ ...latest, revision: checkpointRevision, status: "recovery_required", updatedAt: Date.now() });
+							try {
+								if (!checkpointStore.saveWorkflowCheckpoint({ ...latest, revision: checkpointRevision, status: "recovery_required", updatedAt: Date.now() })) {
+									checkpointSaveError = "checkpoint was rejected as stale";
+								} else checkpointSaveError = undefined;
+							} catch (error) {
+								checkpointSaveError = error instanceof Error ? error.message : "checkpoint could not be saved";
+							}
 						}
 					}
-					const resumeToken = conversationId && runId && workflowStatus !== "completed"
+					const resumeToken = checkpointStore && conversationId && runId && !checkpointSaveError && workflowStatus !== "completed"
 						? createResumeToken(conversationId, runId, planHash, checkpointRevision)
 						: undefined;
 					if (workflowStatus === "completed" && conversationId && runId) {
@@ -502,7 +670,9 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 							stopReason: workflowStopReason,
 						},
 						resolverFailures,
+						recoveryDiagnostics,
 						unresolvedFailures,
+						...(checkpointSaveError && { checkpointError: checkpointSaveError }),
 						...(include.has("visualization") && { visualization: visualizer.generateVisualization() }),
 						...(include.has("debug") && { debugInfo: serializeDebugInfo(visualizer.generateDebugInfo()) }),
 						...(include.has("mermaid") && { mermaid: visualizer.exportToMermaid() }),
@@ -513,6 +683,100 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 			},
 		},
 	];
+}
+
+function buildRecoveryDiagnosisTask(evidence: WorkflowFailureEvidence, category: FailureCategory, knownNodeIds: readonly string[]): string {
+	const allowedActions = allowedRecoveryActions(category, {
+		hasSideEffect: evidence.sideEffect !== "none",
+		attempt: evidence.recoveryAttempt,
+	});
+	const safeEvidence = {
+		...evidence,
+		task: redactRecoveryText(evidence.task),
+		error: redactRecoveryText(evidence.error),
+		input: redactRecoveryValue(evidence.input),
+		logs: evidence.logs.map((log) => ({ ...log, message: redactRecoveryText(log.message) })),
+	};
+	return [
+		"WORKFLOW_RECOVERY_DIAGNOSIS",
+		`allowedRecoveryActions=${allowedActions.join(",")}`,
+		"只分析失败证据，不执行任何工具或修改工作区。返回一个严格 JSON 对象，不要 Markdown。",
+		"targetNodeId 必须是失败节点；上面的 allowedRecoveryActions 是当前分类和预算允许的动作。",
+		`若可以安全修复，replace_node/replace_tool/replan 必须给出短 task；否则使用合适的诊断动作。reason 说明根因且不超过 ${DEFAULT_RECOVERY_POLICY.maxReasonChars} 个字符。`,
+		"修复 task 必须直接产出 failure evidence 中 outputContract 要求的数据，不要搜索工作区来证明标记是否存在。",
+		"timeoutMs 可选且最大 60000；若失败原因是 timeout，修复动作必须给出 timeoutMs=60000。",
+		"示例：{\"action\":\"replace_node\",\"targetNodeId\":\"failed-id\",\"reason\":\"timeout\",\"task\":\"完成原节点输出契约\",\"timeoutMs\":60000}",
+		`failureCategory=${category}`,
+		`knownNodeIds=${JSON.stringify(knownNodeIds)}`,
+		JSON.stringify(safeEvidence),
+	].join("\n");
+}
+
+function parseRecoveryJson(content: string): unknown {
+	if (content.length > 8_000) throw new Error("Recovery plan response is too large");
+	const normalized = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+	return JSON.parse(normalized);
+}
+
+function isRecoveryRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function redactRecoveryText(value: string): string {
+	return value
+		.replace(/sk-[A-Za-z0-9_-]+/g, "[REDACTED]")
+		.replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
+		.replace(/(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]");
+}
+
+function redactRecoveryValue(value: unknown): unknown {
+	if (typeof value === "string") return redactRecoveryText(value);
+	if (Array.isArray(value)) return value.map(redactRecoveryValue);
+	if (value && typeof value === "object") {
+		return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [key, redactRecoveryValue(child)]));
+	}
+	return value;
+}
+
+const MAX_CHECKPOINT_TEXT_CHARS = 8_192;
+
+function checkpointText(value: string, maxChars = MAX_CHECKPOINT_TEXT_CHARS): string {
+	const redacted = redactRecoveryText(value);
+	return redacted.length > maxChars ? `${redacted.slice(0, maxChars)}...[truncated]` : redacted;
+}
+
+function compactCheckpointValue(value: unknown, depth = 0): unknown {
+	if (depth > 4) return "[truncated]";
+	if (typeof value === "string") return checkpointText(value);
+	if (Array.isArray(value)) return value.slice(0, 64).map((entry) => compactCheckpointValue(entry, depth + 1));
+	if (value && typeof value === "object") {
+		return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 64).map(([key, entry]) => [key, compactCheckpointValue(entry, depth + 1)]));
+	}
+	return value;
+}
+
+function checkpointNodeDefinition(node: DynamicNode): WorkflowNodeCheckpointDefinition {
+	const config = node.config;
+	return {
+		task: checkpointText(config.task, 4_000),
+		...(config.role && { role: config.role }),
+		...(config.toolHints && { toolHints: [...config.toolHints] }),
+		dependsOn: [...node.dependencies],
+		timeoutMs: config.timeoutMs,
+		sideEffect: config.sideEffect ?? (config.role === "executor" ? "unknown" : "none"),
+		...(config.exportTo && { exportTo: config.exportTo }),
+		...(config.inputMapping && { inputMapping: Object.fromEntries(Object.entries(config.inputMapping).map(([key, value]) => [key, checkpointText(value, 1_000)])) }),
+		...(config.condition && { condition: { ...config.condition } }),
+		...(config.retry && { retry: { ...config.retry } }),
+		...(config.outputContract && {
+			outputContract: {
+				...(config.outputContract.exactText !== undefined && { exactText: checkpointText(config.outputContract.exactText, 1_000) }),
+				...(config.outputContract.requiredText !== undefined && { requiredText: checkpointText(config.outputContract.requiredText, 1_000) }),
+				...(config.outputContract.requiredFields !== undefined && { requiredFields: [...config.outputContract.requiredFields] }),
+				...(config.outputContract.minLength !== undefined && { minLength: config.outputContract.minLength }),
+			},
+		}),
+	};
 }
 
 function formatStatusCounts(statusCounts: Record<string, number>): string {
@@ -538,6 +802,23 @@ function compactForHash(value: unknown): unknown {
 
 function createResumeToken(conversationId: string, runId: string, planHash: string, revision: number): string {
 	return Buffer.from(JSON.stringify({ version: 1, conversationId, runId, planHash, revision }), "utf8").toString("base64url");
+}
+
+function parseResumeToken(value: string): { conversationId: string; runId: string; planHash: string; revision: number } {
+	let decoded: unknown;
+	try {
+		decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+	} catch {
+		throw new Error("resumeToken is malformed");
+	}
+	const token = requireRecord(decoded);
+	if (token.version !== 1) throw new Error("resumeToken version is unsupported");
+	return {
+		conversationId: requireString(token.conversationId, "resumeToken.conversationId"),
+		runId: requireString(token.runId, "resumeToken.runId"),
+		planHash: requireString(token.planHash, "resumeToken.planHash"),
+		revision: requireNonNegativeInteger(token.revision, "resumeToken.revision"),
+	};
 }
 
 function validateCycleEndpoints(cycles: readonly CycleEdge[], initialNodes: readonly DynamicNodeConfig[]): void {
@@ -686,6 +967,7 @@ function parseNodeConfigs(value: unknown, property = "initialNodes"): DynamicNod
 		const condition = record.condition !== undefined ? parseCondition(record.condition, path) : undefined;
 		const exportTo = record.exportTo !== undefined ? requireString(record.exportTo, `${path}.exportTo`) : undefined;
 		const retry = record.retry !== undefined ? parseRetry(record.retry, `${path}.retry`) : undefined;
+		const outputContract = record.outputContract !== undefined ? parseOutputContract(record.outputContract, `${path}.outputContract`) : undefined;
 		const sideEffect = record.sideEffect !== undefined ? requireSideEffect(record.sideEffect, `${path}.sideEffect`) : undefined;
 
 		return {
@@ -699,6 +981,7 @@ function parseNodeConfigs(value: unknown, property = "initialNodes"): DynamicNod
 			...(condition && { condition }),
 			...(exportTo && { exportTo }),
 			...(retry && { retry }),
+			...(outputContract && { outputContract }),
 			...(sideEffect && { sideEffect }),
 		};
 	});
@@ -907,6 +1190,23 @@ function requireRole(value: unknown): SubagentRoleId {
 		throw new Error(`role must be one of: ${[...VALID_ROLES].join(", ")}`);
 	}
 	return value as SubagentRoleId;
+}
+
+function parseOutputContract(value: unknown, property: string): NonNullable<DynamicNodeConfig["outputContract"]> {
+	const record = requireRecord(value);
+	const exactText = record.exactText !== undefined ? requireString(record.exactText, `${property}.exactText`) : undefined;
+	const requiredText = record.requiredText !== undefined ? requireString(record.requiredText, `${property}.requiredText`) : undefined;
+	const requiredFields = record.requiredFields !== undefined ? requireStringArray(record.requiredFields, `${property}.requiredFields`) : undefined;
+	const minLength = record.minLength !== undefined ? requireNonNegativeInteger(record.minLength, `${property}.minLength`) : undefined;
+	if (exactText === undefined && requiredText === undefined && requiredFields === undefined && minLength === undefined) {
+		throw new Error(`${property} must define exactText, requiredText, requiredFields, or minLength`);
+	}
+	return {
+		...(exactText !== undefined && { exactText }),
+		...(requiredText !== undefined && { requiredText }),
+		...(requiredFields !== undefined && { requiredFields }),
+		...(minLength !== undefined && { minLength }),
+	};
 }
 
 function requireSideEffect(value: unknown, property: string): "none" | "applied" | "unknown" {

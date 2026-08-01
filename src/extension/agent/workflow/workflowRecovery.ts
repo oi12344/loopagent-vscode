@@ -48,6 +48,7 @@ export type RecoveryPlan = {
 	task?: string;
 	role?: SubagentRoleId;
 	contextFrom?: string[];
+	timeoutMs?: number;
 };
 
 /**
@@ -160,6 +161,7 @@ export type RecoveryPolicy = {
 	maxFanOut: number;
 	maxTaskChars: number;
 	maxReasonChars: number;
+	maxTimeoutMs: number;
 };
 
 export const DEFAULT_RECOVERY_POLICY: RecoveryPolicy = Object.freeze({
@@ -167,6 +169,7 @@ export const DEFAULT_RECOVERY_POLICY: RecoveryPolicy = Object.freeze({
 	maxFanOut: 6,
 	maxTaskChars: 800,
 	maxReasonChars: 400,
+	maxTimeoutMs: 60_000,
 });
 
 const CATEGORY_ACTIONS: Readonly<Record<FailureCategory, readonly RecoveryAction[]>> = Object.freeze({
@@ -250,13 +253,14 @@ export type RecoveryPlanContext = {
 	policy?: RecoveryPolicy;
 };
 
-const PLAN_KEYS: ReadonlySet<string> = new Set(["action", "targetNodeId", "reason", "task", "role", "contextFrom"]);
+const PLAN_KEYS: ReadonlySet<string> = new Set(["action", "targetNodeId", "reason", "task", "role", "contextFrom", "timeoutMs"]);
 const ACTIONS: ReadonlySet<string> = new Set<RecoveryAction>([
 	"retry", "replan", "replace_node", "replace_tool", "switch_provider",
 	"reconcile_side_effect", "compensate", "request_input", "wait_external",
 ]);
 // 只有生成新节点的动作才允许携带 task；retry/switch_provider 带 task 说明模型混淆了动作语义。
 const TASK_ACTIONS: ReadonlySet<string> = new Set<RecoveryAction>(["replan", "replace_node", "replace_tool", "compensate"]);
+const TIMEOUT_ACTIONS: ReadonlySet<string> = new Set<RecoveryAction>(["retry", ...TASK_ACTIONS] as RecoveryAction[]);
 /**
  * 必须指向失败节点自身的动作。放开会让一个节点的失败去改写另一个已完成节点，
  * 恢复范围随之失控。例外只有两个：`replan` 可以改上游或下游的计划，
@@ -381,6 +385,17 @@ export function parseRecoveryPlan(input: unknown, context: RecoveryPlanContext):
 		resolved.contextFrom = contextFrom;
 	}
 
+	if (plan.timeoutMs !== undefined) {
+		if (!TIMEOUT_ACTIONS.has(action)) {
+			throw new RecoveryPlanError(`action '${action}' does not accept timeoutMs`, "recovery.timeoutMs");
+		}
+		const timeoutMs = asPositiveSafeInteger(plan.timeoutMs, "recovery.timeoutMs");
+		if (timeoutMs > policy.maxTimeoutMs) {
+			throw new RecoveryPlanError(`must be at most ${policy.maxTimeoutMs} milliseconds`, "recovery.timeoutMs");
+		}
+		resolved.timeoutMs = timeoutMs;
+	}
+
 	return resolved;
 }
 
@@ -407,6 +422,13 @@ function asRecord(value: unknown, path: string): Record<string, unknown> {
 function asText(value: unknown, path: string): string {
 	if (typeof value !== "string" || value.trim() === "") {
 		throw new RecoveryPlanError("must be a non-empty string", path);
+	}
+	return value;
+}
+
+function asPositiveSafeInteger(value: unknown, path: string): number {
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+		throw new RecoveryPlanError("must be a positive safe integer", path);
 	}
 	return value;
 }

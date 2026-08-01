@@ -28,6 +28,12 @@ type WorkflowCheckpointRow = {
   updated_at: number;
 };
 
+type WorkflowCheckpointOwnerRow = {
+  run_id: string;
+  plan_hash: string;
+  terminal: number;
+};
+
 /**
  * ConversationStore 的 SQLite 持久化实现。
  * `conversation` 表按 conversation_id 保留每个对话的完整历史（多行）；
@@ -104,7 +110,19 @@ export function createPersistentConversationStore(
       checkpoint_json TEXT NOT NULL,
       updated_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS workflow_checkpoint_owner (
+      conversation_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      plan_hash TEXT NOT NULL,
+      terminal INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT OR IGNORE INTO workflow_checkpoint_owner (conversation_id, run_id, plan_hash)
+      SELECT conversation_id, run_id, plan_hash FROM workflow_checkpoint;
   `);
+  const ownerColumns = database.prepare("PRAGMA table_info(workflow_checkpoint_owner)").all() as Array<{ name: string }>;
+  if (!ownerColumns.some((column) => column.name === "terminal")) {
+    database.exec("ALTER TABLE workflow_checkpoint_owner ADD COLUMN terminal INTEGER NOT NULL DEFAULT 0");
+  }
 
   function readContext(conversationId: string): ConversationContext | undefined {
     const row = database
@@ -180,12 +198,16 @@ export function createPersistentConversationStore(
   }
 
   function readWorkflowCheckpoint(conversationId: string, runId: string): WorkflowCheckpoint | undefined {
+    const owner = database
+      .prepare("SELECT run_id, plan_hash, terminal FROM workflow_checkpoint_owner WHERE conversation_id = ?")
+      .get(conversationId) as WorkflowCheckpointOwnerRow | undefined;
+    if (!owner || owner.terminal !== 0 || owner.run_id !== runId) return undefined;
     const row = database
       .prepare(
         "SELECT conversation_id, run_id, plan_hash, revision, status, checkpoint_json, updated_at FROM workflow_checkpoint WHERE conversation_id = ?",
       )
       .get(conversationId) as WorkflowCheckpointRow | undefined;
-    if (!row || row.run_id !== runId) return undefined;
+    if (!row || row.run_id !== runId || row.plan_hash !== owner.plan_hash) return undefined;
     try {
       const checkpoint = sanitizeWorkflowCheckpoint(JSON.parse(row.checkpoint_json));
       if (
@@ -201,6 +223,18 @@ export function createPersistentConversationStore(
       return checkpoint;
     } catch {
       return undefined;
+    }
+  }
+
+  function withImmediateTransaction<T>(operation: () => T): T {
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const result = operation();
+      database.exec("COMMIT");
+      return result;
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
     }
   }
 
@@ -274,41 +308,93 @@ export function createPersistentConversationStore(
       database.prepare("DELETE FROM interrupted_run WHERE conversation_id = ?").run(conversationId);
     },
 
+    claimWorkflowCheckpoint(conversationId, runId, planHash, expectedRunId, expectedRevision): boolean {
+      return withImmediateTransaction(() => {
+        const owner = database
+          .prepare("SELECT run_id, plan_hash, terminal FROM workflow_checkpoint_owner WHERE conversation_id = ?")
+          .get(conversationId) as WorkflowCheckpointOwnerRow | undefined;
+        if (owner?.run_id !== expectedRunId) return false;
+
+        if (expectedRevision !== undefined) {
+          const checkpoint = database
+            .prepare("SELECT run_id, plan_hash, revision FROM workflow_checkpoint WHERE conversation_id = ?")
+            .get(conversationId) as Pick<WorkflowCheckpointRow, "run_id" | "plan_hash" | "revision"> | undefined;
+          if (
+            !checkpoint
+            || checkpoint.run_id !== runId
+            || checkpoint.plan_hash !== planHash
+            || checkpoint.revision !== expectedRevision
+          ) return false;
+        }
+
+        database
+          .prepare(
+          `INSERT INTO workflow_checkpoint_owner (conversation_id, run_id, plan_hash, terminal)
+             VALUES (?, ?, ?, 0)
+             ON CONFLICT(conversation_id) DO UPDATE SET run_id = excluded.run_id, plan_hash = excluded.plan_hash, terminal = 0`,
+          )
+          .run(conversationId, runId, planHash);
+        if (expectedRevision === undefined) {
+          database.prepare("DELETE FROM workflow_checkpoint WHERE conversation_id = ?").run(conversationId);
+        }
+        return true;
+      });
+    },
+
     saveWorkflowCheckpoint(checkpoint: WorkflowCheckpoint): boolean {
       const sanitized = sanitizeWorkflowCheckpoint(checkpoint);
-      const result = database
-        .prepare(
-          `INSERT INTO workflow_checkpoint (conversation_id, run_id, plan_hash, revision, status, checkpoint_json, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(conversation_id) DO UPDATE SET
-             run_id = excluded.run_id,
-             plan_hash = excluded.plan_hash,
-             revision = excluded.revision,
-             status = excluded.status,
-             checkpoint_json = excluded.checkpoint_json,
-             updated_at = excluded.updated_at
-           WHERE workflow_checkpoint.run_id = excluded.run_id
-             AND workflow_checkpoint.plan_hash = excluded.plan_hash
-             AND excluded.revision > workflow_checkpoint.revision`,
-        )
-        .run(
-          sanitized.conversationId,
-          sanitized.runId,
-          sanitized.planHash,
-          sanitized.revision,
-          sanitized.status,
-          JSON.stringify(sanitized),
-          sanitized.updatedAt,
-        ) as { changes?: number | bigint };
-      return Number(result.changes ?? 0) > 0;
+      return withImmediateTransaction(() => {
+        const owner = database
+          .prepare("SELECT run_id, plan_hash, terminal FROM workflow_checkpoint_owner WHERE conversation_id = ?")
+          .get(sanitized.conversationId) as WorkflowCheckpointOwnerRow | undefined;
+        if (!owner || owner.terminal !== 0 || owner.run_id !== sanitized.runId || owner.plan_hash !== sanitized.planHash) return false;
+        const existing = database
+          .prepare("SELECT revision FROM workflow_checkpoint WHERE conversation_id = ?")
+          .get(sanitized.conversationId) as { revision: number } | undefined;
+        if (existing && sanitized.revision <= existing.revision) return false;
+
+        database
+          .prepare(
+            `INSERT INTO workflow_checkpoint (conversation_id, run_id, plan_hash, revision, status, checkpoint_json, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(conversation_id) DO UPDATE SET
+               run_id = excluded.run_id,
+               plan_hash = excluded.plan_hash,
+               revision = excluded.revision,
+               status = excluded.status,
+               checkpoint_json = excluded.checkpoint_json,
+               updated_at = excluded.updated_at`,
+          )
+          .run(
+            sanitized.conversationId,
+            sanitized.runId,
+            sanitized.planHash,
+            sanitized.revision,
+            sanitized.status,
+            JSON.stringify(sanitized),
+            sanitized.updatedAt,
+          );
+        return true;
+      });
     },
 
     loadWorkflowCheckpoint(conversationId: string, runId: string): WorkflowCheckpoint | undefined {
       return readWorkflowCheckpoint(conversationId, runId);
     },
 
+    getWorkflowCheckpointRunId(conversationId: string): string | undefined {
+      const row = database.prepare("SELECT run_id FROM workflow_checkpoint_owner WHERE conversation_id = ?").get(conversationId) as { run_id: string } | undefined;
+      return row?.run_id;
+    },
+
     clearWorkflowCheckpoint(conversationId: string, runId: string): void {
-      database.prepare("DELETE FROM workflow_checkpoint WHERE conversation_id = ? AND run_id = ?").run(conversationId, runId);
+      withImmediateTransaction(() => {
+        const owner = database.prepare("SELECT run_id FROM workflow_checkpoint_owner WHERE conversation_id = ?").get(conversationId) as { run_id: string } | undefined;
+        if (owner?.run_id !== runId) return;
+        database.prepare("DELETE FROM workflow_checkpoint WHERE conversation_id = ?").run(conversationId);
+        database.prepare("UPDATE workflow_checkpoint_owner SET terminal = 1 WHERE conversation_id = ?").run(conversationId);
+        // Keep the owner row as a terminal fence so a late write cannot recreate a checkpoint.
+      });
     },
 
     listConversations(): ConversationSummary[] {

@@ -4,6 +4,16 @@ import type { CycleEdge } from "./cycleManager";
 import type { CompiledWorkflowGraph } from "./generatedWorkflowTypes";
 import type { WorkflowCheckpoint } from "../../../shared/workflowCheckpoint";
 import type { WorkflowSideEffect } from "../../../shared/workflowCheckpoint";
+import type { WorkflowFailureEvidence } from "../../../shared/workflowCheckpoint";
+import type { WorkflowPendingRecovery } from "../../../shared/workflowCheckpoint";
+import type { RecoveryPlan } from "./workflowRecovery";
+
+export type WorkflowOutputContract = {
+	exactText?: string;
+	requiredText?: string;
+	requiredFields?: string[];
+	minLength?: number;
+};
 
 export type DynamicNodeId = string;
 
@@ -30,6 +40,7 @@ export type DynamicNodeConfig = {
 	exportTo?: string;
 	retry?: { maxAttempts: number; backoffMs?: number };
 	sideEffect?: WorkflowSideEffect;
+	outputContract?: WorkflowOutputContract;
 };
 
 export type NodeCondition = {
@@ -48,6 +59,9 @@ export type DynamicNode = {
 	startedAt?: Date;
 	finishedAt?: Date;
 	attempts?: number;
+	recoveryAttempts?: number;
+	pendingRecovery?: WorkflowPendingRecovery;
+	lastAttemptTimeoutMs?: number;
 };
 
 export type GraphComputationContext = {
@@ -76,7 +90,7 @@ export type DynamicGraphDefinition = {
 };
 
 export type DynamicGraphCheckpointSnapshot = {
-	status: "running" | "failed" | "completed" | "cancelled" | "recovery_required";
+	status: "running" | "recovering" | "failed" | "completed" | "cancelled" | "recovery_required";
 	frontier: DynamicNodeId[];
 	executionOrder: DynamicNodeId[];
 	nodes: ReadonlyMap<DynamicNodeId, DynamicNode>;
@@ -86,6 +100,8 @@ export type DynamicGraphCheckpointSnapshot = {
 export type DynamicGraphResume = {
 	checkpoint: WorkflowCheckpoint;
 };
+
+export type WorkflowFailureRecovery = (evidence: WorkflowFailureEvidence) => Promise<RecoveryPlan | undefined>;
 
 export type WorkflowStateSnapshot = {
 	step: number;

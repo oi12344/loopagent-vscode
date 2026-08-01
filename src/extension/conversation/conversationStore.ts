@@ -73,9 +73,19 @@ export type ConversationStore = {
 
   clearInterruptedRun(conversationId: string): void;
 
+  claimWorkflowCheckpoint(
+    conversationId: string,
+    runId: string,
+    planHash: string,
+    expectedRunId: string | undefined,
+    expectedRevision?: number,
+  ): boolean;
+
   saveWorkflowCheckpoint(checkpoint: WorkflowCheckpoint): boolean;
 
   loadWorkflowCheckpoint(conversationId: string, runId: string): WorkflowCheckpoint | undefined;
+
+  getWorkflowCheckpointRunId(conversationId: string): string | undefined;
 
   clearWorkflowCheckpoint(conversationId: string, runId: string): void;
 };
@@ -98,6 +108,7 @@ export function createConversationStore(): ConversationStore {
   const conversations = new Map<string, ConversationContext>();
   const interruptedRuns = new Map<string, InterruptedRunCheckpoint>();
   const workflowCheckpoints = new Map<string, WorkflowCheckpoint>();
+  const workflowCheckpointOwners = new Map<string, { runId: string; planHash: string; terminal: boolean }>();
 
   /**
    * 生成唯一的对话ID
@@ -176,27 +187,49 @@ export function createConversationStore(): ConversationStore {
       interruptedRuns.delete(conversationId);
     },
 
+    claimWorkflowCheckpoint(conversationId, runId, planHash, expectedRunId, expectedRevision): boolean {
+      const owner = workflowCheckpointOwners.get(conversationId);
+      if (owner?.runId !== expectedRunId) return false;
+      const checkpoint = workflowCheckpoints.get(conversationId);
+      if (
+        expectedRevision !== undefined
+        && (!checkpoint
+          || checkpoint.runId !== runId
+          || checkpoint.planHash !== planHash
+          || checkpoint.revision !== expectedRevision)
+      ) return false;
+
+      workflowCheckpointOwners.set(conversationId, { runId, planHash, terminal: false });
+      if (expectedRevision === undefined) workflowCheckpoints.delete(conversationId);
+      return true;
+    },
+
     saveWorkflowCheckpoint(checkpoint: WorkflowCheckpoint): boolean {
       const sanitized = sanitizeWorkflowCheckpoint(checkpoint);
+      const owner = workflowCheckpointOwners.get(sanitized.conversationId);
+      if (!owner || owner.terminal || owner.runId !== sanitized.runId || owner.planHash !== sanitized.planHash) return false;
       const existing = workflowCheckpoints.get(sanitized.conversationId);
-      if (
-        existing
-        && (existing.runId !== sanitized.runId
-          || existing.planHash !== sanitized.planHash
-          || sanitized.revision <= existing.revision)
-      ) return false;
+      if (existing && sanitized.revision <= existing.revision) return false;
       workflowCheckpoints.set(sanitized.conversationId, sanitized);
       return true;
     },
 
     loadWorkflowCheckpoint(conversationId: string, runId: string): WorkflowCheckpoint | undefined {
+      const owner = workflowCheckpointOwners.get(conversationId);
       const checkpoint = workflowCheckpoints.get(conversationId);
-      if (!checkpoint || checkpoint.runId !== runId) return undefined;
+      if (!owner || owner.runId !== runId || !checkpoint || checkpoint.runId !== runId || checkpoint.planHash !== owner.planHash) return undefined;
       return sanitizeWorkflowCheckpoint(checkpoint);
     },
 
+    getWorkflowCheckpointRunId(conversationId: string): string | undefined {
+      return workflowCheckpointOwners.get(conversationId)?.runId;
+    },
+
     clearWorkflowCheckpoint(conversationId: string, runId: string): void {
-      if (workflowCheckpoints.get(conversationId)?.runId === runId) workflowCheckpoints.delete(conversationId);
+      if (workflowCheckpointOwners.get(conversationId)?.runId !== runId) return;
+      workflowCheckpointOwners.set(conversationId, { ...workflowCheckpointOwners.get(conversationId)!, terminal: true });
+      // Keep the owner as a terminal fence so a late write from this run stays rejected.
+      workflowCheckpoints.delete(conversationId);
     },
   };
 }

@@ -3,11 +3,29 @@ import { createDynamicGraphEngine } from "../src/extension/agent/workflow/dynami
 import { createWorkflowOrchestrator } from "../src/extension/agent/workflowOrchestrator";
 import { createDataFlowManager } from "../src/extension/agent/workflow/dataFlowManager";
 import { createReflectionResolver } from "../src/extension/agent/workflow/reflectionResolver";
+import { compileGeneratedWorkflow } from "../src/extension/agent/workflow/workflowCompiler";
 import type { DynamicGraphDefinition, DynamicNodeConfig } from "../src/extension/agent/workflow/dynamicGraphTypes";
-import type { SubagentResult } from "../src/extension/agent/workflow/types";
+import type { CreateSubagentConfig, SubagentResult } from "../src/extension/agent/workflow/types";
 import type { ReactAgentTool } from "../src/extension/agent/reactTypes";
 import type { WorkflowOrchestrator } from "../src/extension/agent/workflowOrchestrator";
 import type { WorkflowCheckpoint } from "../src/shared/workflowCheckpoint";
+
+function resultOrchestrator(resolve: (config: CreateSubagentConfig) => SubagentResult): WorkflowOrchestrator {
+	let nextId = 1;
+	const configs = new Map<string, CreateSubagentConfig>();
+	return {
+		createSubagent: vi.fn((config) => {
+			const id = `subagent-${nextId++}`;
+			configs.set(id, config);
+			return id;
+		}),
+		waitForSubagents: vi.fn(async (ids) => new Map(ids.map((id) => [id, resolve(configs.get(id)!)]))),
+		getSubagent: vi.fn(),
+		cancelSubagent: vi.fn(() => true),
+		cancelAll: vi.fn(),
+		onEvent: vi.fn(() => () => {}),
+	};
+}
 
 describe("Dynamic Graph Workflow Integration", () => {
 	let mockTools: ReactAgentTool[];
@@ -77,7 +95,7 @@ describe("Dynamic Graph Workflow Integration", () => {
 			}),
 			waitForSubagents: vi.fn(async (ids) => new Map(ids.map((id) => {
 				const task = configs.get(id)?.task;
-				if (task === "B" && bAttempts++ === 0) return [id, { status: "failed", error: "temporary" } satisfies SubagentResult] as const;
+				if (task === "B" && bAttempts++ < 2) return [id, { status: "failed", error: "temporary" } satisfies SubagentResult] as const;
 				return [id, { status: "completed", content: task } satisfies SubagentResult] as const;
 			}))),
 			getSubagent: vi.fn(),
@@ -112,19 +130,66 @@ describe("Dynamic Graph Workflow Integration", () => {
 		const definition: DynamicGraphDefinition = {
 			initialNodes: [
 				{ id: "A", task: "A" },
-				{ id: "B", task: "B", dependsOn: ["A"] },
+				{ id: "B", task: "B", dependsOn: ["A"], retry: { maxAttempts: 2 } },
 			],
 		};
 
 		const first = createDynamicGraphEngine({ definition, orchestrator, availableTools: [], onCheckpoint: save });
 		await first.execute();
 		expect(checkpoint?.frontier).toEqual(["B"]);
-		expect(orchestrator.createSubagent).toHaveBeenCalledTimes(2);
+		expect(orchestrator.createSubagent).toHaveBeenCalledTimes(3);
 
 		const second = createDynamicGraphEngine({ definition, orchestrator, availableTools: [], resume: { checkpoint: checkpoint! } });
 		await second.execute();
 		expect(orchestrator.createSubagent).toHaveBeenCalledTimes(3);
 		expect(orchestrator.createSubagent.mock.calls.map(([config]) => config.task)).toEqual(["A", "B", "B"]);
+		expect(second.getContext().nodes.get("B")?.status).toBe("failed");
+	});
+
+	it("checkpoints only the failed branch and its downstream nodes", async () => {
+		let nextId = 1;
+		const configs = new Map<string, { task: string }>();
+		let releaseSlow!: () => void;
+		const slow = new Promise<void>((resolve) => { releaseSlow = resolve; });
+		const orchestrator: WorkflowOrchestrator = {
+			createSubagent: vi.fn((config) => {
+				const id = `subagent-${nextId++}`;
+				configs.set(id, config);
+				return id;
+			}),
+			waitForSubagents: vi.fn(async (ids) => new Map(await Promise.all(ids.map(async (id) => {
+				const task = configs.get(id)?.task;
+				if (task === "slow") await slow;
+				return [id, task === "fail" ? { status: "failed", error: "boom" } : { status: "completed", content: task }] as const;
+			})))),
+			getSubagent: vi.fn(),
+			cancelSubagent: vi.fn(() => true),
+			cancelAll: vi.fn(),
+			onEvent: vi.fn(() => () => {}),
+		};
+		const frontiers: string[][] = [];
+		const engine = createDynamicGraphEngine({
+			definition: {
+				initialNodes: [
+					{ id: "fail", task: "fail" },
+					{ id: "after-fail", task: "after-fail", dependsOn: ["fail"] },
+					{ id: "slow", task: "slow" },
+					{ id: "after-slow", task: "after-slow", dependsOn: ["slow"] },
+				],
+			},
+			orchestrator,
+			availableTools: [],
+			onCheckpoint: (snapshot) => {
+				if (snapshot.nodes.get("fail")?.result?.status !== "failed") return;
+				frontiers.push([...snapshot.frontier]);
+				releaseSlow();
+			},
+		});
+
+		await engine.execute();
+
+		expect(frontiers[0]).toEqual(expect.arrayContaining(["fail", "after-fail"]));
+		expect(frontiers[0]).not.toContain("after-slow");
 	});
 
 	it("should handle conditional execution based on node results", async () => {
@@ -898,6 +963,417 @@ describe("Dynamic Graph Workflow Integration", () => {
 
 		expect(context.nodes.get("doomed")?.status).toBe("failed");
 		expect(context.nodes.get("doomed")?.attempts).toBe(2);
+	});
+
+	it("should convert a missing subagent result into a terminal failure", async () => {
+		let nextId = 1;
+		const orchestrator: WorkflowOrchestrator = {
+			createSubagent: vi.fn(() => `subagent-${nextId++}`),
+			waitForSubagents: vi.fn(async () => new Map()),
+			getSubagent: vi.fn(),
+			cancelSubagent: vi.fn(() => true),
+			cancelAll: vi.fn(),
+			onEvent: vi.fn(() => () => {}),
+		};
+
+		const engine = createDynamicGraphEngine({
+			definition: { initialNodes: [{ id: "missing", task: "Missing result" }] },
+			orchestrator,
+			availableTools: [],
+		});
+
+		await engine.execute();
+
+		const node = engine.getContext().nodes.get("missing");
+		expect(node?.status).toBe("failed");
+		expect(node?.result?.error).toMatch(/returned no result/i);
+	});
+
+	it("should reject a completed result that violates its output contract", async () => {
+		const orchestrator = createWorkflowOrchestrator({
+			createRunner: () => ({
+				run: async function* () {
+					yield { type: "assistantDelta", content: "EXPECTED is not available" };
+				},
+			}),
+		});
+
+		const engine = createDynamicGraphEngine({
+			definition: {
+				initialNodes: [{ id: "contract", task: "Return the expected marker", outputContract: { exactText: "EXPECTED" } }],
+			},
+			orchestrator,
+			availableTools: mockTools,
+		});
+
+		await engine.execute();
+
+		const node = engine.getContext().nodes.get("contract");
+		expect(node?.status).toBe("failed");
+		expect(node?.result?.error).toMatch(/exactText/i);
+	});
+
+	it("should diagnose a failed node before running a repaired task", async () => {
+		let nextId = 1;
+		const configs = new Map<string, { task: string }>();
+		const timeouts = new Map<string, number | undefined>();
+		const tasks: string[] = [];
+		const orchestrator: WorkflowOrchestrator = {
+			createSubagent: vi.fn((config) => {
+				const id = `subagent-${nextId++}`;
+				configs.set(id, config);
+				timeouts.set(config.task, config.timeoutMs);
+				tasks.push(config.task);
+				return id;
+			}),
+			waitForSubagents: vi.fn(async (ids) => new Map(ids.map((id) => {
+				const task = configs.get(id)?.task ?? "";
+				if (task === "B") {
+					return [id, {
+						status: "failed",
+						error: "schema invalid",
+						diagnosticLog: [{ kind: "error", message: "schema invalid" }],
+					} satisfies SubagentResult] as const;
+				}
+				return [id, { status: "completed", content: task === "B repaired" ? "B fixed" : task.startsWith("C") ? "C done" : "A done" } satisfies SubagentResult] as const;
+			}))),
+			getSubagent: vi.fn(),
+			cancelSubagent: vi.fn(() => true),
+			cancelAll: vi.fn(),
+			onEvent: vi.fn(() => () => {}),
+		};
+		const recoverFailure = vi.fn(async (evidence: import("../src/shared/workflowCheckpoint").WorkflowFailureEvidence) => {
+			expect(evidence.nodeId).toBe("B");
+			expect(evidence.error).toBe("schema invalid");
+			expect(evidence.logs).toEqual([{ kind: "error", message: "schema invalid" }]);
+			return { action: "replace_node" as const, targetNodeId: "B", reason: "repair schema", task: "B repaired", timeoutMs: 1_000 };
+		});
+
+		const engine = createDynamicGraphEngine({
+			definition: {
+				initialNodes: [
+					{ id: "A", task: "A" },
+					{ id: "B", task: "B", dependsOn: ["A"], timeoutMs: 1, retry: { maxAttempts: 3 } },
+					{ id: "C", task: "C", dependsOn: ["B"], inputMapping: { b: "B.content" } },
+				],
+			},
+			orchestrator,
+			availableTools: [],
+			recoverFailure,
+		});
+
+		await engine.execute();
+
+		expect(recoverFailure).toHaveBeenCalledTimes(1);
+		expect(tasks).toEqual(["A", "B", "B repaired", expect.stringContaining('"b": "B fixed"')]);
+		expect(tasks.filter((task) => task === "A")).toHaveLength(1);
+		expect(timeouts.get("B")).toBe(1);
+		expect(timeouts.get("B repaired")).toBe(1_000);
+		expect(engine.getContext().nodes.get("C")?.status).toBe("completed");
+	});
+
+	it("allows two bounded repair attempts when the first repair violates the contract", async () => {
+		let nextId = 1;
+		const configs = new Map<string, { task: string }>();
+		const recoveryAttempts: number[] = [];
+		const orchestrator: WorkflowOrchestrator = {
+			createSubagent: vi.fn((config) => {
+				const id = `subagent-${nextId++}`;
+				configs.set(id, config);
+				return id;
+			}),
+			waitForSubagents: vi.fn(async (ids) => new Map(ids.map((id) => {
+				const task = configs.get(id)?.task ?? "";
+				if (task === "initial") return [id, { status: "failed", error: "temporary" } satisfies SubagentResult] as const;
+				if (task.startsWith("repair one")) return [id, { status: "completed", content: "OK is missing" } satisfies SubagentResult] as const;
+				return [id, { status: "completed", content: "OK" } satisfies SubagentResult] as const;
+			}))),
+			getSubagent: vi.fn(),
+			cancelSubagent: vi.fn(() => true),
+			cancelAll: vi.fn(),
+			onEvent: vi.fn(() => () => {}),
+		};
+		const engine = createDynamicGraphEngine({
+			definition: { initialNodes: [{ id: "node", task: "initial", outputContract: { exactText: "OK" } }] },
+			orchestrator,
+			availableTools: [],
+			recoverFailure: async (evidence) => {
+				recoveryAttempts.push(evidence.recoveryAttempt);
+				return {
+					action: "replace_node",
+					targetNodeId: "node",
+					reason: "repair output",
+					task: evidence.recoveryAttempt === 0 ? "repair one" : "repair two",
+				};
+			},
+		});
+
+		await engine.execute();
+
+		expect(recoveryAttempts).toEqual([0, 1]);
+		expect(engine.getContext().nodes.get("node")?.attempts).toBe(3);
+		expect(engine.getContext().nodes.get("node")?.recoveryAttempts).toBe(2);
+		expect(engine.getContext().nodes.get("node")?.result?.content).toBe("OK");
+		expect(engine.getContext().nodes.get("node")?.status).toBe("completed");
+	});
+
+	it("does not reset the compiled recovery budget when resuming a checkpoint", async () => {
+		const orchestrator = resultOrchestrator(() => ({ status: "failed", error: "still failing" }));
+		const recoverFailure = vi.fn(async () => ({
+			action: "replace_node" as const,
+			targetNodeId: "node",
+			reason: "try again",
+			task: "repair again",
+		}));
+		const checkpoint = {
+			version: 1,
+			conversationId: "conversation-budget",
+			runId: "run-budget",
+			planHash: "plan-budget",
+			revision: 4,
+			status: "failed",
+			frontier: ["node"],
+			executionOrder: ["node"],
+			nodes: {
+				node: {
+					nodeId: "node",
+					status: "failed",
+					inputHash: "node",
+					attempts: 3,
+					recoveryAttempts: 2,
+					result: { status: "failed", error: "still failing" },
+					sideEffect: "none",
+				},
+			},
+			state: { step: 0, version: 0, values: {} },
+			unresolvedFailures: [],
+			updatedAt: Date.now(),
+		} as unknown as WorkflowCheckpoint;
+		const engine = createDynamicGraphEngine({
+			definition: {
+				initialNodes: [],
+				compiledGraph: compileGeneratedWorkflow({ nodes: [{ id: "node", task: "initial", role: "planner" }] }),
+			},
+			orchestrator,
+			availableTools: [],
+			resume: { checkpoint },
+			recoverFailure,
+		});
+
+		await engine.execute();
+
+		expect(recoverFailure).not.toHaveBeenCalled();
+		expect(orchestrator.createSubagent).not.toHaveBeenCalled();
+		expect(engine.getContext().nodes.get("node")?.status).toBe("failed");
+	});
+
+	it("resumes a pending legacy repair without rerunning the failed task", async () => {
+		const tasks: string[] = [];
+		const orchestrator = resultOrchestrator((config) => {
+			tasks.push(config.task);
+			return { status: "completed", content: "B fixed" };
+		});
+		const recoverFailure = vi.fn();
+		const checkpoint = {
+			version: 1,
+			conversationId: "conversation-pending-legacy",
+			runId: "run-pending-legacy",
+			planHash: "plan-pending-legacy",
+			revision: 4,
+			status: "recovering",
+			frontier: ["B"],
+			executionOrder: ["A", "B"],
+			nodes: {
+				A: {
+					nodeId: "A",
+					status: "completed",
+					inputHash: "A",
+					attempts: 1,
+					result: { status: "completed", content: "A done" },
+					sideEffect: "none",
+				},
+				B: {
+					nodeId: "B",
+					status: "failed",
+					inputHash: "B",
+					attempts: 1,
+					recoveryAttempts: 1,
+					pendingRecovery: {
+						action: "replace_node",
+						targetNodeId: "B",
+						reason: "repair the failed output",
+						task: "repair B",
+					},
+					result: { status: "failed", error: "temporary" },
+					sideEffect: "none",
+				},
+			},
+			state: { step: 0, version: 0, values: {} },
+			unresolvedFailures: [{ nodeId: "B", code: "transient", message: "temporary" }],
+			updatedAt: Date.now(),
+		} as unknown as WorkflowCheckpoint;
+		const engine = createDynamicGraphEngine({
+			definition: {
+				initialNodes: [
+					{ id: "A", task: "A" },
+					{ id: "B", task: "B", dependsOn: ["A"] },
+				],
+			},
+			orchestrator,
+			availableTools: [],
+			resume: { checkpoint },
+			recoverFailure,
+		});
+
+		await engine.execute();
+
+		expect(tasks).toHaveLength(1);
+		expect(tasks[0]).toMatch(/^repair B/);
+		expect(tasks[0]).not.toMatch(/^B(?:\n|$)/);
+		expect(recoverFailure).not.toHaveBeenCalled();
+		expect(engine.getContext().nodes.get("A")?.status).toBe("completed");
+		expect(engine.getContext().nodes.get("B")?.result?.content).toBe("B fixed");
+	});
+
+	it("resumes a pending compiled repair without rerunning the failed task", async () => {
+		const tasks: string[] = [];
+		const orchestrator = resultOrchestrator((config) => {
+			tasks.push(config.task);
+			return { status: "completed", content: "B fixed" };
+		});
+		const recoverFailure = vi.fn();
+		const checkpoint = {
+			version: 1,
+			conversationId: "conversation-pending-compiled",
+			runId: "run-pending-compiled",
+			planHash: "plan-pending-compiled",
+			revision: 4,
+			status: "recovering",
+			frontier: ["B"],
+			executionOrder: ["A", "B"],
+			nodes: {
+				A: {
+					nodeId: "A",
+					status: "completed",
+					inputHash: "A",
+					attempts: 1,
+					result: { status: "completed", content: "A done" },
+					sideEffect: "none",
+				},
+				B: {
+					nodeId: "B",
+					status: "failed",
+					inputHash: "B",
+					attempts: 1,
+					recoveryAttempts: 1,
+					pendingRecovery: {
+						action: "replace_node",
+						targetNodeId: "B",
+						reason: "repair the failed output",
+						task: "repair B",
+					},
+					result: { status: "failed", error: "temporary" },
+					sideEffect: "none",
+				},
+			},
+			state: { step: 1, version: 1, values: { "outputs.A": "A done" } },
+			unresolvedFailures: [{ nodeId: "B", code: "transient", message: "temporary" }],
+			updatedAt: Date.now(),
+		} as unknown as WorkflowCheckpoint;
+		const engine = createDynamicGraphEngine({
+			definition: {
+				initialNodes: [],
+				compiledGraph: compileGeneratedWorkflow({
+					nodes: [
+						{ id: "A", task: "A", role: "planner" },
+						{ id: "B", task: "B", role: "planner", after: ["A"] },
+					],
+				}),
+			},
+			orchestrator,
+			availableTools: [],
+			resume: { checkpoint },
+			recoverFailure,
+		});
+
+		await engine.execute();
+
+		expect(tasks).toHaveLength(1);
+		expect(tasks[0]).toMatch(/^repair B/);
+		expect(tasks[0]).not.toMatch(/^B(?:\n|$)/);
+		expect(recoverFailure).not.toHaveBeenCalled();
+		expect(engine.getContext().nodes.get("B")?.result?.content).toBe("B fixed");
+	});
+
+	it("uses recovery contextFrom and drops stale tool hints for replace_tool", async () => {
+		let nextId = 1;
+		const configs = new Map<string, CreateSubagentConfig>();
+		const orchestrator: WorkflowOrchestrator = {
+			createSubagent: vi.fn((config) => {
+				const id = `subagent-${nextId++}`;
+				configs.set(id, config);
+				return id;
+			}),
+			waitForSubagents: vi.fn(async (ids) => new Map(ids.map((id) => {
+				const task = configs.get(id)?.task ?? "";
+				if (task.startsWith("B")) return [id, { status: "failed", error: "Unknown tool brokenTool" } satisfies SubagentResult] as const;
+				return [id, { status: "completed", content: task === "A" ? "A done" : task === "X" ? "X done" : "repaired" } satisfies SubagentResult] as const;
+			}))),
+			getSubagent: vi.fn(),
+			cancelSubagent: vi.fn(() => true),
+			cancelAll: vi.fn(),
+			onEvent: vi.fn(() => () => {}),
+		};
+		const engine = createDynamicGraphEngine({
+			definition: {
+				initialNodes: [
+					{ id: "A", task: "A" },
+					{ id: "X", task: "X" },
+					{ id: "B", task: "B", dependsOn: ["A", "X"], toolHints: ["brokenTool"], inputMapping: { a: "A.content" } },
+				],
+			},
+			orchestrator,
+			availableTools: [],
+			recoverFailure: async () => ({
+				action: "replace_tool",
+				targetNodeId: "B",
+				reason: "use another tool with X context",
+				task: "repair B",
+				contextFrom: ["X"],
+			}),
+		});
+
+		await engine.execute();
+
+		const repair = [...configs.values()].find((config) => config.task.startsWith("repair B"));
+		expect(repair, JSON.stringify([...configs.values()].map((config) => config.task))).toBeDefined();
+		expect(repair?.task).toContain('"X": "X done"');
+		expect(repair?.task).not.toContain('"a": "A done"');
+		expect(repair?.toolHints).toBeUndefined();
+		expect(engine.getContext().nodes.get("B")?.status).toBe("completed");
+	});
+
+	it("diagnoses an executor failure once without retrying the side effect", async () => {
+		const orchestrator = resultOrchestrator(() => ({ status: "failed", error: "response lost" }));
+		const recoverFailure = vi.fn(async () => ({
+			action: "request_input" as const,
+			targetNodeId: "write",
+			reason: "confirm whether the write was applied",
+		}));
+		const engine = createDynamicGraphEngine({
+			definition: { initialNodes: [{ id: "write", task: "write", role: "executor" }] },
+			orchestrator,
+			availableTools: [],
+			recoverFailure,
+		});
+
+		await engine.execute();
+
+		expect(recoverFailure).toHaveBeenCalledOnce();
+		expect(recoverFailure.mock.calls[0][0]).toEqual(expect.objectContaining({ sideEffect: "unknown" }));
+		expect(orchestrator.createSubagent).toHaveBeenCalledTimes(1);
+		expect(engine.getContext().nodes.get("write")?.recoveryAttempts).toBe(1);
+		expect(engine.getContext().nodes.get("write")?.status).toBe("failed");
 	});
 
 	it("should converge a reflection loop once the review approves, without a real cycle in the graph (T10)", async () => {

@@ -20,6 +20,7 @@ describe("parseGeneratedWorkflowPlan", () => {
 		["unknown field", { nodes: [{ id: "a", task: "one", expression: "x" }] }],
 		["cycles", { nodes: [{ id: "a", task: "one" }], cycles: [] }],
 		["invalid maxSteps", { nodes: [{ id: "a", task: "one" }], maxSteps: 0 }],
+		["unsafe timeout", { nodes: [{ id: "a", task: "one", timeoutMs: Number.MAX_SAFE_INTEGER + 1 }] }],
 		["invalid initialState", { nodes: [{ id: "a", task: "one" }], initialState: [] }],
 		["non-record initialState", { nodes: [{ id: "a", task: "one" }], initialState: new Date() }],
 	] as const)("rejects %s with a path", (_name, input) => {
@@ -35,5 +36,19 @@ describe("parseGeneratedWorkflowPlan", () => {
 		expect(result.nodes[0].after).toEqual(["b"]);
 		expect(result.nodes[0].contextFrom).toEqual(["c"]);
 		expect(result.nodes[0].reviews).toEqual(["d"]);
+	});
+
+	it("preserves a positive timeout for semantic recovery", () => {
+		const result = parseGeneratedWorkflowPlan({
+			nodes: [{ id: "a", task: "one", timeoutMs: 60_000 }],
+		});
+		expect(result.nodes[0].timeoutMs).toBe(60_000);
+	});
+
+	it("preserves an exact output contract", () => {
+		const result = parseGeneratedWorkflowPlan({
+			nodes: [{ id: "a", task: "one", outputContract: { exactText: "OK" } }],
+		});
+		expect(result.nodes[0].outputContract).toEqual({ exactText: "OK" });
 	});
 });

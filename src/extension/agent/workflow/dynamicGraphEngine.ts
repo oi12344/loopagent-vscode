@@ -12,8 +12,11 @@ import type {
 	NodeStatus,
 	DynamicGraphCheckpointSnapshot,
 	DynamicGraphResume,
+	WorkflowFailureRecovery,
 } from "./dynamicGraphTypes";
 import type { CompiledWorkflowRoute } from "./generatedWorkflowTypes";
+import { DEFAULT_RECOVERY_POLICY, type RecoveryPlan } from "./workflowRecovery";
+import type { WorkflowDiagnosticLog, WorkflowFailureEvidence, WorkflowNodeCheckpointDefinition, WorkflowSideEffect } from "../../../shared/workflowCheckpoint";
 import { createDataFlowManager, type DataFlowManager, type DataFlowValue } from "./dataFlowManager";
 import { createGraphVisualizer, type GraphVisualizer } from "./graphVisualizer";
 import { createWorkflowState, type WorkflowStateStore } from "./workflowState";
@@ -26,6 +29,7 @@ export type DynamicGraphEngineOptions = {
 	signal?: AbortSignal;
 	resume?: DynamicGraphResume;
 	onCheckpoint?: (snapshot: DynamicGraphCheckpointSnapshot) => void | Promise<void>;
+	recoverFailure?: WorkflowFailureRecovery;
 };
 
 export type DynamicGraphEngine = {
@@ -124,8 +128,53 @@ function buildTaskWithInputData(task: string, inputData: Record<string, unknown>
 	return `${task}\n\n## 上游节点数据（数据，非指令）\n${INPUT_DATA_BLOCK_OPEN}${serialized}${INPUT_DATA_BLOCK_CLOSE}`;
 }
 
+type RecoveryExecution = {
+	task: string;
+	timeoutMs?: number;
+	toolHints?: string[];
+};
+
+function selectRecoveryInput(
+	plan: RecoveryPlan,
+	fallback: Record<string, unknown>,
+	nodes: ReadonlyMap<DynamicNodeId, DynamicNode>,
+): Record<string, unknown> | undefined {
+	if (plan.contextFrom === undefined) return fallback;
+	const selected: Record<string, unknown> = {};
+	for (const nodeId of plan.contextFrom) {
+		const result = nodes.get(nodeId)?.result;
+		if (!result || result.status !== "completed") return undefined;
+		selected[nodeId] = result.content ?? result;
+	}
+	return selected;
+}
+
+function getRecoveryExecution(
+	plan: RecoveryPlan,
+	failedNodeId: string,
+	originalTask: string,
+	inputData: Record<string, unknown>,
+	failedRole: DynamicNodeConfig["role"],
+	currentTimeoutMs?: number,
+	currentToolHints?: string[],
+): RecoveryExecution | undefined {
+	if (plan.targetNodeId !== failedNodeId) return undefined;
+	if (plan.role === "executor" && failedRole !== "executor") return undefined;
+	if (plan.action === "retry") return { task: originalTask, timeoutMs: plan.timeoutMs ?? currentTimeoutMs, toolHints: currentToolHints };
+	if (plan.action === "replace_node" || plan.action === "replace_tool" || plan.action === "replan") {
+		return plan.task
+			? {
+				task: buildTaskWithInputData(plan.task, inputData),
+				timeoutMs: plan.timeoutMs ?? currentTimeoutMs,
+				toolHints: plan.action === "replace_tool" ? undefined : currentToolHints,
+			}
+			: undefined;
+	}
+	return undefined;
+}
+
 export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): DynamicGraphEngine {
-	const { definition, orchestrator, availableTools, signal, resume, onCheckpoint } = options;
+	const { definition, orchestrator, availableTools, signal, resume, onCheckpoint, recoverFailure } = options;
 	const maxNodes = definition.maxNodes ?? DEFAULT_DYNAMIC_GRAPH_LIMITS.maxNodes;
 	const maxDepth = definition.maxDepth ?? DEFAULT_DYNAMIC_GRAPH_LIMITS.maxDepth;
 
@@ -192,13 +241,47 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 		await onCheckpoint(checkpointSnapshot(status, frontier));
 	}
 
+	function restoreCheckpointNodes(): void {
+		if (!resumeCheckpoint) return;
+		const pending = new Map<string, WorkflowNodeCheckpointDefinition>(
+			Object.entries(resumeCheckpoint.nodes)
+				.filter(([nodeId, node]) => !context.nodes.has(nodeId) && node.definition !== undefined)
+				.map(([nodeId, node]) => [nodeId, node.definition!] as const),
+		);
+		let progressed = true;
+		while (pending.size > 0 && progressed) {
+			progressed = false;
+			for (const [nodeId, savedDefinition] of pending) {
+				if (!savedDefinition.dependsOn.every((dependencyId) => context.nodes.has(dependencyId))) continue;
+				addNode({
+					id: nodeId,
+					task: savedDefinition.task,
+					role: savedDefinition.role as DynamicNodeConfig["role"],
+					toolHints: savedDefinition.toolHints,
+					dependsOn: savedDefinition.dependsOn,
+					timeoutMs: savedDefinition.timeoutMs,
+					sideEffect: savedDefinition.sideEffect,
+					exportTo: savedDefinition.exportTo,
+					inputMapping: savedDefinition.inputMapping,
+					condition: savedDefinition.condition,
+					retry: savedDefinition.retry,
+					outputContract: savedDefinition.outputContract,
+				}, savedDefinition.dependsOn);
+				pending.delete(nodeId);
+				progressed = true;
+			}
+		}
+	}
+
 	function restoreSeededNodes(): Set<DynamicNodeId> | undefined {
 		if (!resumeCheckpoint) return undefined;
-		const allowed = new Set(resumeCheckpoint.frontier);
+		const allowed = new Set(resumeCheckpoint.frontier.filter((nodeId) => context.nodes.has(nodeId)));
 		for (const [nodeId, node] of context.nodes) {
 			const saved = resumeCheckpoint.nodes[nodeId];
 			if (!saved) continue;
 			node.attempts = saved.attempts;
+			node.recoveryAttempts = saved.recoveryAttempts ?? 0;
+			node.pendingRecovery = saved.pendingRecovery;
 			if (saved.status === "completed" && saved.result) {
 				const result = toSubagentResult(saved.result);
 				if (!result) continue;
@@ -211,11 +294,19 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			} else if (saved.status === "failed" && allowed.has(nodeId)) {
 				// A failed node is a recovery frontier only when retry is safe. Unknown/applied
 				// side effects stay terminal until an explicit reconciliation step.
-				node.status = saved.sideEffect === "none" ? "pending" : "failed";
+				const failure = resumeCheckpoint.unresolvedFailures.find((entry) => entry.nodeId === nodeId);
+				const restoredResult = toSubagentResult(saved.result, failure?.logs);
+				if (restoredResult) node.result = restoredResult;
+				const recoveryLimit = saved.sideEffect === "none" ? DEFAULT_RECOVERY_POLICY.maxRecoveryAttempts : 1;
+				node.status = saved.sideEffect === "none" && (!recoverFailure || (saved.recoveryAttempts ?? 0) < recoveryLimit) ? "pending" : "failed";
 			} else if (saved.status === "running" && allowed.has(nodeId)) {
 				// A process crash can leave an executor after its side effect was sent but
 				// before the response was persisted. Treat it as requiring reconciliation.
-				node.status = saved.sideEffect === "none" ? "pending" : "failed";
+				const failure = resumeCheckpoint.unresolvedFailures.find((entry) => entry.nodeId === nodeId);
+				const restoredResult = toSubagentResult(saved.result, failure?.logs);
+				if (restoredResult) node.result = restoredResult;
+				const recoveryLimit = saved.sideEffect === "none" ? DEFAULT_RECOVERY_POLICY.maxRecoveryAttempts : 1;
+				node.status = saved.sideEffect === "none" && (!recoverFailure || (saved.recoveryAttempts ?? 0) < recoveryLimit) ? "pending" : "failed";
 			}
 		}
 		context.executionOrder.push(...resumeCheckpoint.executionOrder.filter((nodeId) => context.nodes.has(nodeId)));
@@ -236,20 +327,44 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 		return allowed;
 	}
 
-	function toSubagentResult(result: { status: string; content?: string; error?: string }): SubagentResult | undefined {
+	function toSubagentResult(result: { status: string; content?: string; error?: string } | undefined, diagnosticLog?: readonly WorkflowDiagnosticLog[]): SubagentResult | undefined {
+		if (!result) return undefined;
 		if (result.status !== "completed" && result.status !== "failed" && result.status !== "cancelled") return undefined;
-		return { status: result.status, content: result.content, error: result.error };
+		return {
+			status: result.status,
+			content: result.content,
+			error: result.error,
+			...(diagnosticLog && diagnosticLog.length > 0 ? { diagnosticLog } : {}),
+		};
 	}
 
 	let allowedRecoveryNodes: Set<DynamicNodeId> | undefined;
 
 	function currentLegacyFrontier(): DynamicNodeId[] {
-		return [...context.nodes.values()]
-			.filter((node) =>
-				(node.status === "pending" || node.status === "pending-retry" || node.status === "failed")
-				&& (!allowedRecoveryNodes || allowedRecoveryNodes.has(node.config.id)),
-			)
-			.map((node) => node.config.id);
+		const failed = new Set(
+			[...context.nodes.values()]
+				.filter((node) => node.status === "failed" || node.result?.status === "failed")
+				.map((node) => node.config.id),
+		);
+		const frontier = new Set(failed);
+		if (failed.size > 0) {
+			let changed = true;
+			while (changed) {
+				changed = false;
+				for (const node of context.nodes.values()) {
+					if (frontier.has(node.config.id) || node.status === "completed" || node.status === "skipped") continue;
+					if ([...node.dependencies].some((dependencyId) => frontier.has(dependencyId))) {
+						frontier.add(node.config.id);
+						changed = true;
+					}
+				}
+			}
+		} else {
+			for (const node of context.nodes.values()) {
+				if (node.status === "pending" || node.status === "pending-retry" || node.status === "running") frontier.add(node.config.id);
+			}
+		}
+		return [...frontier].filter((nodeId) => !allowedRecoveryNodes || allowedRecoveryNodes.has(nodeId));
 	}
 
 	function addNode(config: DynamicNodeConfig, dependencies: DynamicNodeId[] = []): DynamicNodeId {
@@ -416,7 +531,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 		return inputData;
 	}
 
-	async function executeNode(node: DynamicNode, completedNodes: ReadonlyMap<DynamicNodeId, SubagentResult>): Promise<void> {
+	async function executeNode(node: DynamicNode, completedNodes: Map<DynamicNodeId, SubagentResult>): Promise<void> {
 		if (!evaluateCondition(node, completedNodes)) {
 			node.finishedAt = new Date();
 			updateNodeStatus(node.config.id, "skipped");
@@ -429,15 +544,55 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 		updateNodeStatus(node.config.id, "ready");
 		node.startedAt = new Date();
 
-		const sideEffect = node.config.sideEffect ?? (node.config.role === "executor" ? "unknown" : "none");
+		const sideEffect: WorkflowSideEffect = node.config.sideEffect ?? (node.config.role === "executor" ? "unknown" : "none");
 		const maxAttempts = sideEffect === "none" ? Math.max(1, node.config.retry?.maxAttempts ?? 1) : 1;
 		const previousAttempts = node.attempts ?? 0;
+		const previousRecoveryAttempts = node.recoveryAttempts ?? 0;
 		const backoffMs = node.config.retry?.backoffMs ?? 0;
 		const task = buildTaskWithInputData(node.config.task, inputData);
+		const pendingPlan = node.pendingRecovery as RecoveryPlan | undefined;
+		const pendingInput = pendingPlan && selectRecoveryInput(pendingPlan, inputData, context.nodes);
+		const pendingExecution = sideEffect === "none" && pendingPlan && pendingInput
+			? getRecoveryExecution(
+				pendingPlan,
+				node.config.id,
+				task,
+				pendingInput,
+				node.config.role,
+				node.config.timeoutMs,
+				node.config.toolHints,
+			)
+			: undefined;
+		if (pendingPlan && !pendingExecution) {
+			node.pendingRecovery = undefined;
+			node.result = node.result ?? { status: "failed", error: "Pending recovery plan is no longer executable" };
+			node.finishedAt = new Date();
+			updateNodeStatus(node.config.id, "failed");
+			return;
+		}
+		const remainingAttempts = Math.max(0, maxAttempts - previousAttempts);
+		if (remainingAttempts === 0 && !pendingExecution) {
+			node.result = node.result ?? { status: "failed", error: `Retry budget exhausted after ${previousAttempts} attempts` };
+			node.finishedAt = new Date();
+			updateNodeStatus(node.config.id, "failed");
+			return;
+		}
+		const firstPassAttempts = pendingExecution ? 1 : recoverFailure ? Math.min(1, remainingAttempts) : remainingAttempts;
+		const remainingRecoveryAttempts = recoverFailure
+			? Math.max(0, (sideEffect === "none" ? DEFAULT_RECOVERY_POLICY.maxRecoveryAttempts : 1) - previousRecoveryAttempts)
+			: 0;
+		const totalAttemptBudget = firstPassAttempts + (sideEffect === "none" ? remainingRecoveryAttempts : 0);
+		let taskForAttempt = pendingExecution?.task ?? task;
+		let roleForAttempt = pendingPlan?.role ?? node.config.role;
+		let toolHintsForAttempt = pendingExecution ? pendingExecution.toolHints : node.config.toolHints;
+		let timeoutMsForAttempt = pendingExecution?.timeoutMs ?? node.config.timeoutMs;
+		let recoveryAttempts = 0;
 		let result: SubagentResult | undefined;
+		if (pendingExecution) node.pendingRecovery = undefined;
 
-		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		for (let attempt = 1; attempt <= totalAttemptBudget; attempt++) {
 			node.attempts = previousAttempts + attempt;
+			node.lastAttemptTimeoutMs = timeoutMsForAttempt;
 
 			// No `dependsOn` forwarded to the orchestrator: the readyNodes gate in execute() already
 			// guarantees every dependency is terminal before executeNode runs. Forwarding it would
@@ -446,10 +601,10 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			// that are specifically meant to run *because* a dependency failed.
 			const subagentId = orchestrator.createSubagent(
 				{
-					task,
-					role: node.config.role,
-					toolHints: node.config.toolHints,
-					timeoutMs: node.config.timeoutMs,
+					task: taskForAttempt,
+					role: roleForAttempt,
+					toolHints: toolHintsForAttempt,
+					timeoutMs: timeoutMsForAttempt,
 				},
 				availableTools,
 			);
@@ -459,9 +614,72 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 
 			const results = await orchestrator.waitForSubagents([subagentId]);
 			result = results.get(subagentId);
+			if (!result) {
+				result = { status: "failed", error: `Subagent ${subagentId} returned no result` };
+			}
+			if (result?.status === "completed") {
+				result = validateOutputContract(node, result);
+			}
 
 			if (!result || result.status === "completed" || result.status === "cancelled") break;
-			if (attempt < maxAttempts) {
+
+			node.result = result;
+			const mayContinue = attempt < totalAttemptBudget;
+			if (!mayContinue) {
+				node.finishedAt = new Date();
+				updateNodeStatus(node.config.id, "failed");
+			}
+			await persistCheckpoint(mayContinue ? "running" : "failed", currentLegacyFrontier());
+
+			if (recoverFailure && recoveryAttempts < remainingRecoveryAttempts) {
+				const evidence: WorkflowFailureEvidence = {
+					nodeId: node.config.id,
+					task: node.config.task,
+					input: inputData,
+					outputContract: node.config.outputContract,
+					error: result.error ?? "Subagent failed",
+					attempt: node.attempts,
+					recoveryAttempt: previousRecoveryAttempts + recoveryAttempts,
+					maxAttempts,
+					timeoutMs: timeoutMsForAttempt,
+					logs: [...(result.diagnosticLog ?? [])],
+					sideEffect,
+				};
+				let plan: RecoveryPlan | undefined;
+				try {
+					plan = await recoverFailure(evidence);
+				} catch {
+					plan = undefined;
+				}
+				recoveryAttempts++;
+				node.recoveryAttempts = previousRecoveryAttempts + recoveryAttempts;
+				if (sideEffect !== "none") break;
+				const recoveryInput = plan && selectRecoveryInput(plan, inputData, context.nodes);
+				const recoveryExecution = plan && recoveryInput && getRecoveryExecution(
+					plan,
+					node.config.id,
+					task,
+					recoveryInput,
+					node.config.role,
+					timeoutMsForAttempt,
+					toolHintsForAttempt,
+				);
+				if (recoveryExecution) {
+					node.pendingRecovery = plan;
+					await persistCheckpoint("recovering", currentLegacyFrontier());
+					taskForAttempt = recoveryExecution.task;
+					timeoutMsForAttempt = recoveryExecution.timeoutMs;
+					toolHintsForAttempt = recoveryExecution.toolHints;
+					roleForAttempt = plan?.role ?? node.config.role;
+					node.pendingRecovery = undefined;
+					continue;
+				}
+				await persistCheckpoint("recovering", currentLegacyFrontier());
+				break;
+			}
+			if (recoverFailure) break;
+
+			if (!recoverFailure && attempt < totalAttemptBudget) {
 				if (cancelled || signal?.aborted) break;
 				if (backoffMs > 0) await waitForBackoff(backoffMs);
 				if (cancelled || signal?.aborted) break;
@@ -474,15 +692,14 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			const terminalStatus: NodeStatus = result.status === "completed" ? "completed" : result.status === "cancelled" ? "cancelled" : "failed";
 			updateNodeStatus(node.config.id, terminalStatus);
 
-			if (node.config.exportTo && result.content !== undefined) {
+			if (result.status === "completed" && node.config.exportTo && result.content !== undefined) {
 				context.globalData.set(node.config.exportTo, result.content);
 			}
 
-			dataFlowManager.recordOutput(node.config.id, result);
+			if (result.status === "completed") dataFlowManager.recordOutput(node.config.id, result);
 			emit({ type: "NodeCompleted", nodeId: node.config.id, result });
 
-			const newCompletedNodes = new Map(completedNodes);
-			newCompletedNodes.set(node.config.id, result);
+				completedNodes.set(node.config.id, result);
 
 			// 检查是否触发循环边
 			if (cycleManager && result.status === "completed") {
@@ -525,9 +742,53 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 				}
 			}
 
-			await resolveDependencies(node.config.id, newCompletedNodes);
+				await resolveDependencies(node.config.id, completedNodes);
 			await persistCheckpoint("running", currentLegacyFrontier());
 		}
+	}
+
+	function validateOutputContract(node: DynamicNode, result: SubagentResult): SubagentResult {
+		const contract = node.config.outputContract;
+		if (!contract || result.status !== "completed") return result;
+
+		const content = result.content ?? "";
+		if (contract.exactText !== undefined && content.trim() !== contract.exactText) {
+			return {
+				...result,
+				status: "failed",
+				error: `Output contract exactText '${contract.exactText}' was not matched`,
+			};
+		}
+		if (contract.minLength !== undefined && content.length < contract.minLength) {
+			return {
+				...result,
+				status: "failed",
+				error: `Output contract minLength ${contract.minLength} was not met`,
+			};
+		}
+		if (contract.requiredText !== undefined && !content.includes(contract.requiredText)) {
+			return {
+				...result,
+				status: "failed",
+				error: `Output contract requiredText '${contract.requiredText}' was not found`,
+			};
+		}
+		if (contract.requiredFields !== undefined) {
+			let parsed: unknown;
+			try {
+				parsed = JSON.parse(content);
+			} catch {
+				return { ...result, status: "failed", error: "Output contract requires JSON content" };
+			}
+			if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+				return { ...result, status: "failed", error: "Output contract requires a JSON object" };
+			}
+			const missing = contract.requiredFields.filter((field) => !(field in parsed));
+			if (missing.length > 0) {
+				return { ...result, status: "failed", error: `Output contract missing fields: ${missing.join(", ")}` };
+			}
+		}
+		return result;
 	}
 
 	/**
@@ -585,6 +846,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			addNode(config, config.dependsOn ?? []);
 		}
 
+		restoreCheckpointNodes();
 		allowedRecoveryNodes = restoreSeededNodes();
 		const completedNodes = new Map<DynamicNodeId, SubagentResult>();
 		for (const [nodeId, node] of context.nodes) {
@@ -651,6 +913,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 				task: compiled.task,
 				role: compiled.role,
 				dependsOn: compiled.after,
+				outputContract: compiled.outputContract,
 			}, compiled.after ?? []);
 		}
 		allowedRecoveryNodes = restoreSeededNodes();
@@ -679,12 +942,16 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			emit({ type: "StepStarted", step, frontier: [...frontier], stateVersion: snapshot.version });
 
 			const run = async (nodeId: string) => {
+				const resumedNode = context.nodes.get(nodeId);
 				if (
 					resumeCheckpoint
-					&& (context.nodes.get(nodeId)?.status === "completed" || context.nodes.get(nodeId)?.status === "skipped")
+					&& (resumedNode?.status === "completed" || resumedNode?.status === "skipped")
 					&& !resumeCheckpoint.frontier.includes(nodeId)
 				) {
 					return { nodeId, result: results.get(nodeId) ?? { status: "completed" as const } };
+				}
+				if (resumeCheckpoint && resumedNode?.status === "failed") {
+					return { nodeId, result: resumedNode.result ?? { status: "failed" as const, error: "Recovery budget exhausted" } };
 				}
 				if (++executions > (definition.maxExecutions ?? graph.limits.maxExecutionsPerNode! * graph.nodes.length)) {
 					emit({ type: "GraphLimitExceeded", limit: "maxExecutions", value: executions });
@@ -699,25 +966,95 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 				dataFlowManager.recordInput(nodeId, inputData as Record<string, DataFlowValue>);
 				updateNodeStatus(nodeId, "ready");
 				node.startedAt = new Date();
-				const subagentId = orchestrator.createSubagent({
-					task: buildTaskWithInputData(compiled.task, inputData),
-					role: compiled.role,
-				}, availableTools);
-				node.subagentId = subagentId;
-				updateNodeStatus(nodeId, "running");
-				const result = (await orchestrator.waitForSubagents([subagentId])).get(subagentId);
+				const originalTask = buildTaskWithInputData(compiled.task, inputData);
+				const pendingPlan = node.pendingRecovery as RecoveryPlan | undefined;
+				const pendingInput = pendingPlan && selectRecoveryInput(pendingPlan, inputData, context.nodes);
+				const pendingExecution = !compiled.hasSideEffect && pendingPlan && pendingInput
+					? getRecoveryExecution(pendingPlan, nodeId, originalTask, pendingInput, compiled.role, compiled.timeoutMs)
+					: undefined;
+				if (pendingPlan && !pendingExecution) {
+					node.pendingRecovery = undefined;
+					const failed = { status: "failed" as const, error: "Pending recovery plan is no longer executable" };
+					node.result = failed;
+					results.set(nodeId, failed);
+					updateNodeStatus(nodeId, "failed");
+					return { nodeId, result: failed };
+				}
+				let task = pendingExecution?.task ?? originalTask;
+				let roleForAttempt = pendingPlan?.role ?? compiled.role;
+				let timeoutMsForAttempt = pendingExecution?.timeoutMs ?? compiled.timeoutMs;
+				let result: SubagentResult | undefined;
+				const previousRecoveryAttempts = node.recoveryAttempts ?? 0;
+				const recoveryBudget = recoverFailure
+					? Math.max(0, (compiled.hasSideEffect ? 1 : DEFAULT_RECOVERY_POLICY.maxRecoveryAttempts) - previousRecoveryAttempts)
+					: 0;
+				const repairExecutionBudget = compiled.hasSideEffect ? 0 : recoveryBudget;
+				let recoveryAttempts = 0;
+				if (pendingExecution) node.pendingRecovery = undefined;
+				for (let attempt = 1; attempt <= 1 + repairExecutionBudget; attempt++) {
+					node.attempts = (node.attempts ?? 0) + 1;
+					node.lastAttemptTimeoutMs = timeoutMsForAttempt;
+					const subagentId = orchestrator.createSubagent({ task, role: roleForAttempt, timeoutMs: timeoutMsForAttempt }, availableTools);
+					node.subagentId = subagentId;
+					updateNodeStatus(nodeId, "running");
+					result = (await orchestrator.waitForSubagents([subagentId])).get(subagentId);
+					if (!result) throw new Error(`Node ${nodeId} returned no result`);
+					if (result.status === "completed") result = validateOutputContract(node, result);
+					if (result.status === "completed" || result.status === "cancelled") break;
+					node.result = result;
+					if (!recoverFailure || recoveryAttempts >= recoveryBudget) break;
+					const evidence: WorkflowFailureEvidence = {
+						nodeId,
+						task: compiled.task,
+						input: inputData,
+						outputContract: compiled.outputContract,
+						error: result.error ?? "Subagent failed",
+						attempt: node.attempts,
+						recoveryAttempt: previousRecoveryAttempts + recoveryAttempts,
+						maxAttempts: 1,
+						timeoutMs: timeoutMsForAttempt,
+						logs: [...(result.diagnosticLog ?? [])],
+						sideEffect: compiled.hasSideEffect ? "unknown" : "none",
+					};
+					let plan: RecoveryPlan | undefined;
+					try {
+						plan = await recoverFailure(evidence);
+					} catch {
+						plan = undefined;
+					}
+					recoveryAttempts++;
+					node.recoveryAttempts = previousRecoveryAttempts + recoveryAttempts;
+					if (compiled.hasSideEffect) break;
+					const recoveryInput = plan && selectRecoveryInput(plan, inputData, context.nodes);
+					const recoveryExecution = plan && recoveryInput && getRecoveryExecution(
+						plan,
+						nodeId,
+						task,
+						recoveryInput,
+						compiled.role,
+						timeoutMsForAttempt,
+					);
+					if (!recoveryExecution) break;
+					node.pendingRecovery = plan;
+					await persistCheckpoint("recovering", [nodeId]);
+					task = recoveryExecution.task;
+					roleForAttempt = plan?.role ?? compiled.role;
+					timeoutMsForAttempt = recoveryExecution.timeoutMs;
+					node.pendingRecovery = undefined;
+				}
 				if (!result) throw new Error(`Node ${nodeId} returned no result`);
-				node.result = result;
+				const validatedResult = result;
+				node.result = validatedResult;
 				node.finishedAt = new Date();
-				updateNodeStatus(nodeId, result.status === "completed" ? "completed" : result.status === "cancelled" ? "cancelled" : "failed");
+				updateNodeStatus(nodeId, validatedResult.status === "completed" ? "completed" : validatedResult.status === "cancelled" ? "cancelled" : "failed");
 				// 失败结果也要进 results：父智能体需要看到错误原文才能重规划或恢复。只有成功结果
 				// 才写 outputs 通道和发 NodeCompleted，所以下游拿不到失败节点伪造的上下文。
-				results.set(nodeId, result);
-				if (result.status === "completed") {
-					dataFlowManager.recordOutput(nodeId, result);
-					emit({ type: "NodeCompleted", nodeId, result });
+				results.set(nodeId, validatedResult);
+				if (validatedResult.status === "completed") {
+					dataFlowManager.recordOutput(nodeId, validatedResult);
+					emit({ type: "NodeCompleted", nodeId, result: validatedResult });
 				}
-				return { nodeId, result };
+				return { nodeId, result: validatedResult };
 			};
 
 			const readOnly = frontier.filter((id) => compiledById.get(id)?.role !== "executor");
@@ -728,7 +1065,7 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			const writes = executed
 				.filter(({ result }) => result.status === "completed")
 				.flatMap(({ nodeId, result }) => [
-					{ channel: `outputs.${nodeId}`, value: result.content ?? result, mode: "single" as const, nodeId },
+					{ channel: `outputs.${nodeId}`, value: "content" in result ? result.content ?? result : result, mode: "single" as const, nodeId },
 					{ channel: "history", value: { nodeId, step, status: result.status }, mode: "append" as const, nodeId },
 				]);
 			const committed = stateStore!.commitWrites(snapshot, writes);

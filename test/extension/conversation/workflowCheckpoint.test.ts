@@ -32,6 +32,14 @@ function makeCheckpoint(overrides: Partial<WorkflowCheckpoint> = {}): WorkflowCh
         status: "failed",
         inputHash: "input-review",
         attempts: 2,
+        recoveryAttempts: 1,
+        pendingRecovery: {
+          action: "replace_node",
+          targetNodeId: "review",
+          reason: "repair timeout",
+          task: "review repaired",
+          timeoutMs: 60_000,
+        },
         error: { code: "timeout", message: "timed out", retryable: true },
         sideEffect: "unknown",
       },
@@ -41,7 +49,14 @@ function makeCheckpoint(overrides: Partial<WorkflowCheckpoint> = {}): WorkflowCh
       version: 1,
       values: { answer: "ready", nested: { count: 2 }, entries: { first: true } },
     },
-    unresolvedFailures: [{ nodeId: "review", code: "timeout", message: "timed out" }],
+    unresolvedFailures: [{
+      nodeId: "review",
+      code: "timeout",
+      message: "timed out",
+      attempt: 2,
+      timeoutMs: 60_000,
+      logs: [{ kind: "tool", name: "readFile", message: "permission denied" }],
+    }],
     updatedAt: 100,
     ...overrides,
   };
@@ -58,6 +73,7 @@ describe("workflow checkpoint contract", () => {
       },
     });
 
+    expect(store.claimWorkflowCheckpoint(checkpoint.conversationId, checkpoint.runId, checkpoint.planHash, undefined)).toBe(true);
     expect(store.saveWorkflowCheckpoint(checkpoint)).toBe(true);
     expect(store.loadWorkflowCheckpoint(checkpoint.conversationId, checkpoint.runId)).toEqual(checkpoint);
   });
@@ -82,7 +98,9 @@ describe("workflow checkpoint contract", () => {
     const otherRun = makeCheckpoint({ runId: "run-2", revision: 1 });
     const otherPlan = makeCheckpoint({ planHash: "plan-2", revision: 3 });
 
+    expect(store.claimWorkflowCheckpoint(first.conversationId, first.runId, first.planHash, undefined)).toBe(true);
     expect(store.saveWorkflowCheckpoint(first)).toBe(true);
+    expect(store.getWorkflowCheckpointRunId(first.conversationId)).toBe(first.runId);
     expect(store.saveWorkflowCheckpoint(newer)).toBe(true);
     expect(store.saveWorkflowCheckpoint(stale)).toBe(false);
     expect(store.saveWorkflowCheckpoint(otherRun)).toBe(false);
@@ -92,7 +110,26 @@ describe("workflow checkpoint contract", () => {
     store.clearWorkflowCheckpoint(first.conversationId, "run-2");
     expect(store.loadWorkflowCheckpoint(first.conversationId, first.runId)).toEqual(newer);
     store.clearWorkflowCheckpoint(first.conversationId, first.runId);
+    expect(store.getWorkflowCheckpointRunId(first.conversationId)).toBe(first.runId);
     expect(store.loadWorkflowCheckpoint(first.conversationId, first.runId)).toBeUndefined();
+    expect(store.claimWorkflowCheckpoint(otherRun.conversationId, otherRun.runId, otherRun.planHash, first.runId)).toBe(true);
     expect(store.saveWorkflowCheckpoint(otherRun)).toBe(true);
+  });
+
+  it("atomically changes checkpoint ownership and rejects late writes from the old run", () => {
+    const store = createConversationStore();
+    const first = makeCheckpoint();
+    const late = makeCheckpoint({ revision: 2, updatedAt: 101 });
+    const next = makeCheckpoint({ runId: "run-2", planHash: "plan-2" });
+
+    expect(store.saveWorkflowCheckpoint(first)).toBe(false);
+    expect(store.claimWorkflowCheckpoint(first.conversationId, first.runId, first.planHash, undefined)).toBe(true);
+    expect(store.saveWorkflowCheckpoint(first)).toBe(true);
+    expect(store.claimWorkflowCheckpoint(next.conversationId, next.runId, next.planHash, first.runId)).toBe(true);
+    expect(store.claimWorkflowCheckpoint(first.conversationId, first.runId, first.planHash, first.runId)).toBe(false);
+    expect(store.saveWorkflowCheckpoint(late)).toBe(false);
+    expect(store.getWorkflowCheckpointRunId(first.conversationId)).toBe(next.runId);
+    expect(store.loadWorkflowCheckpoint(first.conversationId, first.runId)).toBeUndefined();
+    expect(store.saveWorkflowCheckpoint(next)).toBe(true);
   });
 });

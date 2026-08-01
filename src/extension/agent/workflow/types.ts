@@ -1,5 +1,6 @@
 import type { AgentRunner } from "../../agentRunner";
 import type { ReactAgentTool } from "../reactTypes";
+import type { WorkflowDiagnosticLog } from "../../../shared/workflowCheckpoint";
 
 export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
@@ -24,7 +25,10 @@ export type SubagentResult = {
   content?: string;
   error?: string;
   toolCallCount?: number;
+  diagnosticLog?: readonly WorkflowDiagnosticLog[];
 };
+
+export type SubagentDiagnosticLog = WorkflowDiagnosticLog;
 
 export type WorkflowLimits = {
   maxSubagentsPerRun: number;

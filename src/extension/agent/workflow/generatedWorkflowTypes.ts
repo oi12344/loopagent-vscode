@@ -1,5 +1,6 @@
 import type { SubagentRoleId } from "./types";
 import type { RecoveryAction } from "./workflowRecovery";
+import type { WorkflowOutputContract } from "./dynamicGraphTypes";
 
 export type GeneratedWorkflowPlan = {
 	nodes: GeneratedWorkflowNode[];
@@ -12,9 +13,11 @@ export type GeneratedWorkflowNode = {
 	id: string;
 	task: string;
 	role?: SubagentRoleId;
+	timeoutMs?: number;
 	after?: string[];
 	contextFrom?: string[];
 	reviews?: string[];
+	outputContract?: WorkflowOutputContract;
 };
 
 export type CompiledWorkflowNode = GeneratedWorkflowNode & {
@@ -75,7 +78,7 @@ export class WorkflowCompileError extends Error {
 }
 
 const PLAN_KEYS = new Set(["nodes", "entry", "initialState", "maxSteps"]);
-const NODE_KEYS = new Set(["id", "task", "role", "after", "contextFrom", "reviews"]);
+const NODE_KEYS = new Set(["id", "task", "role", "timeoutMs", "after", "contextFrom", "reviews", "outputContract"]);
 const ROLES = new Set<SubagentRoleId>(["explorer", "reviewer", "planner", "executor"]);
 
 export function parseGeneratedWorkflowPlan(input: unknown): GeneratedWorkflowPlan {
@@ -103,13 +106,19 @@ export function parseGeneratedWorkflowPlan(input: unknown): GeneratedWorkflowPla
 			task,
 		};
 		if (role !== undefined) normalized.role = role as SubagentRoleId;
+		const timeoutMs = node.timeoutMs === undefined ? undefined : positiveInteger(node.timeoutMs, `${path}.timeoutMs`);
+		if (timeoutMs !== undefined) normalized.timeoutMs = timeoutMs;
 		const after = strings(node.after, `${path}.after`);
 		const contextFrom = strings(node.contextFrom, `${path}.contextFrom`);
-		const reviews = strings(node.reviews, `${path}.reviews`);
+			const reviews = strings(node.reviews, `${path}.reviews`);
+			const outputContract = node.outputContract === undefined
+				? undefined
+				: parseOutputContract(node.outputContract, `${path}.outputContract`);
 		if (after !== undefined) normalized.after = after;
 		if (contextFrom !== undefined) normalized.contextFrom = contextFrom;
-		if (reviews !== undefined) normalized.reviews = reviews;
-		return normalized;
+			if (reviews !== undefined) normalized.reviews = reviews;
+			if (outputContract !== undefined) normalized.outputContract = outputContract;
+			return normalized;
 	});
 
 	const entry = strings(plan.entry, "plan.entry");
@@ -150,8 +159,34 @@ function strings(value: unknown, path: string): string[] | undefined {
 }
 
 function positiveInteger(value: unknown, path: string): number {
-	if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
 		throw new WorkflowCompileError("must be a positive integer", path);
+	}
+	return value;
+}
+
+function parseOutputContract(value: unknown, path: string): WorkflowOutputContract {
+	const contract = record(value, path);
+	const keys = new Set(["exactText", "requiredText", "requiredFields", "minLength"]);
+	assertKeys(contract, keys, path);
+	const exactText = contract.exactText === undefined ? undefined : text(contract.exactText, `${path}.exactText`);
+	const requiredText = contract.requiredText === undefined ? undefined : text(contract.requiredText, `${path}.requiredText`);
+	const requiredFields = contract.requiredFields === undefined ? undefined : strings(contract.requiredFields, `${path}.requiredFields`);
+	const minLength = contract.minLength === undefined ? undefined : nonNegativeInteger(contract.minLength, `${path}.minLength`);
+	if (exactText === undefined && requiredText === undefined && requiredFields === undefined && minLength === undefined) {
+		throw new WorkflowCompileError("must define exactText, requiredText, requiredFields, or minLength", path);
+	}
+	return {
+		...(exactText !== undefined && { exactText }),
+		...(requiredText !== undefined && { requiredText }),
+		...(requiredFields !== undefined && { requiredFields }),
+		...(minLength !== undefined && { minLength }),
+	};
+}
+
+function nonNegativeInteger(value: unknown, path: string): number {
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+		throw new WorkflowCompileError("must be a non-negative integer", path);
 	}
 	return value;
 }

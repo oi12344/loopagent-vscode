@@ -23,11 +23,93 @@ export type WorkflowNodeCheckpointStatus =
 
 export type WorkflowSideEffect = "none" | "applied" | "unknown";
 
+export type WorkflowCheckpointRole = "explorer" | "reviewer" | "planner" | "executor";
+
+export type WorkflowCheckpointOutputContract = {
+  exactText?: string;
+  requiredText?: string;
+  requiredFields?: string[];
+  minLength?: number;
+};
+
+export type WorkflowCheckpointCondition = {
+  type: "always" | "onSuccess" | "onFailure" | "custom";
+  expression?: string;
+};
+
+export type WorkflowNodeCheckpointDefinition = {
+  task: string;
+  role?: WorkflowCheckpointRole;
+  toolHints?: string[];
+  dependsOn: string[];
+  timeoutMs?: number;
+  sideEffect: WorkflowSideEffect;
+  exportTo?: string;
+  inputMapping?: Record<string, string>;
+  condition?: WorkflowCheckpointCondition;
+  retry?: { maxAttempts: number; backoffMs?: number };
+  outputContract?: WorkflowCheckpointOutputContract;
+};
+
+export type WorkflowRecoveryDiagnostic = {
+  nodeId: string;
+  category: string;
+  action?: string;
+  reason?: string;
+  timeoutMs?: number;
+  error?: string;
+};
+
+export type WorkflowRecoveryAction =
+  | "retry"
+  | "replan"
+  | "replace_node"
+  | "replace_tool"
+  | "switch_provider"
+  | "reconcile_side_effect"
+  | "compensate"
+  | "request_input"
+  | "wait_external";
+
+export type WorkflowPendingRecovery = {
+  action: WorkflowRecoveryAction;
+  targetNodeId: string;
+  reason: string;
+  task?: string;
+  role?: WorkflowCheckpointRole;
+  contextFrom?: string[];
+  timeoutMs?: number;
+};
+
+export type WorkflowDiagnosticLog = {
+  kind: "assistant" | "tool" | "error";
+  name?: string;
+  message: string;
+  succeeded?: boolean;
+};
+
+export type WorkflowFailureEvidence = {
+  nodeId: string;
+  task: string;
+  input: Record<string, unknown>;
+	outputContract?: WorkflowCheckpointOutputContract;
+	error: string;
+	attempt: number;
+	recoveryAttempt: number;
+	maxAttempts: number;
+	timeoutMs?: number;
+	logs: WorkflowDiagnosticLog[];
+  sideEffect: WorkflowSideEffect;
+};
+
 export type WorkflowNodeCheckpoint = {
   nodeId: string;
   status: WorkflowNodeCheckpointStatus;
   inputHash: string;
   attempts: number;
+  recoveryAttempts?: number;
+  pendingRecovery?: WorkflowPendingRecovery;
+  definition?: WorkflowNodeCheckpointDefinition;
   result?: {
     status: string;
     content?: string;
@@ -42,9 +124,13 @@ export type WorkflowNodeCheckpoint = {
 };
 
 export type WorkflowCheckpointFailure = {
-  nodeId?: string;
-  code: string;
-  message: string;
+	nodeId?: string;
+	code: string;
+	message: string;
+	attempt?: number;
+	timeoutMs?: number;
+	logs?: WorkflowDiagnosticLog[];
+  input?: Record<string, unknown>;
 };
 
 export type WorkflowCheckpoint = {
@@ -63,6 +149,7 @@ export type WorkflowCheckpoint = {
     values: Record<string, unknown>;
   };
   unresolvedFailures: WorkflowCheckpointFailure[];
+  recoveryDiagnostics?: WorkflowRecoveryDiagnostic[];
   updatedAt: number;
 };
 
@@ -78,13 +165,28 @@ const CHECKPOINT_KEYS = new Set([
   "nodes",
   "state",
   "unresolvedFailures",
+  "recoveryDiagnostics",
   "updatedAt",
 ]);
-const NODE_KEYS = new Set(["nodeId", "status", "inputHash", "attempts", "result", "error", "sideEffect"]);
+const NODE_KEYS = new Set(["nodeId", "status", "inputHash", "attempts", "recoveryAttempts", "pendingRecovery", "definition", "result", "error", "sideEffect"]);
+const DEFINITION_KEYS = new Set(["task", "role", "toolHints", "dependsOn", "timeoutMs", "sideEffect", "exportTo", "inputMapping", "condition", "retry", "outputContract"]);
+const DEFINITION_ROLES = new Set<WorkflowCheckpointRole>(["explorer", "reviewer", "planner", "executor"]);
+const CONDITION_KEYS = new Set(["type", "expression"]);
+const CONDITION_TYPES = new Set<WorkflowCheckpointCondition["type"]>(["always", "onSuccess", "onFailure", "custom"]);
+const OUTPUT_CONTRACT_KEYS = new Set(["exactText", "requiredText", "requiredFields", "minLength"]);
+const RETRY_KEYS = new Set(["maxAttempts", "backoffMs"]);
 const RESULT_KEYS = new Set(["status", "content", "error"]);
 const ERROR_KEYS = new Set(["code", "message", "retryable"]);
 const STATE_KEYS = new Set(["step", "version", "values"]);
-const FAILURE_KEYS = new Set(["nodeId", "code", "message"]);
+const FAILURE_KEYS = new Set(["nodeId", "code", "message", "attempt", "timeoutMs", "logs", "input"]);
+const DIAGNOSTIC_LOG_KEYS = new Set(["kind", "name", "message", "succeeded"]);
+const DIAGNOSTIC_LOG_KINDS = new Set<WorkflowDiagnosticLog["kind"]>(["assistant", "tool", "error"]);
+const RECOVERY_DIAGNOSTIC_KEYS = new Set(["nodeId", "category", "action", "reason", "timeoutMs", "error"]);
+const PENDING_RECOVERY_KEYS = new Set(["action", "targetNodeId", "reason", "task", "role", "contextFrom", "timeoutMs"]);
+const RECOVERY_ACTIONS = new Set<WorkflowRecoveryAction>([
+  "retry", "replan", "replace_node", "replace_tool", "switch_provider",
+  "reconcile_side_effect", "compensate", "request_input", "wait_external",
+]);
 const CHECKPOINT_STATUSES = new Set<WorkflowCheckpointStatus>([
   "running",
   "recovering",
@@ -131,6 +233,11 @@ export function sanitizeWorkflowCheckpoint(input: unknown): WorkflowCheckpoint {
       attempts: nonNegativeInteger(node.attempts, `checkpoint.nodes.${nodeKey}.attempts`),
       sideEffect: enumValue(node.sideEffect, SIDE_EFFECTS, `checkpoint.nodes.${nodeKey}.sideEffect`),
     };
+    if (node.recoveryAttempts !== undefined) {
+      normalized.recoveryAttempts = nonNegativeInteger(node.recoveryAttempts, `checkpoint.nodes.${nodeKey}.recoveryAttempts`);
+    }
+    if (node.pendingRecovery !== undefined) normalized.pendingRecovery = normalizePendingRecovery(node.pendingRecovery, `checkpoint.nodes.${nodeKey}.pendingRecovery`);
+    if (node.definition !== undefined) normalized.definition = normalizeNodeDefinition(node.definition, `checkpoint.nodes.${nodeKey}.definition`);
     if (node.result !== undefined) normalized.result = normalizeResult(node.result, `checkpoint.nodes.${nodeKey}.result`);
     if (node.error !== undefined) normalized.error = normalizeError(node.error, `checkpoint.nodes.${nodeKey}.error`);
     normalizedNodes[nodeKey] = normalized;
@@ -148,6 +255,13 @@ export function sanitizeWorkflowCheckpoint(input: unknown): WorkflowCheckpoint {
     : (() => {
         throw new Error("checkpoint.unresolvedFailures must be an array");
       })();
+  const recoveryDiagnostics = checkpoint.recoveryDiagnostics === undefined
+    ? undefined
+    : Array.isArray(checkpoint.recoveryDiagnostics)
+      ? checkpoint.recoveryDiagnostics.map((value, index) => normalizeRecoveryDiagnostic(value, `checkpoint.recoveryDiagnostics[${index}]`))
+      : (() => {
+          throw new Error("checkpoint.recoveryDiagnostics must be an array");
+        })();
   const updatedAt = nonNegativeInteger(checkpoint.updatedAt, "checkpoint.updatedAt");
 
   const normalized: WorkflowCheckpoint = {
@@ -162,6 +276,7 @@ export function sanitizeWorkflowCheckpoint(input: unknown): WorkflowCheckpoint {
     nodes: normalizedNodes,
     state: normalizedState,
     unresolvedFailures,
+    ...(recoveryDiagnostics !== undefined && { recoveryDiagnostics }),
     updatedAt,
   };
   assertJsonValue(normalized, "checkpoint");
@@ -187,6 +302,67 @@ function normalizeResult(value: unknown, path: string): NonNullable<WorkflowNode
   return normalized;
 }
 
+function normalizeNodeDefinition(value: unknown, path: string): WorkflowNodeCheckpointDefinition {
+  const definition = record(value, path);
+  assertKeys(definition, DEFINITION_KEYS, path);
+  const normalized: WorkflowNodeCheckpointDefinition = {
+    task: nonEmptyString(definition.task, `${path}.task`),
+    dependsOn: stringArray(definition.dependsOn, `${path}.dependsOn`),
+    sideEffect: enumValue(definition.sideEffect, SIDE_EFFECTS, `${path}.sideEffect`),
+  };
+  if (definition.role !== undefined) normalized.role = enumValue(definition.role, DEFINITION_ROLES, `${path}.role`);
+  if (definition.toolHints !== undefined) normalized.toolHints = stringArray(definition.toolHints, `${path}.toolHints`);
+  if (definition.timeoutMs !== undefined) normalized.timeoutMs = positiveInteger(definition.timeoutMs, `${path}.timeoutMs`);
+  if (definition.exportTo !== undefined) normalized.exportTo = nonEmptyString(definition.exportTo, `${path}.exportTo`);
+  if (definition.inputMapping !== undefined) normalized.inputMapping = stringRecord(definition.inputMapping, `${path}.inputMapping`);
+  if (definition.condition !== undefined) {
+    const condition = record(definition.condition, `${path}.condition`);
+    assertKeys(condition, CONDITION_KEYS, `${path}.condition`);
+    const type = enumValue(condition.type, CONDITION_TYPES, `${path}.condition.type`);
+    const expression = condition.expression === undefined ? undefined : nonEmptyString(condition.expression, `${path}.condition.expression`);
+    if (type === "custom" && expression === undefined) throw new Error(`${path}.condition.expression is required for custom conditions`);
+    normalized.condition = { type, ...(expression !== undefined && { expression }) };
+  }
+  if (definition.retry !== undefined) {
+    const retry = record(definition.retry, `${path}.retry`);
+    assertKeys(retry, RETRY_KEYS, `${path}.retry`);
+    normalized.retry = {
+      maxAttempts: positiveInteger(retry.maxAttempts, `${path}.retry.maxAttempts`),
+      ...(retry.backoffMs !== undefined && { backoffMs: nonNegativeInteger(retry.backoffMs, `${path}.retry.backoffMs`) }),
+    };
+  }
+  if (definition.outputContract !== undefined) normalized.outputContract = normalizeOutputContract(definition.outputContract, `${path}.outputContract`);
+  return normalized;
+}
+
+function normalizeOutputContract(value: unknown, path: string): WorkflowCheckpointOutputContract {
+  const contract = record(value, path);
+  assertKeys(contract, OUTPUT_CONTRACT_KEYS, path);
+  const normalized: WorkflowCheckpointOutputContract = {};
+  if (contract.exactText !== undefined) normalized.exactText = nonEmptyString(contract.exactText, `${path}.exactText`);
+  if (contract.requiredText !== undefined) normalized.requiredText = nonEmptyString(contract.requiredText, `${path}.requiredText`);
+  if (contract.requiredFields !== undefined) normalized.requiredFields = stringArray(contract.requiredFields, `${path}.requiredFields`);
+  if (contract.minLength !== undefined) normalized.minLength = nonNegativeInteger(contract.minLength, `${path}.minLength`);
+  if (normalized.exactText === undefined && normalized.requiredText === undefined && normalized.requiredFields === undefined && normalized.minLength === undefined) {
+    throw new Error(`${path} must define exactText, requiredText, requiredFields, or minLength`);
+  }
+  return normalized;
+}
+
+function normalizeRecoveryDiagnostic(value: unknown, path: string): WorkflowRecoveryDiagnostic {
+  const diagnostic = record(value, path);
+  assertKeys(diagnostic, RECOVERY_DIAGNOSTIC_KEYS, path);
+  const normalized: WorkflowRecoveryDiagnostic = {
+    nodeId: nonEmptyString(diagnostic.nodeId, `${path}.nodeId`),
+    category: nonEmptyString(diagnostic.category, `${path}.category`),
+  };
+  if (diagnostic.action !== undefined) normalized.action = nonEmptyString(diagnostic.action, `${path}.action`);
+  if (diagnostic.reason !== undefined) normalized.reason = stringValue(diagnostic.reason, `${path}.reason`);
+  if (diagnostic.timeoutMs !== undefined) normalized.timeoutMs = positiveInteger(diagnostic.timeoutMs, `${path}.timeoutMs`);
+  if (diagnostic.error !== undefined) normalized.error = stringValue(diagnostic.error, `${path}.error`);
+  return normalized;
+}
+
 function normalizeError(value: unknown, path: string): NonNullable<WorkflowNodeCheckpoint["error"]> {
   const error = record(value, path);
   assertKeys(error, ERROR_KEYS, path);
@@ -204,7 +380,42 @@ function normalizeFailure(value: unknown, path: string): WorkflowCheckpointFailu
     code: nonEmptyString(failure.code, `${path}.code`),
     message: stringValue(failure.message, `${path}.message`),
   };
-  if (failure.nodeId !== undefined) normalized.nodeId = nonEmptyString(failure.nodeId, `${path}.nodeId`);
+	if (failure.nodeId !== undefined) normalized.nodeId = nonEmptyString(failure.nodeId, `${path}.nodeId`);
+	if (failure.attempt !== undefined) normalized.attempt = nonNegativeInteger(failure.attempt, `${path}.attempt`);
+	if (failure.timeoutMs !== undefined) normalized.timeoutMs = positiveInteger(failure.timeoutMs, `${path}.timeoutMs`);
+  if (failure.logs !== undefined) {
+    if (!Array.isArray(failure.logs)) throw new Error(`${path}.logs must be an array`);
+    normalized.logs = failure.logs.map((log, index) => normalizeDiagnosticLog(log, `${path}.logs[${index}]`));
+  }
+  if (failure.input !== undefined) normalized.input = record(failure.input, `${path}.input`);
+  return normalized;
+}
+
+function normalizeDiagnosticLog(value: unknown, path: string): WorkflowDiagnosticLog {
+  const log = record(value, path);
+  assertKeys(log, DIAGNOSTIC_LOG_KEYS, path);
+  const kind = enumValue(log.kind, DIAGNOSTIC_LOG_KINDS, `${path}.kind`);
+  const normalized: WorkflowDiagnosticLog = {
+    kind,
+    message: stringValue(log.message, `${path}.message`),
+  };
+  if (log.name !== undefined) normalized.name = nonEmptyString(log.name, `${path}.name`);
+  if (log.succeeded !== undefined) normalized.succeeded = booleanValue(log.succeeded, `${path}.succeeded`);
+  return normalized;
+}
+
+function normalizePendingRecovery(value: unknown, path: string): WorkflowPendingRecovery {
+  const plan = record(value, path);
+  assertKeys(plan, PENDING_RECOVERY_KEYS, path);
+  const normalized: WorkflowPendingRecovery = {
+    action: enumValue(plan.action, RECOVERY_ACTIONS, `${path}.action`),
+    targetNodeId: nonEmptyString(plan.targetNodeId, `${path}.targetNodeId`),
+    reason: stringValue(plan.reason, `${path}.reason`),
+  };
+  if (plan.task !== undefined) normalized.task = stringValue(plan.task, `${path}.task`);
+  if (plan.role !== undefined) normalized.role = enumValue(plan.role, DEFINITION_ROLES, `${path}.role`);
+  if (plan.contextFrom !== undefined) normalized.contextFrom = stringArray(plan.contextFrom, `${path}.contextFrom`);
+  if (plan.timeoutMs !== undefined) normalized.timeoutMs = positiveInteger(plan.timeoutMs, `${path}.timeoutMs`);
   return normalized;
 }
 
@@ -288,9 +499,21 @@ function nonNegativeInteger(value: unknown, path: string): number {
   return value;
 }
 
+function positiveInteger(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${path} must be a positive integer`);
+  }
+  return value;
+}
+
 function stringArray(value: unknown, path: string): string[] {
   if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
   return value.map((item, index) => stringValue(item, `${path}[${index}]`));
+}
+
+function stringRecord(value: unknown, path: string): Record<string, string> {
+  const recordValue = record(value, path);
+  return Object.fromEntries(Object.entries(recordValue).map(([key, child]) => [key, stringValue(child, `${path}.${key}`)]));
 }
 
 function enumValue<T extends string>(value: unknown, allowed: ReadonlySet<T>, path: string): T {

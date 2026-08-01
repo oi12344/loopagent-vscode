@@ -85,10 +85,32 @@ describe("workflow orchestrator", () => {
     releaseFailure.resolve();
 
     const results = await orchestrator.waitForSubagents([rootId, childId, grandchildId]);
-    expect(results.get(rootId)).toEqual({ status: "failed", error: "root failed" });
+    expect(results.get(rootId)).toMatchObject({ status: "failed", error: "root failed" });
+    expect(results.get(rootId)?.diagnosticLog).toEqual([{ kind: "error", message: "root failed" }]);
     expect(results.get(childId)).toMatchObject({ status: "cancelled", error: expect.stringContaining(rootId) });
     expect(results.get(grandchildId)).toMatchObject({ status: "cancelled", error: expect.stringContaining(childId) });
     expect(started).toEqual([rootId]);
+  });
+
+  it("returns a bounded diagnostic log for a failed subagent", async () => {
+    const orchestrator = createWorkflowOrchestrator({
+      createRunner: ({ subagentId }) => runner(async function* () {
+        yield { type: "assistantThinking", runId: subagentId, message: "Inspecting input" };
+        yield { type: "toolCallStarted", runId: subagentId, callId: "call-1", toolName: "readFile", input: "token=sk-secret" };
+        yield { type: "toolCallFinished", runId: subagentId, callId: "call-1", succeeded: false, output: "permission denied" };
+        yield { type: "runFailed", runId: subagentId, message: "read failed" };
+      }),
+    });
+
+    const id = orchestrator.createSubagent({ task: "Read diagnostics", role: "explorer" }, tools);
+    const result = (await orchestrator.waitForSubagents([id])).get(id);
+
+    expect(result).toMatchObject({ status: "failed", error: "read failed" });
+    expect(result?.diagnosticLog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "tool", name: "readFile" }),
+      expect.objectContaining({ kind: "assistant", message: "Inspecting input" }),
+    ]));
+    expect(JSON.stringify(result?.diagnosticLog)).not.toContain("sk-secret");
   });
 
 	it("enforces count, depth, and concurrency limits", async () => {

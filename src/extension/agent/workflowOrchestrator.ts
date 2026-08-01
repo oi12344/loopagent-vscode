@@ -5,6 +5,7 @@ import { validateDAG } from "./workflow/dagValidator";
 import { resolveRole } from "./workflow/roleRegistry";
 import { selectTools } from "./workflow/toolRouter";
 import type { CreateSubagentConfig, SubagentResult, SubagentRoleId, SubagentRunnerFactory, SubagentStatus, WorkflowLimits } from "./workflow/types";
+import type { WorkflowDiagnosticLog } from "../../shared/workflowCheckpoint";
 import type { ProjectMemory } from "../memory/projectMemory";
 import type { ReactAgentRunOutcome } from "../memory/types";
 
@@ -55,6 +56,62 @@ type SubagentEntry = {
   expectedGeneration?: number;
 };
 
+const MAX_DIAGNOSTIC_LOG_ENTRIES = 24;
+const MAX_DIAGNOSTIC_LOG_CHARS = 800;
+const MAX_DIAGNOSTIC_TOTAL_CHARS = 8_000;
+
+export function summarizeSubagentMessages(messages: readonly HostToWebviewMessage[]): WorkflowDiagnosticLog[] {
+  const logs: WorkflowDiagnosticLog[] = [];
+  let totalChars = 0;
+
+  const append = (log: WorkflowDiagnosticLog): void => {
+    if (logs.length >= MAX_DIAGNOSTIC_LOG_ENTRIES || totalChars >= MAX_DIAGNOSTIC_TOTAL_CHARS) return;
+    const message = redactDiagnosticText(log.message).slice(0, MAX_DIAGNOSTIC_LOG_CHARS);
+    if (!message) return;
+    const bounded = { ...log, message };
+    const remaining = MAX_DIAGNOSTIC_TOTAL_CHARS - totalChars;
+    if (remaining <= 0) return;
+    bounded.message = bounded.message.slice(0, remaining);
+    logs.push(bounded);
+    totalChars += bounded.message.length;
+  };
+
+  for (const message of messages) {
+    switch (message.type) {
+      case "assistantThinking":
+        append({ kind: "assistant", message: message.message });
+        break;
+      case "assistantReasoningDelta":
+      case "assistantDelta":
+        append({ kind: "assistant", message: message.content });
+        break;
+      case "agentEvent":
+        append({ kind: "assistant", message: message.message });
+        break;
+      case "toolCallStarted":
+        append({ kind: "tool", name: message.toolName, message: `input: ${message.input}` });
+        break;
+      case "toolCallFinished":
+        append({ kind: "tool", succeeded: message.succeeded, message: `output: ${message.output}` });
+        break;
+      case "runFailed":
+        append({ kind: "error", message: message.message });
+        break;
+      default:
+        break;
+    }
+  }
+
+  return logs;
+}
+
+function redactDiagnosticText(value: string): string {
+  return value
+    .replace(/sk-[A-Za-z0-9_-]+/g, "[REDACTED]")
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
+    .replace(/(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]");
+}
+
 export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions): WorkflowOrchestrator {
   const limits = { ...DEFAULT_LIMITS, ...options.limits };
   const entries = new Map<string, SubagentEntry>();
@@ -79,13 +136,15 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
     if (isTerminal(snapshot.status)) return;
 
     if (entry.timeout) clearTimeout(entry.timeout);
-    entry.context.finish(result);
-    entry.resolveResult(result);
+    const diagnosticLog = result.status === "failed" ? summarizeSubagentMessages(entry.messages) : undefined;
+    const settledResult = diagnosticLog && diagnosticLog.length > 0 ? { ...result, diagnosticLog } : result;
+    entry.context.finish(settledResult);
+    entry.resolveResult(settledResult);
     emit({ type: "SubagentStatusChanged", subagentId: snapshot.id, status: result.status });
 
     if (result.status !== "completed") cancelPendingDependents(snapshot.id);
 
-    recordSubagentOutcome(snapshot, result, entry.expectedGeneration);
+    recordSubagentOutcome(snapshot, settledResult, entry.expectedGeneration);
   }
 
   function recordSubagentOutcome(

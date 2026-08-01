@@ -103,9 +103,9 @@ npm run debug:vscode
 
 `runDynamicGraph` 使用现有 `.loopagent/conversation.sqlite` 中独立的 `workflow_checkpoint` 表保存节点状态，不与 React 的 `interrupted_run` 混用。检查点由 `conversationId`、`runId`、`planHash` 和单调 `revision` 共同定位；旧运行或低 revision 的迟到写入必须被存储层拒绝。
 
-同一计划恢复时，已完成节点只复用结果，失败节点及其下游从 `frontier` 继续。`running` 节点按未完成处理；计划 hash 变化会清除旧检查点并启动新计划。返回值包含 `workflowStatus`、`failedNodes`、`unreachedNodes`、`unresolvedFailures` 和不透明 `resumeToken`，父智能体不能把部分成功当成 `completed`。
+同一计划恢复时，已完成节点只复用结果，失败节点及其下游从 `frontier` 继续。动态扩展节点的定义、恢复诊断历史和待执行恢复计划必须随 checkpoint 保存；恢复运行执行已持久化的修复任务，不能重新提交原失败任务。`running` 节点按未完成处理。计划 hash 变化会清除旧检查点；同一对话开始新 run 时由新 run 原子接管旧 checkpoint，完成后保留终态 owner 栅栏，旧 run 的迟到写入仍必须被拒绝。返回值包含 `workflowStatus`、`failedNodes`、`unreachedNodes`、`recoveryDiagnostics`、`unresolvedFailures` 和不透明 `resumeToken`，显式 token 必须匹配对话、run、计划和 revision，父智能体不能把部分成功当成 `completed`。
 
-节点角色为 `executor` 时默认副作用为 `unknown`。失败后状态为 `recovery_required`，不会自动重复 `applyEdit` 或 `runCommand`；只有只读节点或明确标记 `sideEffect: "none"` 的节点允许按 retry 配置重试。完成门禁要求必需节点终态成功/跳过、未决失败为空、没有副作用对账等待，并且最终检查点写入成功。
+节点角色为 `executor` 时默认副作用为 `unknown`。失败后先读取有界、脱敏的日志和输入做原因诊断，再生成受约束修复任务；不会原样盲重试，也不会自动重复 `applyEdit` 或 `runCommand`。只有 `sideEffect: "none"` 的节点允许自动修复；修复输出仍须通过 `exactText`、`requiredText`、`requiredFields` 或 `minLength` 契约，成功后才放行下游。完成门禁要求必需节点终态成功/跳过、未决失败为空且没有副作用对账等待。
 
 扩展重启沿用现有 `resumeRun` 入口和同一个 `runId`，由 provider 将会话身份及 `ConversationStore` 注入动态图工具。验证恢复时必须使用同一个 Extension Development Host，确认已完成节点执行计数不增加，再检查失败节点是否只执行一次新的尝试。
 

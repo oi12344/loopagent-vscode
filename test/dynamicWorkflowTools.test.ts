@@ -15,7 +15,14 @@ describe("dynamic workflow tools", () => {
 		const properties = tool.inputSchema.properties as Record<string, any>;
 		const nodeProperties = properties.initialNodes.items.properties as Record<string, unknown>;
 
-		expect(nodeProperties).toEqual(expect.objectContaining({ dependsOn: expect.anything(), exportTo: expect.anything(), retry: expect.anything() }));
+		expect(nodeProperties).toEqual(expect.objectContaining({
+			dependsOn: expect.anything(),
+			exportTo: expect.anything(),
+			retry: expect.anything(),
+			outputContract: expect.objectContaining({ type: "object" }),
+		}));
+		expect((nodeProperties.outputContract as any).properties.exactText).toEqual(expect.objectContaining({ type: "string" }));
+		expect((properties.nodes.items.properties as Record<string, unknown>).timeoutMs).toEqual(expect.objectContaining({ type: "integer" }));
 		expect(properties.initialGlobalData).toBeDefined();
 		expect(properties.nodes).toBeDefined();
 		expect(properties.initialState).toBeDefined();
@@ -127,6 +134,89 @@ describe("dynamic workflow tools", () => {
 		expect(result.results.failed).toEqual({ status: "failed", error: "boom" });
 	});
 
+	it("normalizes retry with a replacement task and repairs without rerunning upstream", async () => {
+		let aRuns = 0;
+		let bRuns = 0;
+		let plannerRuns = 0;
+		const tools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator((config) => {
+				if (config.role === "planner" && config.task.includes("WORKFLOW_RECOVERY_DIAGNOSIS")) {
+					plannerRuns++;
+					return {
+						status: "completed",
+						content: JSON.stringify({ action: "retry", targetNodeId: "B", reason: "sk-test-secret-" + "r".repeat(401), task: "B repaired", timeoutMs: 1_000 }),
+					};
+				}
+				if (config.task === "A") {
+					aRuns++;
+					return { status: "completed", content: "A done" };
+				}
+				if (config.task === "B" && bRuns++ === 0) return { status: "failed", error: "schema invalid" };
+				if (config.task === "B repaired") return { status: "completed", content: "B fixed" };
+				return { status: "completed", content: "C done" };
+			}),
+			availableTools: [],
+		});
+
+		const result = await runGraph(tools, [
+			{ id: "A", task: "A" },
+			{ id: "B", task: "B", dependsOn: ["A"], retry: { maxAttempts: 3 } },
+			{ id: "C", task: "C", dependsOn: ["B"], inputMapping: { b: "B.content" } },
+		]);
+
+		expect(result.workflowStatus).toBe("completed");
+		expect(aRuns).toBe(1);
+		expect(bRuns).toBe(1);
+		expect(plannerRuns).toBe(1);
+		expect(result.completedNodes).toEqual(expect.arrayContaining(["A", "B", "C"]));
+		expect(result.recoveryDiagnostics).toEqual([expect.objectContaining({ nodeId: "B", action: "replace_node", timeoutMs: 1_000 })]);
+		expect(result.recoveryDiagnostics[0].reason.length).toBeLessThanOrEqual(400);
+		expect(result.recoveryDiagnostics[0].reason).not.toContain("sk-test-secret");
+	});
+
+	it("applies the same diagnosis flow to a semantic compiled graph", async () => {
+		let aRuns = 0;
+		let bRuns = 0;
+		let plannerRuns = 0;
+		const tools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator((config) => {
+				if (config.role === "planner" && config.task.includes("WORKFLOW_RECOVERY_DIAGNOSIS")) {
+					plannerRuns++;
+					return {
+						status: "completed",
+						content: JSON.stringify({ action: "replace_node", targetNodeId: "B", reason: "repair semantic step", task: "B repaired" }),
+					};
+				}
+				if (config.task === "A") {
+					aRuns++;
+					return { status: "completed", content: "A done" };
+				}
+				if (config.task.startsWith("B repaired")) return { status: "completed", content: "B fixed" };
+				if (config.task.startsWith("B")) {
+					bRuns++;
+					return bRuns === 1 ? { status: "failed", error: "semantic schema invalid" } : { status: "completed", content: "B unexpected" };
+				}
+				return { status: "completed", content: "C done" };
+			}),
+			availableTools: [],
+		});
+
+		const result = await runGraphRaw(tools, [], {
+			nodes: [
+				{ id: "A", task: "A", role: "planner" },
+				{ id: "B", task: "B", role: "planner", after: ["A"] },
+				{ id: "C", task: "C", role: "planner", after: ["B"] },
+			],
+		});
+		const parsed = JSON.parse(String(result));
+
+		expect(parsed.workflowStatus).toBe("completed");
+		expect(aRuns).toBe(1);
+		expect(bRuns).toBe(1);
+		expect(plannerRuns).toBe(1);
+		expect(parsed.completedNodes).toEqual(expect.arrayContaining(["A", "B", "C"]));
+	});
+
 	it("resumes a failed graph without rerunning completed nodes", async () => {
 		let aRuns = 0;
 		let bRuns = 0;
@@ -137,10 +227,13 @@ describe("dynamic workflow tools", () => {
 					aRuns++;
 					return { status: "completed", content: "A done" };
 				}
-				bRuns++;
-				return bRuns === 1
-					? { status: "failed", error: "temporary" }
-					: { status: "completed", content: "B done" };
+				if (config.task === "B") {
+					bRuns++;
+					return bRuns === 1
+						? { status: "failed", error: "temporary" }
+						: { status: "completed", content: "B done" };
+				}
+				return { status: "completed", content: "planner response" };
 			}),
 			availableTools: [],
 			conversationId: "conversation-1",
@@ -150,12 +243,12 @@ describe("dynamic workflow tools", () => {
 		const input = {
 			initialNodes: [
 				{ id: "A", task: "A" },
-				{ id: "B", task: "B" },
+				{ id: "B", task: "B", retry: { maxAttempts: 2 } },
 			],
 		};
 
 		const first = JSON.parse(String(await invoke(tools, "runDynamicGraph", input)));
-		expect(first.workflowStatus).toBe("failed");
+		expect(first.workflowStatus).toBe("recovery_required");
 		expect(first.resumeToken).toEqual(expect.any(String));
 		expect(aRuns).toBe(1);
 		expect(bRuns).toBe(1);
@@ -166,6 +259,173 @@ describe("dynamic workflow tools", () => {
 		expect(aRuns).toBe(1);
 		expect(bRuns).toBe(2);
 		expect(store.loadWorkflowCheckpoint("conversation-1", "run-1")).toBeUndefined();
+	});
+
+	it("replaces a previous run checkpoint when the same conversation starts a new run", async () => {
+		const store = createConversationStore();
+		const firstRunTools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator((config) => {
+				if (config.role === "planner") return { status: "completed", content: "invalid recovery plan" };
+				return config.task === "done"
+					? { status: "completed", content: "done" }
+					: { status: "failed", error: "temporary" };
+			}),
+			availableTools: [],
+			conversationId: "conversation-next-run",
+			runId: "run-1",
+			checkpointStore: store,
+		});
+		const first = JSON.parse(String(await invoke(firstRunTools, "runDynamicGraph", {
+			initialNodes: [{ id: "done", task: "done" }, { id: "failed", task: "failed", dependsOn: ["done"] }],
+		})));
+		expect(first.workflowStatus).toBe("recovery_required");
+
+		const secondRunTools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator(() => ({ status: "completed", content: "fresh" })),
+			availableTools: [],
+			conversationId: "conversation-next-run",
+			runId: "run-2",
+			checkpointStore: store,
+		});
+		const second = JSON.parse(String(await invoke(secondRunTools, "runDynamicGraph", {
+			initialNodes: [{ id: "fresh", task: "fresh" }],
+		})));
+
+		expect(second.workflowStatus).toBe("completed");
+		expect(second).not.toHaveProperty("checkpointError");
+		expect(store.loadWorkflowCheckpoint("conversation-next-run", "run-1")).toBeUndefined();
+		expect(store.loadWorkflowCheckpoint("conversation-next-run", "run-2")).toBeUndefined();
+	});
+
+	it("keeps the previous run checkpoint when a new run has invalid graph input or a resolver", async () => {
+		const store = createConversationStore();
+		const firstRunTools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator((config) => {
+				if (config.role === "planner") return { status: "completed", content: "invalid recovery plan" };
+				return config.task === "done"
+					? { status: "completed", content: "done" }
+					: { status: "failed", error: "temporary" };
+			}),
+			availableTools: [],
+			conversationId: "conversation-invalid-resolver",
+			runId: "run-1",
+			checkpointStore: store,
+		});
+		const first = JSON.parse(String(await invoke(firstRunTools, "runDynamicGraph", {
+			initialNodes: [{ id: "done", task: "done" }, { id: "failed", task: "failed", dependsOn: ["done"] }],
+		})));
+		expect(first.workflowStatus).toBe("recovery_required");
+
+		const secondRunTools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator(() => ({ status: "completed", content: "unused" })),
+			availableTools: [],
+			conversationId: "conversation-invalid-resolver",
+			runId: "run-2",
+			checkpointStore: store,
+		});
+		await expect(invoke(secondRunTools, "runDynamicGraph", {
+			initialNodes: [{ id: "source", task: "source" }],
+			resolvers: [{ nodeId: "source", resolverType: "fanout", resolverConfig: {} }],
+		})).rejects.toThrow(/itemsExpression/);
+
+		expect(store.getWorkflowCheckpointRunId("conversation-invalid-resolver")).toBe("run-1");
+		expect(store.loadWorkflowCheckpoint("conversation-invalid-resolver", "run-1")).toBeDefined();
+
+		await expect(invoke(secondRunTools, "runDynamicGraph", {
+			nodes: [{ id: "source", task: "source", contextFrom: ["missing"] }],
+		})).rejects.toThrow(/unknown node reference/);
+
+		expect(store.getWorkflowCheckpointRunId("conversation-invalid-resolver")).toBe("run-1");
+		expect(store.loadWorkflowCheckpoint("conversation-invalid-resolver", "run-1")).toBeDefined();
+	});
+
+	it("restores resolver-created nodes from checkpoint definitions", async () => {
+		let sourceRuns = 0;
+		let dynamicRuns = 0;
+		let plannerRuns = 0;
+		const store = createConversationStore();
+		const tools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator((config) => {
+				if (config.role === "planner" && config.task.includes("WORKFLOW_RECOVERY_DIAGNOSIS")) {
+					plannerRuns++;
+					return { status: "completed", content: "not valid recovery json" };
+				}
+				if (config.task === "source") {
+					sourceRuns++;
+					return { status: "completed", content: "true" };
+				}
+				dynamicRuns++;
+				return dynamicRuns === 1 ? { status: "failed", error: "temporary" } : { status: "completed", content: "dynamic done" };
+			}),
+			availableTools: [],
+			conversationId: "conversation-resolver",
+			runId: "run-resolver",
+			checkpointStore: store,
+		});
+		const input = {
+			initialNodes: [{ id: "source", task: "source" }],
+			resolvers: [{
+				nodeId: "source",
+				resolverType: "conditional",
+				resolverConfig: { expression: "source.content.includes('true')", nodes: [{ id: "dynamic", task: "dynamic", retry: { maxAttempts: 2 } }] },
+			}],
+		};
+
+		const first = JSON.parse(String(await invoke(tools, "runDynamicGraph", input)));
+		expect(first.workflowStatus).toBe("recovery_required");
+		expect(first.resumeToken).toEqual(expect.any(String));
+		expect(store.loadWorkflowCheckpoint("conversation-resolver", "run-resolver")?.nodes.dynamic.definition).toEqual(expect.objectContaining({ task: "dynamic", dependsOn: ["source"] }));
+
+		const second = JSON.parse(String(await invoke(tools, "runDynamicGraph", input)));
+		expect(second.workflowStatus).toBe("completed");
+		expect(second.completedNodes).toEqual(expect.arrayContaining(["source", "dynamic"]));
+		expect(sourceRuns).toBe(1);
+		expect(dynamicRuns).toBe(2);
+		expect(plannerRuns).toBe(1);
+		expect(second.recoveryDiagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ nodeId: "dynamic" })]));
+	});
+
+	it("rejects a stale resume token instead of silently selecting a checkpoint", async () => {
+		const store = createConversationStore();
+		const tools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator((config) => config.task === "ok"
+				? { status: "completed", content: "ok" }
+				: { status: "failed", error: "no result" }),
+			availableTools: [],
+			conversationId: "conversation-token",
+			runId: "run-token",
+			checkpointStore: store,
+		});
+		const input = { initialNodes: [{ id: "ok", task: "ok" }, { id: "node", task: "node", dependsOn: ["ok"] }] };
+		const first = JSON.parse(String(await invoke(tools, "runDynamicGraph", input)));
+		const decoded = JSON.parse(Buffer.from(first.resumeToken, "base64url").toString("utf8"));
+		decoded.revision += 1;
+		const staleToken = Buffer.from(JSON.stringify(decoded), "utf8").toString("base64url");
+		await expect(invoke(tools, "runDynamicGraph", { ...input, resumeToken: staleToken })).rejects.toThrow(/stale|no longer available/i);
+	});
+
+	it("bounds and redacts oversized checkpoint results", async () => {
+		const store = createConversationStore();
+		const tools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator((config) => {
+				if (config.role === "planner" && config.task.includes("WORKFLOW_RECOVERY_DIAGNOSIS")) return { status: "completed", content: "invalid" };
+				if (config.task === "A") return { status: "completed", content: `apiKey=sk-checkpoint-secret-${"x".repeat(300_000)}` };
+				return { status: "failed", error: `Bearer checkpoint-secret-${"y".repeat(300_000)}` };
+			}),
+			availableTools: [],
+			conversationId: "conversation-large",
+			runId: "run-large",
+			checkpointStore: store,
+		});
+		const result = JSON.parse(String(await invoke(tools, "runDynamicGraph", {
+			initialNodes: [{ id: "A", task: "A" }, { id: "B", task: "B", dependsOn: ["A"] }],
+		})));
+		const checkpoint = store.loadWorkflowCheckpoint("conversation-large", "run-large");
+		expect(result.workflowStatus).toBe("recovery_required");
+		expect(result).not.toHaveProperty("checkpointError");
+		expect(checkpoint?.nodes.A.result?.content?.length).toBeLessThan(10_000);
+		expect(checkpoint?.nodes.A.result?.content).not.toContain("sk-checkpoint-secret");
+		expect(checkpoint?.unresolvedFailures[0]?.message).not.toContain("checkpoint-secret");
 	});
 
 	it("does not automatically repeat an executor with unknown side effects", async () => {
@@ -195,6 +455,84 @@ describe("dynamic workflow tools", () => {
 		expect(executorRuns).toBe(1);
 	});
 
+	it("keeps a side-effect diagnosis action without executing a second write", async () => {
+		let executorRuns = 0;
+		const store = createConversationStore();
+		const tools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator((config) => {
+				if (config.role === "planner" && config.task.includes("WORKFLOW_RECOVERY_DIAGNOSIS")) {
+					return {
+						status: "completed",
+						content: JSON.stringify({
+							action: "request_input",
+							targetNodeId: "write",
+							reason: "confirm whether the write was applied",
+						}),
+					};
+				}
+				if (config.role === "executor") {
+					executorRuns++;
+					return { status: "failed", error: "response lost" };
+				}
+				return { status: "completed", content: "read-only result" };
+			}),
+			availableTools: [],
+			conversationId: "conversation-side-effect-diagnostic",
+			runId: "run-side-effect-diagnostic",
+			checkpointStore: store,
+		});
+
+		const result = await runGraph(tools, [
+			{ id: "read", task: "Read", role: "explorer" },
+			{ id: "write", task: "Write", role: "executor", dependsOn: ["read"] },
+		]);
+
+		expect(result.workflowStatus).toBe("recovery_required");
+		expect(result.recoveryDiagnostics).toEqual([
+			expect.objectContaining({
+				nodeId: "write",
+				action: "request_input",
+				reason: "confirm whether the write was applied",
+			}),
+		]);
+		expect(executorRuns).toBe(1);
+		expect(store.loadWorkflowCheckpoint("conversation-side-effect-diagnostic", "run-side-effect-diagnostic")?.nodes.write.recoveryAttempts).toBe(1);
+	});
+
+	it("clears a transient checkpoint save error after a later save succeeds", async () => {
+		const baseStore = createConversationStore();
+		let saveCalls = 0;
+		const store = {
+			claimWorkflowCheckpoint: baseStore.claimWorkflowCheckpoint,
+			saveWorkflowCheckpoint: (checkpoint: Parameters<typeof baseStore.saveWorkflowCheckpoint>[0]) => {
+				saveCalls++;
+				return saveCalls === 1 ? false : baseStore.saveWorkflowCheckpoint(checkpoint);
+			},
+			loadWorkflowCheckpoint: baseStore.loadWorkflowCheckpoint,
+			getWorkflowCheckpointRunId: baseStore.getWorkflowCheckpointRunId,
+			clearWorkflowCheckpoint: baseStore.clearWorkflowCheckpoint,
+		};
+		const tools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator((config) => config.role === "executor"
+				? { status: "failed", error: "response lost" }
+				: { status: "completed", content: "read-only result" }),
+			availableTools: [],
+			conversationId: "conversation-save-recovery",
+			runId: "run-save-recovery",
+			checkpointStore: store,
+		});
+
+		const result = await runGraph(tools, [
+			{ id: "read", task: "Read", role: "explorer" },
+			{ id: "write", task: "Write", role: "executor", dependsOn: ["read"] },
+		]);
+
+		expect(saveCalls).toBeGreaterThan(1);
+		expect(result.workflowStatus).toBe("recovery_required");
+		expect(result.resumeToken).toEqual(expect.any(String));
+		expect(result).not.toHaveProperty("checkpointError");
+	});
+
 	it("resumes a semantic compiled plan from its saved frontier", async () => {
 		let aRuns = 0;
 		let bRuns = 0;
@@ -205,8 +543,11 @@ describe("dynamic workflow tools", () => {
 					aRuns++;
 					return { status: "completed", content: "A done" };
 				}
-				bRuns++;
-				return bRuns === 1 ? { status: "failed", error: "temporary" } : { status: "completed", content: "B done" };
+				if (config.task === "B" || config.task.startsWith("B\n")) {
+					bRuns++;
+					return bRuns === 1 ? { status: "failed", error: "temporary" } : { status: "completed", content: "B done" };
+				}
+				return { status: "completed", content: "planner response" };
 			}),
 			availableTools: [],
 			conversationId: "conversation-semantic",
@@ -221,7 +562,7 @@ describe("dynamic workflow tools", () => {
 		};
 
 		const first = JSON.parse(String(await invoke(tools, "runDynamicGraph", input)));
-		expect(first.workflowStatus).toBe("failed");
+		expect(first.workflowStatus).toBe("recovery_required");
 		expect(first.resumeToken).toEqual(expect.any(String));
 		const second = JSON.parse(String(await invoke(tools, "runDynamicGraph", input)));
 		expect(second.workflowStatus).toBe("completed");

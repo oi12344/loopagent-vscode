@@ -88,7 +88,7 @@ export type CreateConfiguredAgentRunnerDeps = {
   projectMemory?: ProjectMemory;
   enableWorkflowTools?: boolean;
   imageAnalysisService?: ImageAnalysisService;
-  workflowCheckpointStore?: Pick<ConversationStore, "saveWorkflowCheckpoint" | "loadWorkflowCheckpoint" | "clearWorkflowCheckpoint">;
+  workflowCheckpointStore?: Pick<ConversationStore, "claimWorkflowCheckpoint" | "saveWorkflowCheckpoint" | "loadWorkflowCheckpoint" | "getWorkflowCheckpointRunId" | "clearWorkflowCheckpoint">;
 };
 
 export async function createConfiguredAgentRunner(
