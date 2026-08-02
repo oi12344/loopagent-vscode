@@ -4,6 +4,7 @@ import type { ReactAgentTool } from "./reactTypes";
 import { validateDAG } from "./workflow/dagValidator";
 import { resolveRole } from "./workflow/roleRegistry";
 import { selectTools } from "./workflow/toolRouter";
+import { evaluateSubagentProgress } from "./workflow/subagentProgress";
 import type { CreateSubagentConfig, SubagentResult, SubagentRoleId, SubagentRunnerFactory, SubagentStatus, WorkflowLimits } from "./workflow/types";
 import type { WorkflowDiagnosticLog } from "../../shared/workflowCheckpoint";
 import type { ProjectMemory } from "../memory/projectMemory";
@@ -43,11 +44,17 @@ const DEFAULT_LIMITS: WorkflowLimits = {
   maxNestingDepth: 3,
   maxConcurrentSubagents: 10,
   subagentTimeoutMs: 60_000,
+  // 60s 装不下 executor 的完整流程（定位 → 读文件 → 改代码 → 跑验证，每步一次模型往返，
+  // runCommand 自己还有 30s 默认超时）。给到 5 轮观察窗，只在真的有推进时才用得上。
+  maxSubagentTimeoutMs: 300_000,
 };
 
 type SubagentEntry = {
   context: SubagentContext;
+  /** 进度检查间隔，不是死线。 */
   timeoutMs: number;
+  /** 绝对上限，推进判定的延长不得越过。 */
+  maxTimeoutMs: number;
   messages: HostToWebviewMessage[];
   result: Promise<SubagentResult>;
   resolveResult: (result: SubagentResult) => void;
@@ -204,10 +211,53 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
     try {
       emit({ type: "SubagentStatusChanged", subagentId: snapshot.id, status: "running" });
       if (controller.signal.aborted || entry.context.snapshot().status !== "running") return;
-      entry.timeout = setTimeout(() => {
-        controller.abort();
-        settle(entry, { status: "failed", error: `Subagent timed out after ${entry.timeoutMs}ms` });
-      }, entry.timeoutMs);
+      // 进度判定取代硬性死线。每隔 timeoutMs 看一次日志：有推进就再等一轮，卡住或打转
+      // 就立刻停止。名义时长用轮次乘间隔而不是实测墙钟，文案才是确定的。
+      let checkCount = 0;
+      let lastMessageCount = 0;
+      const scheduleProgressCheck = (): void => {
+        entry.timeout = setTimeout(() => {
+          if (controller.signal.aborted || entry.context.snapshot().status !== "running") return;
+          checkCount++;
+          const nominalElapsedMs = checkCount * entry.timeoutMs;
+          const verdict = evaluateSubagentProgress(entry.messages, lastMessageCount);
+          lastMessageCount = entry.messages.length;
+
+          if (verdict.state === "progressing" || verdict.state === "blocked") {
+            if (nominalElapsedMs + entry.timeoutMs <= entry.maxTimeoutMs) {
+              emit({
+                type: "SubagentMessage",
+                subagentId: snapshot.id,
+                message: {
+                  type: "agentEvent",
+                  runId: snapshot.id,
+                  message: `progress check at ${nominalElapsedMs}ms: ${verdict.state} (${verdict.reason})`,
+                },
+              });
+              scheduleProgressCheck();
+              return;
+            }
+            controller.abort();
+            settle(entry, {
+              status: "failed",
+              error: `Subagent timed out after ${nominalElapsedMs}ms: reached the ${entry.maxTimeoutMs}ms limit while still ${verdict.state}`,
+            });
+            return;
+          }
+
+          controller.abort();
+          // stalled 保留原文案：什么都没发生就是超时，分类为 transient 后可重试。
+          // looping 用不含 "timed out" 的文案，好让分类器给出 planning——重试一个
+          // 打转的节点只会再打转一次，得改任务而不是重跑。
+          settle(entry, {
+            status: "failed",
+            error: verdict.state === "looping"
+              ? `Subagent stopped making progress after ${nominalElapsedMs}ms: ${verdict.reason}`
+              : `Subagent timed out after ${nominalElapsedMs}ms`,
+          });
+        }, entry.timeoutMs);
+      };
+      scheduleProgressCheck();
       const runner = await options.createRunner({
         subagentId: snapshot.id,
         task: snapshot.task,
@@ -291,7 +341,13 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
       });
       const entry: SubagentEntry = {
         context,
+        // timeoutMs 现在是进度检查间隔，仍取 min 是为了让检查足够频繁；真正的天花板
+        // 是 maxTimeoutMs，所以这里的收窄不再意味着"配了大值也白配"。
         timeoutMs: Math.min(config.timeoutMs ?? limits.subagentTimeoutMs, limits.subagentTimeoutMs),
+        maxTimeoutMs: Math.max(
+          limits.maxSubagentTimeoutMs,
+          Math.min(config.timeoutMs ?? limits.subagentTimeoutMs, limits.subagentTimeoutMs),
+        ),
         messages: [],
         result,
         resolveResult,

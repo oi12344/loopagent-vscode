@@ -6,8 +6,9 @@ import type { SubagentRoleId } from "./types";
  * 错误分类与恢复动作契约。
  *
  * 这里的分类必须是确定性的：同一份证据永远得到同一个分类。恢复流程要能在测试里被固定，
- * 而不是让模型每次自由发挥；分类一旦随机，RecoverySupervisor 的"禁止相同 fingerprint
- * 和动作无限重复"就无从判断。
+ * 而不是让模型每次自由发挥；分类一旦随机，`dynamicWorkflowTools` 里按
+ * `failureFingerprint + action` 去重的护栏就无从判断——同一个错误会拿到不同分类，
+ * 指纹随之不同，重复的修复动作就绕过了去重。
  */
 export type FailureCategory =
 	| "transient"
@@ -93,6 +94,9 @@ const ERROR_PATTERNS: ReadonlyArray<readonly [RegExp, FailureCategory]> = [
 	[/Unknown tool/i, "tool"],
 	[/Invalid JSON arguments for tool/i, "tool"],
 	// 计划层。图结构、表达式和硬限制都得改计划，重试永远是同样的结果。
+	// 打转的子智能体同理：反复发同一个工具调用说明任务描述本身有问题，
+	// 原样重跑只会再打转一次，必须改任务或换工具。
+	[/stopped making progress/i, "planning"],
 	[/Unknown subagent role/i, "planning"],
 	[/Unsupported expression/i, "planning"],
 	[/Circular dependsOn/i, "planning"],
@@ -162,6 +166,8 @@ export type RecoveryPolicy = {
 	maxTaskChars: number;
 	maxReasonChars: number;
 	maxTimeoutMs: number;
+	/** 单次重试前等待的上限。防止退避策略把一个节点挂到用户以为流程卡死。 */
+	maxBackoffMs: number;
 };
 
 export const DEFAULT_RECOVERY_POLICY: RecoveryPolicy = Object.freeze({
@@ -170,7 +176,28 @@ export const DEFAULT_RECOVERY_POLICY: RecoveryPolicy = Object.freeze({
 	maxTaskChars: 800,
 	maxReasonChars: 400,
 	maxTimeoutMs: 60_000,
+	maxBackoffMs: 30_000,
 });
+
+/**
+ * 重试前的等待时长。`transient` 装的是 rate_limited / server_overloaded / ETIMEDOUT——
+ * 立即重试只会撞上同一堵墙，所以这里必须给出正数，否则退避配置形同虚设。
+ *
+ * @param category    确定性分类结果。
+ * @param attempt     即将开始的是第几次重试（0 表示首次失败后的第一次重试）。
+ * @param configuredBackoffMs `retry.backoffMs`，节点没配时为 0。
+ * @param policy      上界来源，`maxBackoffMs` 是硬顶。
+ * @returns 等待毫秒数；0 表示不等待，直接重试。
+ */
+export function recoveryBackoffMs(
+	category: FailureCategory,
+	attempt: number,
+	configuredBackoffMs: number,
+	policy: RecoveryPolicy = DEFAULT_RECOVERY_POLICY,
+): number {
+	// TODO(human): 实现退避时长的计算。
+	return Math.min(configuredBackoffMs, policy.maxBackoffMs);
+}
 
 const CATEGORY_ACTIONS: Readonly<Record<FailureCategory, readonly RecoveryAction[]>> = Object.freeze({
 	transient: Object.freeze(["retry", "replace_node", "switch_provider"]),

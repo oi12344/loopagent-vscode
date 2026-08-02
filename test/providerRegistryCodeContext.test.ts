@@ -439,7 +439,7 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
               id: "run-graph-call",
               name: "runDynamicGraph",
               argumentsDelta:
-                '{"initialNodes":[{"id":"execute","task":"Apply the delegated repository task.","role":"executor","toolHints":["readFile","applyEdit","runCommand"]}]}',
+                '{"initialNodes":[{"id":"execute","task":"Apply the delegated repository task.","role":"executor","toolHints":["readFile","applyEdit","runCommand"],"outputContract":{"minLength":1}}]}',
             };
             yield { type: "finishReason", reason: "tool_calls" };
             return;

@@ -15,7 +15,7 @@ import type {
 	WorkflowFailureRecovery,
 } from "./dynamicGraphTypes";
 import type { CompiledWorkflowRoute } from "./generatedWorkflowTypes";
-import { DEFAULT_RECOVERY_POLICY, type RecoveryPlan } from "./workflowRecovery";
+import { classifyFailure, DEFAULT_RECOVERY_POLICY, recoveryBackoffMs, type RecoveryPlan } from "./workflowRecovery";
 import type { WorkflowDiagnosticLog, WorkflowFailureEvidence, WorkflowNodeCheckpointDefinition, WorkflowSideEffect } from "../../../shared/workflowCheckpoint";
 import { createDataFlowManager, type DataFlowManager, type DataFlowValue } from "./dataFlowManager";
 import { createGraphVisualizer, type GraphVisualizer } from "./graphVisualizer";
@@ -578,15 +578,27 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			return;
 		}
 		const firstPassAttempts = pendingExecution ? 1 : recoverFailure ? Math.min(1, remainingAttempts) : remainingAttempts;
+		/**
+		 * transient 分类的本地退避重试预算，消耗 `retry.maxAttempts` 而不消耗恢复预算。
+		 * 限流和超时不需要 LLM 诊断就知道该等一会儿再试；更要紧的是 planner 子智能体
+		 * 打的是同一个 provider，正在限流时它自己也会失败，`recoverFailure` 返回
+		 * undefined 后节点直接判死——一个等几秒就能过去的 429 会打死整个节点。
+		 */
+		const transientRetryBudget = recoverFailure && !pendingExecution && sideEffect === "none"
+			? Math.max(0, remainingAttempts - firstPassAttempts)
+			: 0;
 		const remainingRecoveryAttempts = recoverFailure
 			? Math.max(0, (sideEffect === "none" ? DEFAULT_RECOVERY_POLICY.maxRecoveryAttempts : 1) - previousRecoveryAttempts)
 			: 0;
-		const totalAttemptBudget = firstPassAttempts + (sideEffect === "none" ? remainingRecoveryAttempts : 0);
+		const totalAttemptBudget = firstPassAttempts
+			+ transientRetryBudget
+			+ (sideEffect === "none" ? remainingRecoveryAttempts : 0);
 		let taskForAttempt = pendingExecution?.task ?? task;
 		let roleForAttempt = pendingPlan?.role ?? node.config.role;
 		let toolHintsForAttempt = pendingExecution ? pendingExecution.toolHints : node.config.toolHints;
 		let timeoutMsForAttempt = pendingExecution?.timeoutMs ?? node.config.timeoutMs;
 		let recoveryAttempts = 0;
+		let transientRetries = 0;
 		let result: SubagentResult | undefined;
 		if (pendingExecution) node.pendingRecovery = undefined;
 
@@ -624,14 +636,40 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			if (!result || result.status === "completed" || result.status === "cancelled") break;
 
 			node.result = result;
-			const mayContinue = attempt < totalAttemptBudget;
+			// 分类前置。transient 不需要 LLM 告诉我们"等一会儿再试"，而且 planner 打的是
+			// 同一个 provider——限流时它自己也会失败，那条路只会把节点判死。
+			const category = classifyFailure({
+				nodeId: node.config.id,
+				error: result.error,
+				role: node.config.role,
+				sideEffect: { outcome: sideEffect },
+			});
+			const canRetryLocally = category === "transient"
+				&& sideEffect === "none"
+				&& transientRetries < transientRetryBudget;
+			const canRecover = !canRetryLocally
+				&& recoverFailure !== undefined
+				&& recoveryAttempts < remainingRecoveryAttempts;
+			// 预算里含 transientRetryBudget，非 transient 失败不能只看总数就说"还能继续"，
+			// 否则 checkpoint 会把一个已经无路可走的节点记成 running。
+			const mayContinue = attempt < totalAttemptBudget
+				&& (canRetryLocally || canRecover || recoverFailure === undefined);
 			if (!mayContinue) {
 				node.finishedAt = new Date();
 				updateNodeStatus(node.config.id, "failed");
 			}
 			await persistCheckpoint(mayContinue ? "running" : "failed", currentLegacyFrontier());
 
-			if (recoverFailure && recoveryAttempts < remainingRecoveryAttempts) {
+			if (canRetryLocally) {
+				transientRetries++;
+				if (cancelled || signal?.aborted) break;
+				const waitMs = recoveryBackoffMs(category, transientRetries - 1, backoffMs);
+				if (waitMs > 0) await waitForBackoff(waitMs);
+				if (cancelled || signal?.aborted) break;
+				continue;
+			}
+
+			if (canRecover) {
 				const evidence: WorkflowFailureEvidence = {
 					nodeId: node.config.id,
 					task: node.config.task,
@@ -640,7 +678,9 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 					error: result.error ?? "Subagent failed",
 					attempt: node.attempts,
 					recoveryAttempt: previousRecoveryAttempts + recoveryAttempts,
-					maxAttempts,
+					// 真实上界，不是 `retry.maxAttempts` 的声明值。模型据此判断"还剩几次机会
+					// 值不值得重试"，报一个本轮根本拿不到的数会误导它选错动作。
+					maxAttempts: previousAttempts + totalAttemptBudget,
 					timeoutMs: timeoutMsForAttempt,
 					logs: [...(result.diagnosticLog ?? [])],
 					sideEffect,
@@ -653,6 +693,10 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 				}
 				recoveryAttempts++;
 				node.recoveryAttempts = previousRecoveryAttempts + recoveryAttempts;
+				// 副作用节点到此结束：这次 planner 调用取的是**诊断**，不是可执行修复。
+				// 该分类只允许 reconcile_side_effect / compensate / request_input，三者都不在
+				// 宿主的可执行白名单里，plan 必然是 undefined。产物是 recoveryDiagnostics 里的
+				// reason——告诉用户这次写操作可能处于什么状态，由用户决定对账还是补偿。
 				if (sideEffect !== "none") break;
 				const recoveryInput = plan && selectRecoveryInput(plan, inputData, context.nodes);
 				const recoveryExecution = plan && recoveryInput && getRecoveryExecution(
@@ -672,6 +716,14 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 					toolHintsForAttempt = recoveryExecution.toolHints;
 					roleForAttempt = plan?.role ?? node.config.role;
 					node.pendingRecovery = undefined;
+					// 计划本身是 retry 时提交的还是同一个任务，不等待就是原速重放。
+					// replace_node 之类改了任务形状的动作不需要等，那不是在撞同一堵墙。
+					if (plan?.action === "retry") {
+						if (cancelled || signal?.aborted) break;
+						const waitMs = recoveryBackoffMs(category, recoveryAttempts - 1, backoffMs);
+						if (waitMs > 0) await waitForBackoff(waitMs);
+						if (cancelled || signal?.aborted) break;
+					}
 					continue;
 				}
 				await persistCheckpoint("recovering", currentLegacyFrontier());
@@ -679,9 +731,11 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 			}
 			if (recoverFailure) break;
 
-			if (!recoverFailure && attempt < totalAttemptBudget) {
+			// 无监督者的纯配置重试。走同一个退避函数，两条路径不该有两套等待语义。
+			if (attempt < totalAttemptBudget) {
 				if (cancelled || signal?.aborted) break;
-				if (backoffMs > 0) await waitForBackoff(backoffMs);
+				const waitMs = recoveryBackoffMs(category, attempt - 1, backoffMs);
+				if (waitMs > 0) await waitForBackoff(waitMs);
 				if (cancelled || signal?.aborted) break;
 			}
 		}
@@ -1011,7 +1065,8 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 						error: result.error ?? "Subagent failed",
 						attempt: node.attempts,
 						recoveryAttempt: previousRecoveryAttempts + recoveryAttempts,
-						maxAttempts: 1,
+						// 编译节点没有 retry 配置，真实上界就是首轮加上恢复预算。
+						maxAttempts: 1 + repairExecutionBudget,
 						timeoutMs: timeoutMsForAttempt,
 						logs: [...(result.diagnosticLog ?? [])],
 						sideEffect: compiled.hasSideEffect ? "unknown" : "none",
@@ -1041,6 +1096,20 @@ export function createDynamicGraphEngine(options: DynamicGraphEngineOptions): Dy
 					roleForAttempt = plan?.role ?? compiled.role;
 					timeoutMsForAttempt = recoveryExecution.timeoutMs;
 					node.pendingRecovery = undefined;
+					// 编译节点没有 retry.backoffMs，退避完全由策略函数决定。retry 动作提交的是
+					// 同一个任务，不等待就是原速重放一次必然撞同一堵墙的请求。
+					if (plan?.action === "retry") {
+						const category = classifyFailure({
+							nodeId,
+							error: result.error,
+							role: compiled.role,
+							sideEffect: { outcome: compiled.hasSideEffect ? "unknown" : "none" },
+						});
+						if (cancelled || signal?.aborted) break;
+						const waitMs = recoveryBackoffMs(category, recoveryAttempts - 1, 0);
+						if (waitMs > 0) await waitForBackoff(waitMs);
+						if (cancelled || signal?.aborted) break;
+					}
 				}
 				if (!result) throw new Error(`Node ${nodeId} returned no result`);
 				const validatedResult = result;

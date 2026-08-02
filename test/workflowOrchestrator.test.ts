@@ -276,6 +276,112 @@ describe("workflow orchestrator", () => {
     }
   });
 
+  it("keeps a progressing subagent running past the check interval", async () => {
+    vi.useFakeTimers();
+    try {
+      const orchestrator = createWorkflowOrchestrator({
+        createRunner: () => runner(async function* ({ runId, signal }) {
+          // 每 20ms 产出一条，跨过多个 25ms 检查窗口后正常收尾。
+          for (let index = 0; index < 5 && !signal.aborted; index++) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            yield { type: "assistantDelta", runId, content: `step-${index}` };
+          }
+        }),
+        limits: { subagentTimeoutMs: 25, maxSubagentTimeoutMs: 1_000 },
+      });
+      const id = orchestrator.createSubagent({ task: "Steady work" }, []);
+      const waiting = orchestrator.waitForSubagents([id]);
+
+      await vi.advanceTimersByTimeAsync(200);
+
+      expect((await waiting).get(id)).toEqual({
+        status: "completed",
+        content: "step-0step-1step-2step-3step-4",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a subagent running while a tool call is still in flight", async () => {
+    vi.useFakeTimers();
+    try {
+      const orchestrator = createWorkflowOrchestrator({
+        createRunner: () => runner(async function* ({ runId, signal }) {
+          yield { type: "toolCallStarted", runId, callId: "c1", toolName: "runCommand", input: "npm test" };
+          // 命令跑 80ms，横跨三个检查窗口且期间不产生任何消息。
+          await new Promise((resolve) => setTimeout(resolve, 80));
+          if (signal.aborted) return;
+          yield { type: "toolCallFinished", runId, callId: "c1", succeeded: true, output: "ok" };
+          yield { type: "assistantDelta", runId, content: "tests pass" };
+        }),
+        limits: { subagentTimeoutMs: 25, maxSubagentTimeoutMs: 1_000 },
+      });
+      const id = orchestrator.createSubagent({ task: "Run tests" }, []);
+      const waiting = orchestrator.waitForSubagents([id]);
+
+      await vi.advanceTimersByTimeAsync(200);
+
+      expect((await waiting).get(id)).toEqual({ status: "completed", content: "tests pass" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops a subagent that repeats the same tool call", async () => {
+    vi.useFakeTimers();
+    try {
+      const orchestrator = createWorkflowOrchestrator({
+        createRunner: () => runner(async function* ({ runId, signal }) {
+          for (let index = 0; !signal.aborted; index++) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            yield { type: "toolCallStarted", runId, callId: `c${index}`, toolName: "exploreCode", input: "auth" };
+            yield { type: "toolCallFinished", runId, callId: `c${index}`, succeeded: true, output: "same" };
+          }
+        }),
+        limits: { subagentTimeoutMs: 50, maxSubagentTimeoutMs: 5_000 },
+      });
+      const id = orchestrator.createSubagent({ task: "Loop forever" }, []);
+      const waiting = orchestrator.waitForSubagents([id]);
+
+      await vi.advanceTimersByTimeAsync(100);
+      const result = (await waiting).get(id);
+
+      expect(result?.status).toBe("failed");
+      expect(result?.error).toContain("stopped making progress");
+      expect(result?.error).toContain("exploreCode");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops a chatty subagent once the absolute ceiling is reached", async () => {
+    vi.useFakeTimers();
+    try {
+      const orchestrator = createWorkflowOrchestrator({
+        createRunner: () => runner(async function* ({ runId, signal }) {
+          // 一直产出不同内容：进度判定永远是 progressing，只有硬上限能拦住它。
+          for (let index = 0; !signal.aborted; index++) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            yield { type: "assistantDelta", runId, content: `chunk-${index}` };
+          }
+        }),
+        limits: { subagentTimeoutMs: 25, maxSubagentTimeoutMs: 100 },
+      });
+      const id = orchestrator.createSubagent({ task: "Never converge" }, []);
+      const waiting = orchestrator.waitForSubagents([id]);
+
+      await vi.advanceTimersByTimeAsync(500);
+      const result = (await waiting).get(id);
+
+      expect(result?.status).toBe("failed");
+      expect(result?.error).toContain("timed out after 100ms");
+      expect(result?.error).toContain("reached the 100ms limit");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("allows a 60 second timeout at the default workflow limit", async () => {
     vi.useFakeTimers();
     const orchestrator = createWorkflowOrchestrator({

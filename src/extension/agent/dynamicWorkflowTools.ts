@@ -7,7 +7,7 @@ import { createDynamicGraphEngine, DEFAULT_DYNAMIC_GRAPH_LIMITS, type DynamicGra
 import type { GraphDebugInfo } from "./workflow/graphVisualizer";
 import { createReflectionResolver } from "./workflow/reflectionResolver";
 import type { SubagentRoleId, SubagentResult } from "./workflow/types";
-import { allowedRecoveryActions, classifyFailure, DEFAULT_RECOVERY_POLICY, parseRecoveryPlan, RecoveryPlanError, type FailureCategory, type RecoveryPlan } from "./workflow/workflowRecovery";
+import { allowedRecoveryActions, classifyFailure, DEFAULT_RECOVERY_POLICY, failureFingerprint, parseRecoveryPlan, RecoveryPlanError, type FailureCategory, type RecoveryPlan } from "./workflow/workflowRecovery";
 import type { CycleEdge } from "./workflow/cycleManager";
 import { compileGeneratedWorkflow } from "./workflow/workflowCompiler";
 import { parseGeneratedWorkflowPlan, type GeneratedWorkflowPlan } from "./workflow/generatedWorkflowTypes";
@@ -162,7 +162,11 @@ const SEMANTIC_NODE_SCHEMA = {
 		after: { type: "array", items: { type: "string", minLength: 1 } },
 		contextFrom: { type: "array", items: { type: "string", minLength: 1 } },
 		reviews: { type: "array", maxItems: 1, items: { type: "string", minLength: 1 } },
-		timeoutMs: { type: "integer", minimum: 1 },
+		timeoutMs: {
+			type: "integer",
+			minimum: 1,
+			description: "Progress-check interval, not a hard deadline. At each interval the node's log is inspected: a node still making progress keeps running, one that is stalled or repeating the same tool call is stopped. Capped at 60000; the absolute ceiling is 300000.",
+		},
 		outputContract: OUTPUT_CONTRACT_SCHEMA,
 	},
 	required: ["id", "task"],
@@ -192,6 +196,7 @@ const RESOLVER_SCHEMA = {
 				toolHints: NODE_SCHEMA.properties.toolHints,
 				retry: RETRY_SCHEMA,
 				sideEffect: { type: "string", enum: ["none", "applied", "unknown"] },
+				outputContract: OUTPUT_CONTRACT_SCHEMA,
 				itemInputKey: { type: "string", minLength: 1 },
 				expression: { type: "string", minLength: 1 },
 				nodes: { type: "array", items: NODE_SCHEMA },
@@ -235,6 +240,13 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 				"NODE IDS: every id referenced in dependsOn, condition.expression, breakWhen[].value,",
 				"cycles[].from and cycles[].to MUST be an id you declared in this call's initialNodes.",
 				"Referencing an id you did not declare is the most common cause of failure.",
+				"",
+				"WRITE NODES REQUIRE A CONTRACT: any node with role=executor, or sideEffect other than \"none\",",
+				"MUST declare a non-empty outputContract, and its task MUST tell it to emit exactly that.",
+				"Without one a node can report success without producing checkable evidence. Prefer requiredFields:",
+				"  { id: \"write\", task: \"Apply the edit, then reply with JSON {filesChanged, summary}.\",",
+				"    role: \"executor\", outputContract: { requiredFields: [\"filesChanged\", \"summary\"] } }",
+				"If a node only reads, use a non-executor role (explorer/reviewer/planner) and no contract is required.",
 				"",
 				"MINIMAL CYCLE EXAMPLE (copy this shape):",
 				"  initialNodes: [",
@@ -309,6 +321,8 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 						outputContract: node.outputContract,
 					}))
 					: parseNodeConfigs(record.initialNodes);
+				// 两条输入路径合流之后再查契约，语义图和 legacy 图受同一条策略约束。
+				enforceWriteNodeOutputContract(initialNodes);
 				const maxNodes = record.maxNodes !== undefined ? requirePositiveInteger(record.maxNodes, "maxNodes") : undefined;
 				const maxDepth = record.maxDepth !== undefined ? requirePositiveInteger(record.maxDepth, "maxDepth") : undefined;
 				const initialGlobalData = record.initialGlobalData !== undefined
@@ -405,6 +419,13 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 						timeoutMs: entry.timeoutMs,
 						error: entry.error,
 					}));
+					/**
+					 * 已下发过的 `fingerprint|action` 组合。硬预算（maxRecoveryAttempts）只能挡住
+					 * 无限循环，挡不住"同一个错误配同一个动作重复两次"——那两次必然是同样的结果，
+					 * 白花一次 planner 往返和一次子智能体执行。指纹抹掉了数字、路径和引号内容，
+					 * 所以"超时 30s"和"超时 45s"算同一个错误。
+					 */
+					const attemptedRecoveries = new Set<string>();
 					let workflowStopReason: string | undefined;
 					let workflowStep = 0;
 					let workflowStateVersion = 0;
@@ -539,6 +560,23 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 								diagnostic.error = "Graph-level replan requires a new workflow invocation";
 								return undefined;
 							}
+							// contextFrom 引用的节点必须已成功。引擎的 selectRecoveryInput 在任一引用
+							// 未完成时返回 undefined，计划会被静默丢弃——诊断里却留着一条"已规划修复"
+							// 且没有 error 的记录，排障时会误导人以为修复提交过。
+							const unavailable = (safePlan.contextFrom ?? []).filter((id) => {
+								const source = engine.getContext().nodes.get(id);
+								return source?.status !== "completed" || source.result?.status !== "completed";
+							});
+							if (unavailable.length > 0) {
+								diagnostic.error = `contextFrom references nodes that have not completed: ${unavailable.join(", ")}`;
+								return undefined;
+							}
+							const fingerprint = `${failureFingerprint(evidence.nodeId, category, evidence.error)}|${safePlan.action}`;
+							if (attemptedRecoveries.has(fingerprint)) {
+								diagnostic.error = `Recovery action '${safePlan.action}' was already attempted for this failure signature`;
+								return undefined;
+							}
+							attemptedRecoveries.add(fingerprint);
 							return safePlan;
 						} catch (error) {
 							recoveryDiagnostics.push({ nodeId: evidence.nodeId, category, error: checkpointText(error instanceof Error ? error.message : "Invalid recovery plan", 2_000) });
@@ -649,6 +687,7 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 					}
 
 					const visualizer = engine.getVisualizer();
+					const bounded = boundResultsForHost(results, context.nodes);
 					return JSON.stringify({
 						workflowStatus,
 						planHash,
@@ -661,7 +700,12 @@ export function createDynamicWorkflowTools({ orchestrator, availableTools, signa
 							.map((node) => node.config.id),
 						failedNodes,
 						unreachedNodes: [...unreachedNodeIds],
-						results: Object.fromEntries(results),
+						results: bounded.results,
+						...(bounded.truncated && {
+							resultsNote:
+								"部分节点内容因上下文预算被截断（见各节点的 contentTruncated / omittedChars）。"
+								+ "不要推测被省略的内容；需要完整结果时用更窄的节点任务重跑，或让该节点通过 exportTo 导出所需字段。",
+						}),
 						executionOrder: context.executionOrder,
 						workflowState: {
 							step: engine.getStateSnapshot()?.step ?? workflowStep,
@@ -743,6 +787,121 @@ const MAX_CHECKPOINT_TEXT_CHARS = 8_192;
 function checkpointText(value: string, maxChars = MAX_CHECKPOINT_TEXT_CHARS): string {
 	const redacted = redactRecoveryText(value);
 	return redacted.length > maxChars ? `${redacted.slice(0, maxChars)}...[truncated]` : redacted;
+}
+
+/** 写节点：executor 角色，或显式声明了非 none 副作用的节点。 */
+function isWriteNode(node: DynamicNodeConfig): boolean {
+	const sideEffect = node.sideEffect ?? (node.role === "executor" ? "unknown" : "none");
+	return sideEffect !== "none";
+}
+
+/** 契约至少要有一项可判定的断言，空对象 `{}` 不算契约。 */
+function hasVerifiableContract(node: DynamicNodeConfig): boolean {
+	const contract = node.outputContract;
+	if (!contract) return false;
+	return contract.exactText !== undefined
+		|| contract.requiredText !== undefined
+		|| contract.minLength !== undefined
+		|| (contract.requiredFields !== undefined && contract.requiredFields.length > 0);
+}
+
+/**
+ * 写节点（executor / 有副作用）的输出契约策略。
+ *
+ * `validateOutputContract` 是唯一能把节点"声称完成"和某个客观标准对齐的机制，但它按节点
+ * 可选——不配契约时任何非空文本都算完成。一个 executor 回复"已完成重构，所有测试通过"而
+ * 根本没碰过文件，会被记为 completed，然后经 exportTo 变成下游读到的"事实"。
+ *
+ * 写节点的代价最高（副作用默认 `unknown`，引擎自己也承认无法验证写操作是否落地），
+ * 所以策略先覆盖这一类。
+ */
+function enforceWriteNodeOutputContract(nodes: readonly DynamicNodeConfig[], property = "initialNodes"): void {
+	const unverified = nodes.filter((node) => isWriteNode(node) && !hasVerifiableContract(node));
+	if (unverified.length === 0) return;
+
+	// 硬拒绝而不是注入保底契约：保底断言（例如 minLength）挡得住空回复，挡不住一句
+	// 自信的假报告——"已完成重构，所有测试通过"轻松满足任何长度下限。让模型**先声明**
+	// 它将产出什么可核对的证据，再允许它动工作区，才是这道闸门唯一有意义的形态。
+	//
+	// 错误信息必须够模型一次改对：给出节点 id、原因和一个可直接照抄的形状。反复试错
+	// 会烧掉恢复预算，而 replace_node 修复出的新任务同样要过这道检查。
+	throw new Error(
+		`${property} write nodes must declare a verifiable outputContract: ${unverified.map((node) => node.id).join(", ")}. `
+		+ "A write node (role=executor, or any node with sideEffect other than \"none\") can otherwise report success "
+		+ "without producing checkable evidence. Give each one an outputContract asserting what it must emit, and state "
+		+ "the same requirement in the node task. Prefer requiredFields over free text -- structured claims are harder to fabricate. "
+		+ "Example: { \"id\": \"write\", \"task\": \"Apply the edit, then reply with JSON {filesChanged, summary}.\", "
+		+ "\"role\": \"executor\", \"outputContract\": { \"requiredFields\": [\"filesChanged\", \"summary\"] } }. "
+		+ "If the node does not write to the workspace, set sideEffect to \"none\" or use a non-executor role instead.",
+	);
+}
+
+/**
+ * 回传给宿主智能体的节点结果预算。
+ *
+ * 节点之间的数据流早就有 `MAX_INPUT_DATA_CHARS` 上限，但结果汇总回父智能体这条路径
+ * 原先没有上限：30 个节点各返回 5k 文本就是一条 150k 字符的工具结果落进宿主窗口——
+ * 正是「每个节点开全新上下文」想避免的那种压力，只是在顶层重新出现。
+ *
+ * 叶子节点（无下游）拿更大配额：它们是工作流的实际产出，中间节点多半是过程量，
+ * 其要紧的部分已经通过 `exportTo` / `inputMapping` 流到下游了。
+ */
+const MAX_LEAF_RESULT_CHARS = 4_000;
+const MAX_INTERIOR_RESULT_CHARS = 1_000;
+const MAX_TOTAL_RESULTS_CHARS = 24_000;
+
+type BoundedNodeResult = {
+	status: SubagentResult["status"];
+	content?: string;
+	error?: string;
+	/**
+	 * 内容被预算截断时为 true，并给出丢弃的字符数。必须显式标注：静默截断会让模型
+	 * 把「被省略」当成「节点没产出」，然后自行编造缺失的部分——那正是要防的幻觉。
+	 */
+	contentTruncated?: true;
+	omittedChars?: number;
+};
+
+function boundResultsForHost(
+	results: ReadonlyMap<string, SubagentResult>,
+	nodes: ReadonlyMap<string, DynamicNode>,
+): { results: Record<string, BoundedNodeResult>; truncated: boolean } {
+	const isLeaf = (nodeId: string): boolean => (nodes.get(nodeId)?.dependents.size ?? 0) === 0;
+	// 预算按叶子优先分配，输出仍按原始顺序——顺序变化会无谓地扰动下游读取。
+	const byPriority = [...results.keys()].sort((a, b) => Number(isLeaf(b)) - Number(isLeaf(a)));
+	const allocated = new Map<string, BoundedNodeResult>();
+	let remaining = MAX_TOTAL_RESULTS_CHARS;
+	let truncated = false;
+
+	for (const nodeId of byPriority) {
+		const result = results.get(nodeId)!;
+		const entry: BoundedNodeResult = { status: result.status };
+		// error 始终保留：它短，而且决定父智能体该重试、换路径还是上报。
+		if (result.error !== undefined) entry.error = checkpointText(result.error, 2_000);
+
+		if (result.content !== undefined) {
+			const redacted = redactRecoveryText(result.content);
+			const cap = Math.min(isLeaf(nodeId) ? MAX_LEAF_RESULT_CHARS : MAX_INTERIOR_RESULT_CHARS, remaining);
+			if (redacted.length <= cap) {
+				entry.content = redacted;
+				remaining -= redacted.length;
+			} else {
+				// cap 为 0 时连一个字符都放不下，此时省略 content 而不是塞一个空串——
+				// 空串读起来像「节点返回了空」，和「内容被省略」是两回事。
+				if (cap > 0) entry.content = redacted.slice(0, cap);
+				entry.contentTruncated = true;
+				entry.omittedChars = redacted.length - cap;
+				remaining -= cap;
+				truncated = true;
+			}
+		}
+		allocated.set(nodeId, entry);
+	}
+
+	return {
+		results: Object.fromEntries([...results.keys()].map((nodeId) => [nodeId, allocated.get(nodeId)!])),
+		truncated,
+	};
 }
 
 function compactCheckpointValue(value: unknown, depth = 0): unknown {
@@ -1063,6 +1222,12 @@ function createFanoutResolver(config: Record<string, unknown>, activeGraph: Acti
 	const toolHints = config.toolHints !== undefined ? requireStringArray(config.toolHints, "resolverConfig.toolHints") : undefined;
 	const retry = config.retry !== undefined ? parseRetry(config.retry, "resolverConfig.retry") : undefined;
 	const sideEffect = config.sideEffect !== undefined ? requireSideEffect(config.sideEffect, "resolverConfig.sideEffect") : undefined;
+	const outputContract = config.outputContract !== undefined
+		? parseOutputContract(config.outputContract, "resolverConfig.outputContract")
+		: undefined;
+	// 每个扇出项都是一个独立的写节点。在构造期就拒，而不是等运行时扇出成 N 个
+	// 无契约的写节点——那时图已经在跑，拒绝的代价是整轮白跑。
+	enforceWriteNodeOutputContract([{ id: idPrefix, task, ...(role && { role }), ...(sideEffect && { sideEffect }), ...(outputContract && { outputContract }) }], "resolverConfig");
 
 	return async (_nodeId, completedNodes, context) => {
 		const value = activeGraph.engine.getDataFlowManager().evaluateExpression(itemsExpression, expressionContext(completedNodes, context));
@@ -1087,6 +1252,7 @@ function createFanoutResolver(config: Record<string, unknown>, activeGraph: Acti
 				...(toolHints && { toolHints }),
 				...(retry && { retry }),
 				...(sideEffect && { sideEffect }),
+				...(outputContract && { outputContract }),
 				inputMapping: { [itemInputKey]: `$${globalKey}` },
 			};
 		});
@@ -1096,6 +1262,7 @@ function createFanoutResolver(config: Record<string, unknown>, activeGraph: Acti
 function createConditionalResolver(config: Record<string, unknown>, activeGraph: ActiveGraph): DependencyResolver {
 	const expression = requireString(config.expression, "resolverConfig.expression");
 	const nodes = parseNodeConfigs(config.nodes, "resolverConfig.nodes");
+	enforceWriteNodeOutputContract(nodes, "resolverConfig.nodes");
 	return async (_nodeId, completedNodes, context) => {
 		const value = activeGraph.engine.getDataFlowManager().evaluateExpression(expression, expressionContext(completedNodes, context));
 		return value ? nodes.map((node) => ({ ...node })) : [];
@@ -1110,6 +1277,16 @@ function createIterativeResolver(config: Record<string, unknown>, activeGraph: A
 	const idPrefix = requireNodeId(config.idPrefix, "resolverConfig.idPrefix");
 	const reviseRole = config.reviseRole !== undefined ? requireRole(config.reviseRole) : undefined;
 	const reviewRole = config.reviewRole !== undefined ? requireRole(config.reviewRole) : undefined;
+	// reflectionResolver 生成的 revise/review 节点不接受 outputContract，所以这条路径上
+	// 无法给写节点配契约——只能不让它把 revise 声明成 executor。审查循环里的修复节点
+	// 恰恰最需要契约：它每轮都在改工作区，而退出与否取决于 reviewer 读到了什么。
+	if (reviseRole === "executor") {
+		throw new Error(
+			"resolverConfig.reviseRole cannot be \"executor\": nodes generated by resolverType=iterative cannot carry an outputContract, "
+			+ "so the write would go unverified. Use the top-level `cycles` field with explicit initialNodes instead -- "
+			+ "those nodes accept outputContract and are the preferred shape for review/fix loops.",
+		);
+	}
 
 	return createReflectionResolver(activeGraph.resolvers, {
 		maxRounds,

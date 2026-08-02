@@ -22,6 +22,11 @@ import type { FailureCategory, RecoveryPlanContext } from "../../src/extension/a
 describe("classifyFailure", () => {
 	it.each([
 		["subagent timeout", "Subagent timed out after 30000ms", "transient"],
+		[
+			"stalled loop",
+			"Subagent stopped making progress after 50ms: repeated the tool call 'exploreCode(auth)' 3 times without progressing",
+			"planning",
+		],
 		["rate limit", "DeepSeek rate limit reached", "transient"],
 		["overloaded", "DeepSeek server is overloaded", "transient"],
 		["socket reset", "ECONNRESET: socket hang up", "transient"],

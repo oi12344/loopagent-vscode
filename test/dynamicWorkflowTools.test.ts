@@ -69,6 +69,216 @@ describe("dynamic workflow tools", () => {
 		expect(result).not.toHaveProperty("mermaid");
 	});
 
+	it("rejects write nodes that declare no verifiable output contract", async () => {
+		const orchestrator = scriptedOrchestrator(() => "ok");
+		const tools = createDynamicWorkflowTools({ orchestrator, availableTools: [] });
+
+		// executor 默认落进 sideEffect="unknown"，是最需要闸门的一类。
+		await expect(runGraphRaw(tools, [{ id: "write", task: "Write", role: "executor" }]))
+			.rejects.toThrow(/write nodes must declare a verifiable outputContract: write/i);
+		// 显式声明副作用的非 executor 节点同样算写节点。
+		await expect(runGraphRaw(tools, [{ id: "apply", task: "Apply", sideEffect: "applied" }]))
+			.rejects.toThrow(/must declare a verifiable outputContract: apply/i);
+		// 空对象不算契约。这一条由 parseOutputContract 先拦下，报的是它自己的信息；
+		// hasVerifiableContract 里的同一判断是给语义图路径（不走 parseNodeConfigs）兜底。
+		await expect(runGraphRaw(tools, [{ id: "write", task: "Write", role: "executor", outputContract: {} }]))
+			.rejects.toThrow(/outputContract must define exactText, requiredText, requiredFields, or minLength/i);
+		await expect(runGraphRaw(tools, [{ id: "write", task: "Write", role: "executor", outputContract: { requiredFields: [] } }]))
+			.rejects.toThrow(/outputContract/i);
+		// 错误信息要够模型一次改对：带 id、带可照抄的形状。
+		await expect(runGraphRaw(tools, [{ id: "write", task: "Write", role: "executor" }]))
+			.rejects.toThrow(/requiredFields/);
+		// 被拒的图一个子智能体都不该起——拒绝发生在执行之前。
+		expect(orchestrator.createSubagent).not.toHaveBeenCalled();
+
+		// 只读角色不需要契约。
+		const readOnly = await runGraph(tools, [{ id: "read", task: "Read", role: "explorer" }]);
+		expect(readOnly.workflowStatus).toBe("completed");
+		// executor 配了契约就放行。
+		const contracted = await runGraph(tools, [
+			{ id: "write", task: "Write", role: "executor", outputContract: { minLength: 1 } },
+		]);
+		expect(contracted.workflowStatus).toBe("completed");
+		// sideEffect="none" 显式声明为只读的 executor 也放行。
+		const declaredReadOnly = await runGraph(tools, [
+			{ id: "check", task: "Check", role: "executor", sideEffect: "none" },
+		]);
+		expect(declaredReadOnly.workflowStatus).toBe("completed");
+	});
+
+	it("closes the resolver bypass for generated write nodes", async () => {
+		const tools = createDynamicWorkflowTools({ orchestrator: scriptedOrchestrator(() => "ok"), availableTools: [] });
+
+		// fanout 会把一个配置扇成 N 个写节点，构造期就要拒。
+		await expect(runGraphRaw(tools, [{ id: "read", task: "Read", role: "explorer" }], {
+			resolvers: [{
+				nodeId: "read",
+				resolverType: "fanout",
+				resolverConfig: { itemsExpression: "$items", idPrefix: "edit", task: "Edit", itemInputKey: "item", role: "executor" },
+			}],
+		})).rejects.toThrow(/resolverConfig write nodes must declare a verifiable outputContract/i);
+
+		// conditional 的节点走 parseNodeConfigs，同一条策略。
+		await expect(runGraphRaw(tools, [{ id: "read", task: "Read", role: "explorer" }], {
+			resolvers: [{
+				nodeId: "read",
+				resolverType: "conditional",
+				resolverConfig: { expression: "read.status === 'completed'", nodes: [{ id: "write", task: "Write", role: "executor" }] },
+			}],
+		})).rejects.toThrow(/resolverConfig\.nodes write nodes must declare a verifiable outputContract/i);
+
+		// iterative 生成的节点无法携带契约，所以不许把 revise 声明成 executor。
+		await expect(runGraphRaw(tools, [{ id: "read", task: "Read", role: "explorer" }], {
+			resolvers: [{
+				nodeId: "read",
+				resolverType: "iterative",
+				resolverConfig: {
+					maxRounds: 2,
+					approvalText: "APPROVED",
+					reviseTask: "Revise",
+					reviewTask: "Review",
+					idPrefix: "loop",
+					reviseRole: "executor",
+				},
+			}],
+		})).rejects.toThrow(/reviseRole cannot be "executor"/i);
+	});
+
+	it("passes a fanout output contract through to every generated node", async () => {
+		const captured: CreateSubagentConfig[] = [];
+		const tools = createDynamicWorkflowTools({
+			orchestrator: scriptedOrchestrator(() => JSON.stringify({ filesChanged: ["a.ts"] }), captured),
+			availableTools: [],
+		});
+
+		const result = await runGraph(
+			tools,
+			[{ id: "read", task: "Read", role: "explorer" }],
+			{
+				initialGlobalData: { items: ["a", "b"] },
+				resolvers: [{
+					nodeId: "read",
+					resolverType: "fanout",
+					resolverConfig: {
+						itemsExpression: "$items",
+						idPrefix: "edit",
+						task: "Edit the file, reply with JSON {filesChanged}.",
+						itemInputKey: "item",
+						role: "executor",
+						outputContract: { requiredFields: ["filesChanged"] },
+					},
+				}],
+			},
+		);
+
+		expect(result.completedNodes).toEqual(expect.arrayContaining(["edit-1", "edit-2"]));
+		expect(captured.filter((config) => config.role === "executor")).toHaveLength(2);
+	});
+
+	it("fails a generated write node whose output misses the fanout contract", async () => {
+		const tools = createDynamicWorkflowTools({
+			orchestrator: scriptedOrchestrator((config) => config.role === "executor" ? "已完成，所有测试通过" : "ok"),
+			availableTools: [],
+		});
+
+		const result = await runGraph(
+			tools,
+			[{ id: "read", task: "Read", role: "explorer" }],
+			{
+				initialGlobalData: { items: ["a"] },
+				resolvers: [{
+					nodeId: "read",
+					resolverType: "fanout",
+					resolverConfig: {
+						itemsExpression: "$items",
+						idPrefix: "edit",
+						task: "Edit the file, reply with JSON {filesChanged}.",
+						itemInputKey: "item",
+						role: "executor",
+						outputContract: { requiredFields: ["filesChanged"] },
+					},
+				}],
+			},
+		);
+
+		// 一句自信的假报告不再算完成——契约要求的是结构化证据。
+		expect(result.completedNodes).not.toContain("edit-1");
+		expect(result.results["edit-1"].status).toBe("failed");
+		expect(result.results["edit-1"].error).toMatch(/Output contract requires JSON content/);
+	});
+
+	it("bounds node content returned to the host and flags what it dropped", async () => {
+		const tools = createDynamicWorkflowTools({
+			orchestrator: scriptedOrchestrator((config) => "x".repeat(config.task.startsWith("Read") ? 9_000 : 9_000)),
+			availableTools: [],
+		});
+
+		const result = await runGraph(tools, [
+			{ id: "read", task: "Read", role: "explorer" },
+			{ id: "report", task: "Report", role: "reviewer", dependsOn: ["read"] },
+		]);
+
+		// read 有下游，按中间节点配额；report 是叶子，拿叶子配额。
+		expect(result.results.read.content).toHaveLength(1_000);
+		expect(result.results.read.contentTruncated).toBe(true);
+		expect(result.results.read.omittedChars).toBe(8_000);
+		expect(result.results.report.content).toHaveLength(4_000);
+		expect(result.results.report.omittedChars).toBe(5_000);
+		expect(result.resultsNote).toMatch(/不要推测被省略的内容/);
+		expect(result.results.read.status).toBe("completed");
+	});
+
+	it("keeps short node content intact and omits the truncation note", async () => {
+		const tools = createDynamicWorkflowTools({
+			orchestrator: scriptedOrchestrator(() => "short answer"),
+			availableTools: [],
+		});
+
+		const result = await runGraph(tools, [{ id: "read", task: "Read", role: "explorer" }]);
+
+		expect(result.results.read).toEqual({ status: "completed", content: "short answer" });
+		expect(result).not.toHaveProperty("resultsNote");
+	});
+
+	it("spends the total results budget on leaf nodes before interior ones", async () => {
+		// 8 个叶子 × 4000 = 32000 > 24000 总预算，逼预算耗尽。
+		const leaves = Array.from({ length: 8 }, (_, index) => ({
+			id: `leaf-${index}`,
+			task: `Leaf ${index}`,
+			role: "explorer",
+		}));
+		const tools = createDynamicWorkflowTools({
+			orchestrator: scriptedOrchestrator(() => "y".repeat(5_000)),
+			availableTools: [],
+		});
+
+		const result = await runGraph(tools, leaves);
+
+		const total = Object.values(result.results as Record<string, { content?: string }>)
+			.reduce((sum, entry) => sum + (entry.content?.length ?? 0), 0);
+		expect(total).toBeLessThanOrEqual(24_000);
+		// 预算耗尽的节点省略 content 而不是给空串——空串读起来像"节点没产出"。
+		const starved = Object.values(result.results as Record<string, any>).filter((entry) => entry.content === undefined);
+		expect(starved.length).toBeGreaterThan(0);
+		for (const entry of starved) expect(entry.contentTruncated).toBe(true);
+	});
+
+	it("keeps failure errors readable even when content is starved of budget", async () => {
+		const tools = createDynamicWorkflowTools({
+			orchestrator: resultOrchestrator((config) => config.role === "explorer"
+				? { status: "completed", content: "z".repeat(30_000) }
+				: { status: "failed", error: "downstream could not parse the upstream payload" }),
+			availableTools: [],
+		});
+
+		const result = await runGraph(tools, [
+			{ id: "read", task: "Read", role: "explorer" },
+			{ id: "check", task: "Check", role: "reviewer", dependsOn: ["read"], condition: { type: "always" } },
+		]);
+
+		expect(result.results.check.error).toBe("downstream could not parse the upstream payload");
+	});
+
 	it("returns observability payloads only when include requests them", async () => {
 		const tools = createDynamicWorkflowTools({ orchestrator: scriptedOrchestrator(() => "ok"), availableTools: [] });
 		const result = await runGraph(
@@ -443,7 +653,7 @@ describe("dynamic workflow tools", () => {
 		const input = {
 			initialNodes: [
 				{ id: "read", task: "Read", role: "explorer" },
-				{ id: "write", task: "Write", role: "executor" },
+				{ id: "write", task: "Write", role: "executor", outputContract: { minLength: 1 } },
 			],
 		};
 
@@ -484,7 +694,7 @@ describe("dynamic workflow tools", () => {
 
 		const result = await runGraph(tools, [
 			{ id: "read", task: "Read", role: "explorer" },
-			{ id: "write", task: "Write", role: "executor", dependsOn: ["read"] },
+			{ id: "write", task: "Write", role: "executor", dependsOn: ["read"], outputContract: { minLength: 1 } },
 		]);
 
 		expect(result.workflowStatus).toBe("recovery_required");
@@ -524,7 +734,7 @@ describe("dynamic workflow tools", () => {
 
 		const result = await runGraph(tools, [
 			{ id: "read", task: "Read", role: "explorer" },
-			{ id: "write", task: "Write", role: "executor", dependsOn: ["read"] },
+			{ id: "write", task: "Write", role: "executor", dependsOn: ["read"], outputContract: { minLength: 1 } },
 		]);
 
 		expect(saveCalls).toBeGreaterThan(1);
