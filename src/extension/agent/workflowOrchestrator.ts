@@ -6,7 +6,7 @@ import { resolveRole } from "./workflow/roleRegistry";
 import { selectTools } from "./workflow/toolRouter";
 import { evaluateSubagentProgress } from "./workflow/subagentProgress";
 import type { CreateSubagentConfig, SubagentResult, SubagentRoleId, SubagentRunnerFactory, SubagentStatus, WorkflowLimits } from "./workflow/types";
-import type { WorkflowDiagnosticLog } from "../../shared/workflowCheckpoint";
+import type { WorkflowDiagnosticLog } from "../../shared/workflowDiagnostics";
 import type { ProjectMemory } from "../memory/projectMemory";
 import type { ReactAgentRunOutcome } from "../memory/types";
 

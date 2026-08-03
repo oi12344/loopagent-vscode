@@ -46,7 +46,7 @@ type WorkflowPlanItem = {
   dependsOn: string[];
   status: WorkflowPlanStatus;
 };
-type WorkflowProgress = { phase?: string; agents: WorkflowPlanItem[]; step?: number; stateVersion?: number; stopReason?: string };
+type WorkflowProgress = { agents: WorkflowPlanItem[] };
 type PendingCommandApproval = { approvalId: string; command: string; cwd: string };
 type AppliedEditNotification = { notificationId: string; files: string[]; fileStats: EditFileStat[]; error?: string };
 
@@ -251,24 +251,6 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         }
 
         case "toolCallFinished": {
-          if (hostMessage.succeeded) {
-            try {
-              const workflowState = (JSON.parse(hostMessage.output) as { workflowState?: { step?: number; stateVersion?: number; stopReason?: string } }).workflowState;
-              if (workflowState) {
-                setWorkflowProgress((current) => ({
-                  ...current,
-                  [hostMessage.runId]: {
-                    ...(current[hostMessage.runId] ?? { agents: [] }),
-                    step: workflowState.step,
-                    stateVersion: workflowState.stateVersion,
-                    stopReason: workflowState.stopReason,
-                  },
-                }));
-              }
-            } catch {
-              // Tool output may be plain text; the existing tool-call card remains the source of truth.
-            }
-          }
           updateAssistantTurn(hostMessage.runId, (turn) => ({
             ...turn,
             toolCalls: turn.toolCalls.map((entry) =>
@@ -293,14 +275,6 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
             ...current,
             { notificationId: hostMessage.notificationId, files: hostMessage.files, fileStats: hostMessage.fileStats },
           ]);
-          return;
-        }
-
-        case "workflowStateChanged": {
-          setWorkflowProgress((current) => ({
-            ...current,
-            [hostMessage.runId]: { phase: hostMessage.phase, agents: current[hostMessage.runId]?.agents ?? [] },
-          }));
           return;
         }
 
@@ -1220,7 +1194,7 @@ function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; w
         </details>
       ) : null}
 
-      {workflow?.agents.length || workflow?.step !== undefined ? <WorkflowPlan workflow={workflow} parentStatus={turn.status} /> : null}
+      {workflow?.agents.length ? <WorkflowPlan workflow={workflow} parentStatus={turn.status} /> : null}
       {turn.content.length > 0 ? <div className="message-body assistant-answer"><AssistantAnswer content={turn.content} /></div> : null}
       {turn.status !== "done" && turn.content.length === 0 && !turn.error ? (
         <div className="assistant-placeholder">Waiting for response...</div>
@@ -1261,9 +1235,6 @@ function WorkflowPlan({ workflow, parentStatus }: { workflow: WorkflowProgress; 
     <section className="workflow-plan" aria-label="执行计划">
       <div className="workflow-plan-header">
         <strong>执行计划</strong>
-        {workflow.phase ? <span className="workflow-plan-phase">{workflow.phase}</span> : null}
-        {workflow.step !== undefined ? <span className="workflow-plan-phase">step {workflow.step} · v{workflow.stateVersion ?? 0}</span> : null}
-        {workflow.stopReason ? <span className="workflow-plan-phase">{workflow.stopReason}</span> : null}
         <span className="workflow-plan-count">{completedCount} / {items.length}</span>
       </div>
       <ol className="workflow-plan-list">

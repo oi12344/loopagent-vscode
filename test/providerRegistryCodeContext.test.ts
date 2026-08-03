@@ -7,7 +7,7 @@ import type { ModelMessage, ModelProvider } from "../src/extension/model/types";
 import type { HostToWebviewMessage } from "../src/shared/messages";
 
 describe("createConfiguredAgentRunner code intelligence context", () => {
-  it("gives the parent runner both direct tools and the graph tool, gated on any real tool call", async () => {
+  it("gives the parent runner direct and subagent tools, gated on any real tool call", async () => {
     const capturedToolNames: string[][] = [];
     const capturedMessages: ModelMessage[][] = [];
     vi.resetModules();
@@ -38,31 +38,16 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     await expect(collectHostMessages(runner, "Explain this code")).resolves.toContainEqual({
       type: "runFailed",
       runId: "run-1",
-      message: expect.stringContaining("one of [exploreCode, runDynamicGraph]"),
+      message: expect.stringContaining("one of [exploreCode, spawnSubagent, waitForSubagents, cancelSubagent]"),
     });
-    expect(capturedToolNames[0]).toEqual(["exploreCode", "runDynamicGraph"]);
+    expect(capturedToolNames[0]).toEqual(["exploreCode", "spawnSubagent", "waitForSubagents", "cancelSubagent"]);
     const systemPrompt = capturedMessages[0]
       ?.filter((message) => message.role === "system")
       .map((message) => message.content)
       .join("\n") ?? "";
-    expect(systemPrompt).toContain(
-      "For a single, well-defined task whose evidence fits in one context",
-    );
-    expect(systemPrompt).toContain(
-      "For parallel exploration, create only independent read-only nodes and aggregate their results yourself",
-    );
-    expect(systemPrompt).toContain(
-      "Do not add a reviewer unless the user explicitly asks for an independent review",
-    );
-    expect(systemPrompt).not.toContain(
-      "multiple independent, parallelizable explorations followed by an aggregating review",
-    );
-    expect(systemPrompt).toContain(
-      "dependsOn only controls scheduling; it does not forward upstream output",
-    );
-    expect(systemPrompt).toContain(
-      "When a reviewer aggregates dependency results, map every dependency's <node-id>.content through inputMapping.",
-    );
+    expect(systemPrompt).toContain("When a task has independent parts, use spawnSubagent");
+    expect(systemPrompt).toContain("waitForSubagents");
+    expect(systemPrompt).not.toContain("runDynamicGraph");
   });
 
   it("lets the parent runner answer directly after a real tool call, without building a graph", async () => {
@@ -109,7 +94,7 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
 
     expect(hostMessages).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "direct answer" });
     expect(hostMessages).not.toContainEqual(
-      expect.objectContaining({ type: "toolCallStarted", toolName: "runDynamicGraph" }),
+      expect.objectContaining({ type: "toolCallStarted", toolName: "spawnSubagent" }),
     );
   });
 
@@ -432,14 +417,24 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
 
           parentTurns.push(messages);
           if (parentTurns.length === 1) {
-            expect(toolNames).toEqual(["exploreCode", "readFile", "applyEdit", "runCommand", "inspectRepo", "runDynamicGraph"]);
+            expect(toolNames).toEqual(["exploreCode", "readFile", "applyEdit", "runCommand", "inspectRepo", "spawnSubagent", "waitForSubagents", "cancelSubagent"]);
             yield {
               type: "toolCallDelta",
               index: 0,
               id: "run-graph-call",
-              name: "runDynamicGraph",
-              argumentsDelta:
-                '{"initialNodes":[{"id":"execute","task":"Apply the delegated repository task.","role":"executor","toolHints":["readFile","applyEdit","runCommand"],"outputContract":{"minLength":1}}]}',
+              name: "spawnSubagent",
+              argumentsDelta: '{"task":"Apply the delegated repository task.","role":"planner","toolHints":["readFile","applyEdit","runCommand"]}',
+            };
+            yield { type: "finishReason", reason: "tool_calls" };
+            return;
+          }
+          if (parentTurns.length === 2) {
+            yield {
+              type: "toolCallDelta",
+              index: 0,
+              id: "wait-call",
+              name: "waitForSubagents",
+              argumentsDelta: '{"subagentIds":["subagent-1"]}',
             };
             yield { type: "finishReason", reason: "tool_calls" };
             return;
@@ -467,12 +462,12 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
 
     const hostMessages = await collectHostMessages(runner, "Delegate this repository task.");
 
-    expect(childToolNames).toEqual([["readFile", "applyEdit", "runCommand"]]);
-    expect(childToolNames.flat()).not.toContain("runDynamicGraph");
+    expect(childToolNames).toEqual([["readFile"]]);
+    expect(childToolNames.flat()).not.toContain("spawnSubagent");
     expect(parentTurns.at(-1)).toEqual(expect.arrayContaining([
       expect.objectContaining({
         role: "tool",
-        name: "runDynamicGraph",
+        name: "waitForSubagents",
         content: expect.stringContaining('"content":"child result"'),
       }),
     ]));
@@ -482,7 +477,7 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
         runId: "run-1",
         agentId: "subagent-1",
         task: "Apply the delegated repository task.",
-        role: "executor",
+        role: "planner",
         dependsOn: [],
       },
       { type: "subagentStateChanged", runId: "run-1", agentId: "subagent-1", status: "running" },
@@ -497,66 +492,6 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(projectMemory.loadContext).toHaveBeenCalledWith("Delegate this repository task.");
     expect(projectMemory.recordOutcome).toHaveBeenCalledTimes(1);
     expect(projectMemory.recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1" }), 3);
-  });
-
-  it("uses the role system prompt for child runners", async () => {
-    const childMessages: ModelMessage[][] = [];
-    let parentTurn = 0;
-
-    vi.resetModules();
-    vi.doMock("../src/extension/model/modelConfig", () => ({
-      getModelRuntimeConfig: async () => ({ provider: "deepseek", model: "test-model", baseUrl: "", apiKey: "test-key", thinking: "disabled" }),
-    }));
-    vi.doMock("../src/extension/runtime/vscodeRuntimeContext", () => ({
-      collectVsCodeRuntimeContext: async () => ({}),
-    }));
-    vi.doMock("../src/extension/runtime/contextPrompt", () => ({
-      renderCodeRuntimeContextPrompt: () => "",
-    }));
-    vi.doMock("../src/extension/model/providers/deepseekProvider", () => ({
-      createDeepSeekProvider: (): ModelProvider => ({
-        id: "mock",
-        displayName: "Mock model",
-        stream: async function* ({ messages }) {
-          const task = [...messages].reverse().find((m) => m.role === "user")?.content;
-          if (task === "Review the code.") {
-            childMessages.push(messages);
-            yield { type: "contentDelta", content: "reviewed" };
-            yield { type: "finishReason", reason: "stop" };
-            return;
-          }
-          parentTurn++;
-          if (parentTurn === 1) {
-            yield {
-              type: "toolCallDelta", index: 0, id: "run-1", name: "runDynamicGraph",
-              argumentsDelta: '{"initialNodes":[{"id":"review","task":"Review the code.","role":"reviewer"}]}',
-            };
-            yield { type: "finishReason", reason: "tool_calls" };
-            return;
-          }
-          yield { type: "contentDelta", content: "done" };
-          yield { type: "finishReason", reason: "stop" };
-        },
-      }),
-    }));
-
-    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
-    const runner = await createConfiguredAgentRunner(
-      {} as never,
-      { provider: "deepseek" },
-      { workspaceIntelligence: { buildCodeIntelligencePrompt: vi.fn(async () => "unused") } },
-    );
-
-    await collectHostMessages(runner, "Please review this code.");
-
-    const childSystemPrompt = childMessages[0]
-      ?.filter((m) => m.role === "system")
-      .map((m) => m.content)
-      .join("\n") ?? "";
-
-    expect(childSystemPrompt).toContain("reviewer role");
-    expect(childSystemPrompt).toContain("defects");
-    expect(childSystemPrompt).not.toContain("LoopAgent");
   });
 
   it("keeps workflow tools out when workflow support is disabled", async () => {
@@ -601,36 +536,6 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
 
     expect(capturedToolNames).toEqual([["exploreCode", "reportSubagentResult"]]);
   });
-
-  it("settles and aborts a graph child when the parent signal is aborted", async () => {
-    const fixture = createDeferredWorkflowProvider();
-    mockDeferredWorkflowProvider(fixture.provider);
-
-    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
-    const runner = await createConfiguredAgentRunner(
-      {} as never,
-      { provider: "deepseek" },
-      { workspaceIntelligence: { buildCodeIntelligencePrompt: vi.fn(async () => "unused") } },
-    );
-    const controller = new AbortController();
-    const run = collectHostMessages(runner, "Spawn a deferred child and wait.", controller.signal);
-
-    await fixture.childStarted;
-    controller.abort();
-    const hostMessages = await run;
-
-    expect(fixture.childSignal()?.aborted).toBe(true);
-    expect(fixture.childAbortCount()).toBe(1);
-    expect(hostMessages).toContainEqual(expect.objectContaining({
-      type: "subagentPlanCreated",
-      agentId: "subagent-1",
-      role: "explorer",
-    }));
-    expect(hostMessages
-      .filter((message) => message.type === "subagentStateChanged")
-      .map((message) => message.status))
-      .toEqual(["running", "cancelled"]);
-  }, 2_000);
 
   it("wires tree-sitter parser runtime into VS Code workspace intelligence", async () => {
     const fakeVsCodeApi = createFakeVsCodeWorkspaceApi("E:\\work\\repo", new Map());
@@ -910,85 +815,6 @@ async function collectHostMessages(
     messages.push(message);
   }
   return messages;
-}
-
-function createDeferredWorkflowProvider() {
-  let parentTurn = 0;
-  let signal: AbortSignal | undefined;
-  let abortCount = 0;
-  let resolveChildStarted!: () => void;
-  const childStarted = new Promise<void>((resolve) => {
-    resolveChildStarted = resolve;
-  });
-  const provider: ModelProvider = {
-    id: "mock",
-    displayName: "Mock model",
-    stream: async function* ({ messages, signal: requestSignal }) {
-      const task = [...messages].reverse().find((message) => message.role === "user")?.content;
-      if (task === "Deferred child task.") {
-        signal = requestSignal;
-        resolveChildStarted();
-        await waitForAbort(requestSignal, () => abortCount++);
-        return;
-      }
-
-      parentTurn++;
-      if (parentTurn === 1) {
-        yield {
-          type: "toolCallDelta",
-          index: 0,
-          id: "run-deferred-graph",
-          name: "runDynamicGraph",
-          argumentsDelta: '{"initialNodes":[{"id":"deferred","task":"Deferred child task.","role":"explorer"}]}',
-        };
-        yield { type: "finishReason", reason: "tool_calls" };
-        return;
-      }
-      yield { type: "contentDelta", content: "parent finished" };
-      yield { type: "finishReason", reason: "stop" };
-    },
-  };
-  return {
-    provider,
-    childStarted,
-    childSignal: () => signal,
-    childAbortCount: () => abortCount,
-  };
-}
-
-function mockDeferredWorkflowProvider(provider: ModelProvider): void {
-  vi.resetModules();
-  vi.doMock("../src/extension/model/modelConfig", () => ({
-    getModelRuntimeConfig: async () => ({
-      provider: "deepseek",
-      model: "test-model",
-      baseUrl: "",
-      apiKey: "test-key",
-      thinking: "disabled",
-    }),
-  }));
-  vi.doMock("../src/extension/runtime/vscodeRuntimeContext", () => ({
-    collectVsCodeRuntimeContext: async () => ({}),
-  }));
-  vi.doMock("../src/extension/runtime/contextPrompt", () => ({
-    renderCodeRuntimeContextPrompt: () => "",
-  }));
-  vi.doMock("../src/extension/model/providers/deepseekProvider", () => ({
-    createDeepSeekProvider: () => provider,
-  }));
-}
-
-function waitForAbort(signal: AbortSignal, onAbort?: () => void): Promise<void> {
-  if (signal.aborted) {
-    onAbort?.();
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    signal.addEventListener("abort", () => {
-      onAbort?.();
-      resolve();
-    }, { once: true });
-  });
 }
 
 function createFakeVsCodeWorkspaceApi(workspaceRoot: string, files: Map<string, string>): VsCodeWorkspaceApi {

@@ -89,25 +89,11 @@ npm run debug:vscode
 
 注意事项：首次启动 VS Code 可能出现登录、欢迎页或扩展推荐弹窗，它们会遮挡 Webview。验证页面时应先关闭遮挡层，再用截图和实际交互确认功能，而不是只依赖 DOM 文本。
 
-## 状态驱动动态工作流
+## 子智能体工作流
 
-动态工作流的新入口应让模型生成语义计划：节点使用 `after` 描述前置关系，使用 `contextFrom` 声明状态读取，审核节点使用 `reviews` 声明被审核节点。模型不得生成 `cycles`、自由表达式或 reducer。
+主分支使用 `WorkflowOrchestrator` 管理普通子智能体的创建、依赖、并发、等待和取消。父智能体通过 `spawnSubagent` 创建任务，再用 `waitForSubagents` 收集结果；不再在主分支运行动态图、节点状态机或动态图检查点恢复。
 
-运行时流程固定为：读取 superstep 快照、执行当前 frontier、收集写入、按通道策略原子提交、根据已提交状态路由下一 frontier。节点输出写入 `outputs.<nodeId>`，运行历史写入 `history`；`single` 写入冲突必须失败，不能依赖 Promise 完成顺序。
-
-`review` 节点必须返回结构化 `{"decision":"approve"|"revise","feedback":string[]}`。`revise` 回到被审核节点，`approve` 进入合法后继或 `END`。`maxSteps` 和 `maxExecutions` 始终生效，即使业务退出条件没有满足也不能无限运行。
-
-旧 `initialNodes/resolvers/cycles` 输入只允许作为兼容入口；新增模型提示不得继续推荐旧循环配置。副作用节点在同一步串行执行，Webview 只展示状态，不负责调度或提交。
-
-## 动态工作流恢复
-
-`runDynamicGraph` 使用现有 `.loopagent/conversation.sqlite` 中独立的 `workflow_checkpoint` 表保存节点状态，不与 React 的 `interrupted_run` 混用。检查点由 `conversationId`、`runId`、`planHash` 和单调 `revision` 共同定位；旧运行或低 revision 的迟到写入必须被存储层拒绝。
-
-同一计划恢复时，已完成节点只复用结果，失败节点及其下游从 `frontier` 继续。动态扩展节点的定义、恢复诊断历史和待执行恢复计划必须随 checkpoint 保存；恢复运行执行已持久化的修复任务，不能重新提交原失败任务。`running` 节点按未完成处理。计划 hash 变化会清除旧检查点；同一对话开始新 run 时由新 run 原子接管旧 checkpoint，完成后保留终态 owner 栅栏，旧 run 的迟到写入仍必须被拒绝。返回值包含 `workflowStatus`、`failedNodes`、`unreachedNodes`、`recoveryDiagnostics`、`unresolvedFailures` 和不透明 `resumeToken`，显式 token 必须匹配对话、run、计划和 revision，父智能体不能把部分成功当成 `completed`。
-
-节点角色为 `executor` 时默认副作用为 `unknown`。失败后先读取有界、脱敏的日志和输入做原因诊断，再生成受约束修复任务；不会原样盲重试，也不会自动重复 `applyEdit` 或 `runCommand`。只有 `sideEffect: "none"` 的节点允许自动修复；修复输出仍须通过 `exactText`、`requiredText`、`requiredFields` 或 `minLength` 契约，成功后才放行下游。完成门禁要求必需节点终态成功/跳过、未决失败为空且没有副作用对账等待。
-
-扩展重启沿用现有 `resumeRun` 入口和同一个 `runId`，由 provider 将会话身份及 `ConversationStore` 注入动态图工具。验证恢复时必须使用同一个 Extension Development Host，确认已完成节点执行计数不增加，再检查失败节点是否只执行一次新的尝试。
+动态图实现、专用测试和历史实验保留在 `codex/dynamic-workflow` 分支。需要继续开发动态图时，应切换到该分支，不要把动态图工具重新接回主分支。
 
 ## 稳定 VSIX E2E
 
@@ -121,17 +107,3 @@ npm run start:vscode:vsix-e2e
 该入口把 `.artifacts\loopagent-vscode-0.0.1.vsix` 安装到固定的 `.local-vscode-extensions`，并复用固定的 `.local-vscode-user-data` 和 `9333` 远程调试端口。启动参数不包含 `--extensionDevelopmentPath`，因此验证对象是已安装的 VSIX，而不是当前源码目录中的开发扩展。
 
 默认启动前会关闭使用该固定用户数据目录的已有 VS Code 窗口，保证本项目只保留一个 VSIX E2E 窗口。真实 DeepSeek 验证可以继承当前进程的环境变量，但启动脚本、测试输出和验证记录不得输出任何密钥。
-
-真实代码探索按以下安全顺序执行：
-
-```powershell
-Test-Path Env:DEEPSEEK_API_KEY
-npm run start:vscode:vsix-e2e
-npm run test:e2e:code-exploration
-```
-
-`Test-Path` 只检查环境变量是否存在，不读取或输出它的值。若结果为 `False`，应在隔离窗口中执行 `LoopAgent: Set Model API Key`，让 VS Code SecretStorage 保存密钥；不得把真实值写入 PowerShell history、仓库文件或验证记录。
-
-自动化使用复杂项目问题验证强制动态图运行时。判定除源码语义锚点和真实路径外，还要求成功调用 `runDynamicGraph`，至少两个只读节点并发运行，并在其后完成审查节点。判定结果只输出锚点、路径、工具名、并发指标、回答长度和截图路径，不保存完整回答。
-
-CDP runner 覆盖单轮 Webview 提交、动态图工具历史、子节点状态时序和结果读取。若当前 VS Code 版本不暴露可访问的 Webview CDP target，人工 fallback 必须复用同一个隔离窗口，提交同一固定问题，并按相同语义规则结合可见 Process 状态和截图验收；不得为 fallback 启动第二个 VS Code 窗口。运行时边界和排障命令见 [强制动态图运行时指南](superpowers/guides/dynamic-graph-runtime.md)。

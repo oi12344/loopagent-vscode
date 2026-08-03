@@ -1394,7 +1394,7 @@ describe("createReactAgentRunner", () => {
   it("does not finish when none of requiredAnyOfToolNames succeeded", async () => {
     let turns = 0;
     const runner = createReactAgentRunner({
-      requiredAnyOfToolNames: ["exploreCode", "runDynamicGraph"],
+      requiredAnyOfToolNames: ["exploreCode"],
       modelTurn: async () => {
         turns++;
         return { kind: "final", content: "I am done." };
@@ -1407,7 +1407,7 @@ describe("createReactAgentRunner", () => {
     expect(messages).toContainEqual({
       type: "runFailed",
       runId: "run-1",
-      message: expect.stringContaining("one of [exploreCode, runDynamicGraph]"),
+      message: expect.stringContaining("one of [exploreCode]"),
     });
     expect(messages).not.toContainEqual({ type: "runFinished", runId: "run-1" });
   });
@@ -1443,7 +1443,7 @@ describe("createReactAgentRunner", () => {
   it("finishes once any one of requiredAnyOfToolNames succeeds", async () => {
     let turns = 0;
     const runner = createReactAgentRunner({
-      requiredAnyOfToolNames: ["exploreCode", "runDynamicGraph"],
+      requiredAnyOfToolNames: ["exploreCode"],
       tools: [{ name: "exploreCode", description: "search", inputSchema: { type: "object" }, invoke: async () => "found" }],
       modelTurn: async () => {
         turns++;

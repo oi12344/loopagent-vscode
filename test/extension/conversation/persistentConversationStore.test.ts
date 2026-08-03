@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createPersistentConversationStore } from "../../../src/extension/conversation/persistentConversationStore";
 import type { InterruptedRunCheckpoint } from "../../../src/shared/chatTypes";
-import type { WorkflowCheckpoint } from "../../../src/shared/workflowCheckpoint";
 
 const directories: string[] = [];
 const openStores: Array<{ close(): void }> = [];
@@ -23,41 +22,6 @@ function openTempStore() {
   const store = createPersistentConversationStore(databasePath);
   openStores.push(store);
   return { store, databasePath };
-}
-
-function makeWorkflowCheckpoint(overrides: Partial<WorkflowCheckpoint> = {}): WorkflowCheckpoint {
-  return {
-    version: 1,
-    conversationId: "conversation-1",
-    runId: "run-1",
-    planHash: "plan-1",
-    revision: 1,
-    status: "recovering",
-    frontier: ["review"],
-    executionOrder: ["prepare", "review"],
-    nodes: {
-      prepare: {
-        nodeId: "prepare",
-        status: "completed",
-        inputHash: "input-prepare",
-        attempts: 1,
-        result: { status: "completed", content: "ready" },
-        sideEffect: "none",
-      },
-      review: {
-        nodeId: "review",
-        status: "failed",
-        inputHash: "input-review",
-        attempts: 2,
-        error: { code: "timeout", message: "timed out", retryable: true },
-        sideEffect: "none",
-      },
-    },
-    state: { step: 2, version: 1, values: { answer: "ready" } },
-    unresolvedFailures: [{ nodeId: "review", code: "timeout", message: "timed out" }],
-    updatedAt: 100,
-    ...overrides,
-  };
 }
 
 describe("createPersistentConversationStore", () => {
@@ -291,92 +255,4 @@ describe("createPersistentConversationStore", () => {
     expect(reopenedStore.loadInterruptedRun("current-conv")).toEqual(checkpoint);
   });
 
-  it("persists workflow checkpoints across close and reopen", () => {
-    const { store, databasePath } = openTempStore();
-    const checkpoint = makeWorkflowCheckpoint();
-
-    expect(store.claimWorkflowCheckpoint(checkpoint.conversationId, checkpoint.runId, checkpoint.planHash, undefined)).toBe(true);
-    expect(store.saveWorkflowCheckpoint(checkpoint)).toBe(true);
-    store.close();
-    openStores.splice(openStores.indexOf(store), 1);
-
-    const reopened = createPersistentConversationStore(databasePath);
-    openStores.push(reopened);
-    expect(reopened.loadWorkflowCheckpoint(checkpoint.conversationId, checkpoint.runId)).toEqual(checkpoint);
-  });
-
-  it("ignores stale revisions and late writes from an older run", () => {
-    const { store } = openTempStore();
-    const first = makeWorkflowCheckpoint();
-    const newer = makeWorkflowCheckpoint({ revision: 2, updatedAt: 101 });
-    const stale = makeWorkflowCheckpoint({ revision: 1, updatedAt: 102 });
-    const otherRun = makeWorkflowCheckpoint({ runId: "run-2", revision: 3 });
-    const otherPlan = makeWorkflowCheckpoint({ planHash: "plan-2", revision: 3 });
-
-    expect(store.claimWorkflowCheckpoint(first.conversationId, first.runId, first.planHash, undefined)).toBe(true);
-    expect(store.saveWorkflowCheckpoint(first)).toBe(true);
-    expect(store.getWorkflowCheckpointRunId(first.conversationId)).toBe(first.runId);
-    expect(store.saveWorkflowCheckpoint(newer)).toBe(true);
-    expect(store.saveWorkflowCheckpoint(stale)).toBe(false);
-    expect(store.saveWorkflowCheckpoint(otherRun)).toBe(false);
-    expect(store.saveWorkflowCheckpoint(otherPlan)).toBe(false);
-    expect(store.loadWorkflowCheckpoint(first.conversationId, first.runId)).toEqual(newer);
-
-    store.clearWorkflowCheckpoint(first.conversationId, "run-2");
-    expect(store.loadWorkflowCheckpoint(first.conversationId, first.runId)).toEqual(newer);
-    store.clearWorkflowCheckpoint(first.conversationId, first.runId);
-    expect(store.getWorkflowCheckpointRunId(first.conversationId)).toBe(first.runId);
-    expect(store.claimWorkflowCheckpoint(otherRun.conversationId, otherRun.runId, otherRun.planHash, first.runId)).toBe(true);
-    expect(store.saveWorkflowCheckpoint(otherRun)).toBe(true);
-  });
-
-  it("keeps a terminal owner fence after completion", () => {
-    const { store } = openTempStore();
-    const completed = makeWorkflowCheckpoint();
-    const late = makeWorkflowCheckpoint({ revision: 2, updatedAt: 101 });
-    const next = makeWorkflowCheckpoint({ runId: "run-2", planHash: "plan-2" });
-
-    expect(store.claimWorkflowCheckpoint(completed.conversationId, completed.runId, completed.planHash, undefined)).toBe(true);
-    expect(store.saveWorkflowCheckpoint(completed)).toBe(true);
-    store.clearWorkflowCheckpoint(completed.conversationId, completed.runId);
-
-    expect(store.loadWorkflowCheckpoint(completed.conversationId, completed.runId)).toBeUndefined();
-    expect(store.saveWorkflowCheckpoint(late)).toBe(false);
-    expect(store.claimWorkflowCheckpoint(next.conversationId, next.runId, next.planHash, completed.runId)).toBe(true);
-    expect(store.saveWorkflowCheckpoint(next)).toBe(true);
-  });
-
-  it("persists an atomic ownership claim before the first snapshot", () => {
-    const { store } = openTempStore();
-    const first = makeWorkflowCheckpoint();
-    const late = makeWorkflowCheckpoint({ revision: 2, updatedAt: 101 });
-    const next = makeWorkflowCheckpoint({ runId: "run-2", planHash: "plan-2" });
-
-    expect(store.saveWorkflowCheckpoint(first)).toBe(false);
-    expect(store.claimWorkflowCheckpoint(first.conversationId, first.runId, first.planHash, undefined)).toBe(true);
-    expect(store.saveWorkflowCheckpoint(first)).toBe(true);
-    expect(store.claimWorkflowCheckpoint(next.conversationId, next.runId, next.planHash, first.runId)).toBe(true);
-    expect(store.claimWorkflowCheckpoint(first.conversationId, first.runId, first.planHash, first.runId)).toBe(false);
-    expect(store.saveWorkflowCheckpoint(late)).toBe(false);
-    expect(store.getWorkflowCheckpointRunId(first.conversationId)).toBe(next.runId);
-    expect(store.loadWorkflowCheckpoint(first.conversationId, first.runId)).toBeUndefined();
-    expect(store.saveWorkflowCheckpoint(next)).toBe(true);
-  });
-
-  it("fails safe when workflow checkpoint JSON is corrupted", () => {
-    const { store, databasePath } = openTempStore();
-    const checkpoint = makeWorkflowCheckpoint();
-    expect(store.claimWorkflowCheckpoint(checkpoint.conversationId, checkpoint.runId, checkpoint.planHash, undefined)).toBe(true);
-    expect(store.saveWorkflowCheckpoint(checkpoint)).toBe(true);
-    store.close();
-    openStores.splice(openStores.indexOf(store), 1);
-
-    const raw = new DatabaseSync(databasePath);
-    raw.prepare("UPDATE workflow_checkpoint SET checkpoint_json = ? WHERE conversation_id = ?").run("{bad", checkpoint.conversationId);
-    raw.close();
-
-    const reopened = createPersistentConversationStore(databasePath);
-    openStores.push(reopened);
-    expect(reopened.loadWorkflowCheckpoint(checkpoint.conversationId, checkpoint.runId)).toBeUndefined();
-  });
 });

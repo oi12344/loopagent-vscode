@@ -40,9 +40,6 @@ describe("VSIX packaging contract", () => {
     expect(manifest.scripts["start:vscode:vsix-e2e"]).toBe(
       "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-vscode-vsix-e2e.ps1",
     );
-    expect(manifest.scripts["test:e2e:code-exploration"]).toBe(
-      "node scripts/run-code-exploration-e2e.mjs",
-    );
   });
 
   it("excludes artifacts and development-only paths", () => {

@@ -229,11 +229,9 @@ describe("LoopAgent webview app", () => {
 
     postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "LoopAgent" });
     postHostMessage({ type: "assistantDelta", runId: "run-1", content: "Existing answer" });
-    postHostMessage({ type: "workflowStateChanged", runId: "run-1", phase: "implement" });
     postHostMessage({ type: "subagentStateChanged", runId: "run-1", agentId: "implementer-1", status: "running" });
 
     expect(screen.getByText("Existing answer")).toBeInTheDocument();
-    expect(screen.getByText("implement")).toBeInTheDocument();
     expect(screen.getByText("implementer-1")).toBeInTheDocument();
     expect(screen.getByText("执行中")).toBeInTheDocument();
   });

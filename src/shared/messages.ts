@@ -139,11 +139,6 @@ export type HostToWebviewMessage =
       fileStats: EditFileStat[];
     }
   | {
-      type: "workflowStateChanged";
-      runId: string;
-      phase: string;
-    }
-  | {
       type: "subagentPlanCreated";
       runId: string;
       agentId: string;
