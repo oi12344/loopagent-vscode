@@ -1,5 +1,6 @@
 import type { AgentRunner } from "../../agentRunner";
 import type { ReactAgentTool } from "../reactTypes";
+import type { ToolInvoker } from "../toolRegistry";
 import type { WorkflowDiagnosticLog } from "../../../shared/workflowCheckpoint";
 
 export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
@@ -52,6 +53,7 @@ export type SubagentRunnerFactoryInput = {
   role: SubagentRoleId;
   signal: AbortSignal;
   tools: readonly ReactAgentTool[];
+  invokeTool: ToolInvoker;
 };
 
 export type SubagentRunnerFactory = (input: SubagentRunnerFactoryInput) => AgentRunner | Promise<AgentRunner>;

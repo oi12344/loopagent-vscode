@@ -2,6 +2,7 @@ import type * as vscode from "vscode";
 
 import { createExploreCodeTool } from "../agent/exploreCodeTool";
 import type { ReactAgentTool } from "../agent/reactTypes";
+import type { ToolInvoker } from "../agent/toolRegistry";
 import { createOpenAiReactModelTurn } from "../agent/openAiReactModelTurn";
 import { createReactAgentRunner } from "../agent/reactAgentRunner";
 import { createDynamicWorkflowTools } from "../agent/dynamicWorkflowTools";
@@ -158,6 +159,7 @@ export async function createConfiguredAgentRunner(
     requiredToolNames: string[] | undefined,
     basePrompt: string,
     requiredAnyOfToolNames?: string[],
+    invokeTool?: ToolInvoker,
   ): AgentRunner => createReactAgentRunner({
     providerName: provider.displayName,
     tools,
@@ -173,6 +175,7 @@ export async function createConfiguredAgentRunner(
     onCheckpoint: deps.onCheckpoint,
     requiredToolNames,
     requiredAnyOfToolNames,
+    invokeTool,
     analyzeImages: deps.imageAnalysisService
       ? async (request) => {
           return await deps.imageAnalysisService!.analyzeAttachments(
@@ -191,12 +194,13 @@ export async function createConfiguredAgentRunner(
       const events = createAsyncQueue<HostToWebviewMessage>();
       const orchestrator = createWorkflowOrchestrator({
         signal: request.signal,
-        createRunner: ({ tools, role }) => {
+        createRunner: ({ tools, role, invokeTool }) => {
           const childTools = [...tools];
           const childProfile = resolveRole(role);
           return createReactAgentRunner({
             providerName: provider.displayName,
             tools: childTools,
+            invokeTool,
             modelTurn: createOpenAiReactModelTurn({ provider, tools: childTools }),
             systemPromptProvider: async () => {
               let runtimePrompt = "";
@@ -225,6 +229,7 @@ export async function createConfiguredAgentRunner(
         undefined,
         AGENT_SYSTEM_PROMPT,
         tools.map((tool) => tool.name),
+        (request, signal) => orchestrator.invokeTool(tools, request, signal),
       );
 
       let parentError: unknown;

@@ -139,6 +139,14 @@ export type HostToWebviewMessage =
       fileStats: EditFileStat[];
     }
   | {
+      /** 撤销改动后的结果，paths 为空表示整次改动 */
+      type: "editRevertResult";
+      notificationId: string;
+      paths: string[];
+      succeeded: boolean;
+      message: string;
+    }
+  | {
       type: "workflowStateChanged";
       runId: string;
       phase: string;
@@ -180,6 +188,11 @@ export type HostToWebviewMessage =
       type: "assistantDelta";
       runId: string;
       content: string;
+    }
+  | {
+      /** 清空当前助手轮次的已生成内容，供重试或恢复流程使用 */
+      type: "assistantContentReset";
+      runId: string;
     }
   | {
       /** Assistant completion: signals assistant has finished generating */

@@ -1,6 +1,7 @@
 import type { HostToWebviewMessage } from "../../shared/messages";
 import { createSubagentContext, type SubagentContext, type SubagentContextSnapshot } from "./subagentContext";
-import type { ReactAgentTool } from "./reactTypes";
+import type { ReactAgentTool, ReactAgentToolRequest, ReactAgentToolResult } from "./reactTypes";
+import { invokeRegisteredTool, type ToolInvoker } from "./toolRegistry";
 import { validateDAG } from "./workflow/dagValidator";
 import { resolveRole } from "./workflow/roleRegistry";
 import { selectTools } from "./workflow/toolRouter";
@@ -36,6 +37,7 @@ export type WorkflowOrchestrator = {
   getSubagent(id: string): SubagentContextSnapshot | undefined;
   cancelSubagent(id: string): boolean;
   cancelAll(): void;
+  invokeTool(tools: readonly ReactAgentTool[], request: ReactAgentToolRequest, signal: AbortSignal): Promise<ReactAgentToolResult>;
   onEvent(listener: WorkflowEventListener): () => void;
 };
 
@@ -125,8 +127,29 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
   const graph = new Map<string, Set<string>>();
   const listeners = new Set<WorkflowEventListener>();
   const running = new Set<string>();
+  const activeToolControllers = new Set<AbortController>();
   let nextId = 1;
   let cancellingAll = false;
+
+  function invokeTool(
+    tools: readonly ReactAgentTool[],
+    request: ReactAgentToolRequest,
+    signal: AbortSignal,
+  ): Promise<ReactAgentToolResult> {
+    const controller = new AbortController();
+    const abortFromCaller = (): void => controller.abort();
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", abortFromCaller, { once: true });
+    activeToolControllers.add(controller);
+
+    const call = invokeRegisteredTool(tools, request, controller.signal);
+    const cleanup = (): void => {
+      activeToolControllers.delete(controller);
+      signal.removeEventListener("abort", abortFromCaller);
+    };
+    void call.then(cleanup, cleanup);
+    return call;
+  }
 
   function emit(event: WorkflowEvent): void {
     for (const listener of listeners) {
@@ -264,6 +287,7 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
         role: snapshot.role,
         signal: controller.signal,
         tools: snapshot.tools,
+        invokeTool: ((request, signal) => invokeTool(snapshot.tools, request, signal)) satisfies ToolInvoker,
       });
       if (controller.signal.aborted || entry.context.snapshot().status !== "running") return;
       let failure: string | undefined;
@@ -310,6 +334,7 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
 
   function cancelAll(): void {
     cancellingAll = true;
+    for (const controller of activeToolControllers) controller.abort();
     for (const id of entries.keys()) cancelSubagent(id);
     cancellingAll = false;
   }
@@ -379,6 +404,7 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
 
     cancelSubagent,
     cancelAll,
+    invokeTool,
 
     onEvent(listener) {
       listeners.add(listener);

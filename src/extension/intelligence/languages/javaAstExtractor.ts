@@ -68,8 +68,11 @@ export function extractJavaAst(parsed: ParsedSource): ExtractionResult {
       id: `file://${parsed.filePath}`,
       kind: "module",
       name: parsed.filePath.split(/[/\\]/).pop() ?? parsed.filePath,
+      qualifiedName: parsed.filePath,
       filePath: parsed.filePath,
-      line: 1,
+      languageId: parsed.languageId,
+      startLine: 1,
+      endLine: Math.max(1, parsed.text.split(/\r?\n/).length),
     };
   }
 
@@ -82,7 +85,7 @@ export function extractJavaAst(parsed: ParsedSource): ExtractionResult {
 
   function extractImport(node: SyntaxNode): void {
     // import com.example.Class; 或 import com.example.*;
-    const importPath = node.children
+    const importPath = node.namedChildren
       .filter((child) => child.type === "scoped_identifier" || child.type === "identifier")
       .map((child) => child.text)
       .join("");
@@ -96,9 +99,9 @@ export function extractJavaAst(parsed: ParsedSource): ExtractionResult {
         importBindings.push({
           localName: importedName,
           importedName,
-          modulePath: importPath,
+          source: importPath,
           filePath: parsed.filePath,
-          line: range.startLine,
+          languageId: parsed.languageId,
         });
       }
     }
@@ -116,8 +119,11 @@ export function extractJavaAst(parsed: ParsedSource): ExtractionResult {
       id: fqn,
       kind: "class",
       name: className,
+      qualifiedName: fqn,
       filePath: parsed.filePath,
-      line: range.startLine,
+      languageId: parsed.languageId,
+      startLine: range.startLine,
+      endLine: range.endLine,
     };
 
     nodes.push(classNode);
@@ -133,9 +139,13 @@ export function extractJavaAst(parsed: ParsedSource): ExtractionResult {
 
     if (parentNode) {
       edges.push({
-        from: parentNode.id,
-        to: fqn,
+        id: `edge:${parentNode.id}:contains:${fqn}:${range.startLine}`,
+        source: parentNode.id,
+        target: fqn,
         kind: "contains",
+        filePath: parsed.filePath,
+        line: range.startLine,
+        confidence: "exact",
       });
     }
   }
@@ -163,22 +173,29 @@ export function extractJavaAst(parsed: ParsedSource): ExtractionResult {
       id: fqn,
       kind: "function",
       name: methodName,
+      qualifiedName: fqn,
       filePath: parsed.filePath,
-      line: range.startLine,
+      languageId: parsed.languageId,
+      startLine: range.startLine,
+      endLine: range.endLine,
     };
 
     nodes.push(methodNode);
     codeNodeBySyntaxNode.set(node, methodNode);
 
     edges.push({
-      from: parentNode.id,
-      to: fqn,
+      id: `edge:${parentNode.id}:contains:${fqn}:${range.startLine}`,
+      source: parentNode.id,
+      target: fqn,
       kind: "contains",
+      filePath: parsed.filePath,
+      line: range.startLine,
+      confidence: "exact",
     });
   }
 
   function addField(node: SyntaxNode, ancestors: readonly SyntaxNode[]): void {
-    const declaratorNode = node.children.find((child) => child.type === "variable_declarator");
+    const declaratorNode = node.namedChildren.find((child) => child.type === "variable_declarator");
     if (!declaratorNode) return;
 
     const nameNode = getField(declaratorNode, "name");
@@ -203,16 +220,23 @@ export function extractJavaAst(parsed: ParsedSource): ExtractionResult {
       id: fqn,
       kind: "property",
       name: fieldName,
+      qualifiedName: fqn,
       filePath: parsed.filePath,
-      line: range.startLine,
+      languageId: parsed.languageId,
+      startLine: range.startLine,
+      endLine: range.endLine,
     };
 
     nodes.push(fieldNode);
 
     edges.push({
-      from: parentNode.id,
-      to: fqn,
+      id: `edge:${parentNode.id}:contains:${fqn}:${range.startLine}`,
+      source: parentNode.id,
+      target: fqn,
       kind: "contains",
+      filePath: parsed.filePath,
+      line: range.startLine,
+      confidence: "exact",
     });
   }
 
@@ -231,11 +255,14 @@ export function extractJavaAst(parsed: ParsedSource): ExtractionResult {
 
     const range = toCodeRange(node);
     unresolvedReferences.push({
-      name: methodName,
+      fromNodeId: containerNode.id,
+      referenceName: methodName,
+      referenceKind: "calls",
       filePath: parsed.filePath,
       line: range.startLine,
       column: range.startColumn,
-      containerId: containerNode.id,
+      languageId: parsed.languageId,
+      calleeKind: "member",
     });
   }
 
@@ -257,11 +284,13 @@ export function extractJavaAst(parsed: ParsedSource): ExtractionResult {
 
     const range = toCodeRange(node);
     unresolvedReferences.push({
-      name: typeName,
+      fromNodeId: containerNode.id,
+      referenceName: typeName,
+      referenceKind: "type_of",
       filePath: parsed.filePath,
       line: range.startLine,
       column: range.startColumn,
-      containerId: containerNode.id,
+      languageId: parsed.languageId,
     });
   }
 }

@@ -36,6 +36,50 @@ async function collectRunnerMessagesForTask(runner: AgentRunner, task: string) {
 }
 
 describe("createReactAgentRunner", () => {
+  it("uses the injected coordinator invoker instead of invoking the tool directly", async () => {
+    const directInvoke = vi.fn(() => {
+      throw new Error("tool was invoked outside the coordinator");
+    });
+    const invokeTool = vi.fn(async () => ({ content: "coordinator observation", evidence: [] }));
+    let turn = 0;
+    const runner = createReactAgentRunner({
+      tools: [
+        {
+          name: "coordinatedTool",
+          description: "A tool routed through the coordinator.",
+          inputSchema: {},
+          invoke: directInvoke,
+        },
+      ],
+      invokeTool,
+      modelTurn: async () => {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            kind: "toolRequests",
+            assistantMessage: {
+              role: "assistant",
+              content: "",
+              toolCalls: [{ id: "tool-1", type: "function", function: { name: "coordinatedTool", arguments: "{}" } }],
+            },
+            requests: [{ id: "tool-1", name: "coordinatedTool", rawArguments: "{}", input: {} }],
+          };
+        }
+        return { kind: "final", content: "done" };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(invokeTool).toHaveBeenCalledTimes(1);
+    expect(invokeTool).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "coordinatedTool" }),
+      expect.any(AbortSignal),
+    );
+    expect(directInvoke).not.toHaveBeenCalled();
+    expect(messages).toContainEqual(expect.objectContaining({ type: "toolCallFinished", succeeded: true, output: "coordinator observation" }));
+  });
+
   it("saves the next step and tool results in an interrupted-run checkpoint", async () => {
     const checkpoints: InterruptedRunCheckpoint[] = [];
     let turn = 0;

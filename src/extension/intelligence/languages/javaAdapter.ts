@@ -25,8 +25,11 @@ function createFileNode(parsed: ParsedSource): CodeNode {
     id: `file://${parsed.filePath}`,
     kind: "module",
     name: parsed.filePath.split(/[/\\]/).pop() ?? parsed.filePath,
+    qualifiedName: parsed.filePath,
     filePath: parsed.filePath,
-    line: 1,
+    languageId: parsed.languageId,
+    startLine: 1,
+    endLine: Math.max(1, parsed.text.split(/\r?\n/).length),
   };
 }
 
@@ -70,9 +73,9 @@ function extractJavaFallback(parsed: ParsedSource): ExtractionResult {
       importBindings.push({
         localName: importedName,
         importedName,
-        modulePath: importPath,
+        source: importPath,
         filePath: parsed.filePath,
-        line: lineNumber,
+        languageId: parsed.languageId,
       });
       continue;
     }
@@ -89,14 +92,21 @@ function extractJavaFallback(parsed: ParsedSource): ExtractionResult {
         id: fqn,
         kind: "class",
         name: className,
+        qualifiedName: fqn,
         filePath: parsed.filePath,
-        line: lineNumber,
+        languageId: parsed.languageId,
+        startLine: lineNumber,
+        endLine: lineNumber,
       });
 
       edges.push({
-        from: fileNode.id,
-        to: fqn,
+        id: `edge:${fileNode.id}:contains:${fqn}:${lineNumber}`,
+        source: fileNode.id,
+        target: fqn,
         kind: "contains",
+        filePath: parsed.filePath,
+        line: lineNumber,
+        confidence: "exact",
       });
       continue;
     }
@@ -113,15 +123,22 @@ function extractJavaFallback(parsed: ParsedSource): ExtractionResult {
         id: fqn,
         kind: "function",
         name: methodName,
+        qualifiedName: fqn,
         filePath: parsed.filePath,
-        line: lineNumber,
+        languageId: parsed.languageId,
+        startLine: lineNumber,
+        endLine: lineNumber,
       });
 
       if (currentClassNodeId) {
         edges.push({
-          from: currentClassNodeId,
-          to: fqn,
+          id: `edge:${currentClassNodeId}:contains:${fqn}:${lineNumber}`,
+          source: currentClassNodeId,
+          target: fqn,
           kind: "contains",
+          filePath: parsed.filePath,
+          line: lineNumber,
+          confidence: "exact",
         });
       }
     }
@@ -138,15 +155,22 @@ function extractJavaFallback(parsed: ParsedSource): ExtractionResult {
         id: fqn,
         kind: "property",
         name: fieldName,
+        qualifiedName: fqn,
         filePath: parsed.filePath,
-        line: lineNumber,
+        languageId: parsed.languageId,
+        startLine: lineNumber,
+        endLine: lineNumber,
       });
 
       if (currentClassNodeId) {
         edges.push({
-          from: currentClassNodeId,
-          to: fqn,
+          id: `edge:${currentClassNodeId}:contains:${fqn}:${lineNumber}`,
+          source: currentClassNodeId,
+          target: fqn,
           kind: "contains",
+          filePath: parsed.filePath,
+          line: lineNumber,
+          confidence: "exact",
         });
       }
     }

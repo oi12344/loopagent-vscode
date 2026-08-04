@@ -66,7 +66,7 @@ console.log(greet("World"));
 const SAMPLE_WITH_LONG_LINE = `import { something } from "somewhere";
 
 // 这一行非常长，超过了 120 个字符的限制，应该被检测为长行问题
-const veryLongString = "这是一个非常长的字符串目的是为了测试长行检测功能是否能够正确识别超过120个字符的行 limit";
+const veryLongString = "这是一个非常长的字符串目的是为了测试长行检测功能是否能够正确识别超过120个字符的行 limit abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 function doStuff(): void {
   // TODO: 实现这个函数
