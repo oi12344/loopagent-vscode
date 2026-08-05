@@ -94,6 +94,8 @@ export type WebviewToHostMessage =
       path: string;
     };
 
+export type WorkflowNodeEventKind = "thinking" | "tool_started" | "tool_finished" | "output" | "error";
+
 export type HostToWebviewMessage =
   | {
       /** Run lifecycle: indicates a run has started */
@@ -106,6 +108,19 @@ export type HostToWebviewMessage =
       type: "agentEvent";
       runId: string;
       message: string;
+    }
+  | {
+      /** Structured, node-scoped process evidence for dynamic workflows. */
+      type: "workflowNodeEvent";
+      runId: string;
+      agentId: string;
+      event: WorkflowNodeEventKind;
+      content: string;
+      callId?: string;
+      toolName?: string;
+      input?: string;
+      output?: string;
+      succeeded?: boolean;
     }
   | {
       /** 工具调用开始：携带工具名和人类可读的输入摘要，用于并发工具调用的时间线展示 */
@@ -137,6 +152,11 @@ export type HostToWebviewMessage =
       files: string[];
       /** 每个文件的增删行统计，与 files 一一对应 */
       fileStats: EditFileStat[];
+    }
+  | {
+      type: "workflowStateChanged";
+      runId: string;
+      phase: string;
     }
   | {
       type: "subagentPlanCreated";

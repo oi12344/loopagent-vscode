@@ -1,5 +1,11 @@
 import * as React from "react";
-import type { EditFileStat, HostToWebviewMessage, ModelThinkingMode, RunModelSelection } from "../shared/messages";
+import type {
+  EditFileStat,
+  HostToWebviewMessage,
+  ModelThinkingMode,
+  RunModelSelection,
+  WorkflowNodeEventKind,
+} from "../shared/messages";
 import type { CodeReviewIssue, CodeReviewReport, ConversationSummary } from "../shared/chatTypes";
 import { createDefaultVsCodeApi, type VsCodeApi } from "./vscodeApi";
 import "./styles.css";
@@ -16,12 +22,14 @@ type UserTurn = {
   pending?: boolean;
 };
 
-type ToolCallEntry = {
-  callId: string;
-  toolName: string;
-  input: string;
+type AssistantActivity = {
+  id: string;
+  kind: "thinking" | "workflow" | "tool";
+  label: string;
+  detail?: string;
+  input?: string;
   output?: string;
-  status: "running" | "succeeded" | "failed";
+  status: "running" | "completed" | "failed" | "interrupted";
 };
 
 type AssistantTurn = {
@@ -33,20 +41,30 @@ type AssistantTurn = {
   content: string;
   status: "thinking" | "streaming" | "done" | "error" | "interrupted";
   error?: string;
-  toolCalls: ToolCallEntry[];
+  activity: AssistantActivity[];
 };
 
 type ChatTurn = UserTurn | AssistantTurn;
 type InterruptedRun = { runId: string; conversationId: string; task: string };
 type WorkflowPlanStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+type WorkflowNodeProcessEvent = {
+  event: WorkflowNodeEventKind;
+  content: string;
+  callId?: string;
+  toolName?: string;
+  input?: string;
+  output?: string;
+  succeeded?: boolean;
+};
 type WorkflowPlanItem = {
   id: string;
   task: string;
   role?: "explorer" | "reviewer" | "planner" | "executor";
   dependsOn: string[];
   status: WorkflowPlanStatus;
+  process: WorkflowNodeProcessEvent[];
 };
-type WorkflowProgress = { agents: WorkflowPlanItem[] };
+type WorkflowProgress = { phase?: string; agents: WorkflowPlanItem[]; step?: number; stateVersion?: number; stopReason?: string };
 type PendingCommandApproval = { approvalId: string; command: string; cwd: string };
 type AppliedEditNotification = { notificationId: string; files: string[]; fileStats: EditFileStat[]; error?: string };
 
@@ -126,7 +144,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       reasoning: "",
       content: "",
       status: "thinking",
-      toolCalls: [],
+      activity: [],
     };
   }
 
@@ -191,23 +209,41 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         case "assistantThinking": {
           updateAssistantTurn(hostMessage.runId, (turn) => ({
             ...turn,
+            activity: upsertAssistantActivity(turn.activity, {
+              id: `thinking:${turn.activity.filter((entry) => entry.id.startsWith("thinking:")).length}`,
+              kind: "thinking",
+              label: "Thinking",
+              detail: hostMessage.message,
+              status: "running",
+            }),
             status: turn.content.length > 0 ? "streaming" : "thinking",
           }));
           return;
         }
 
         case "assistantReasoningDelta": {
-          updateAssistantTurn(hostMessage.runId, (turn) => ({
-            ...turn,
-            reasoning: `${turn.reasoning}${hostMessage.content}`,
-            status: turn.content.length > 0 ? "streaming" : "thinking",
-          }));
+          updateAssistantTurn(hostMessage.runId, (turn) => {
+            const reasoning = `${turn.reasoning}${hostMessage.content}`;
+            return {
+              ...turn,
+              activity: upsertAssistantActivity(turn.activity, {
+                id: "reasoning",
+                kind: "thinking",
+                label: "Thinking summary",
+                detail: reasoning,
+                status: "running",
+              }),
+              reasoning,
+              status: turn.content.length > 0 ? "streaming" : "thinking",
+            };
+          });
           return;
         }
 
         case "assistantDelta": {
           updateAssistantTurn(hostMessage.runId, (turn) => ({
             ...turn,
+            activity: turn.activity.map((entry) => entry.kind === "thinking" ? { ...entry, status: "completed" } : entry),
             content: `${turn.content}${hostMessage.content}`,
             status: "streaming",
           }));
@@ -234,30 +270,98 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           return;
         }
 
-        case "toolCallStarted": {
-          updateAssistantTurn(hostMessage.runId, (turn) => ({
-            ...turn,
-            toolCalls: [
-              ...turn.toolCalls,
+        case "workflowNodeEvent": {
+          setWorkflowProgress((current) => {
+            const progress = current[hostMessage.runId] ?? { agents: [] };
+            const existing = progress.agents.find((agent) => agent.id === hostMessage.agentId);
+            const item: WorkflowPlanItem = existing ?? {
+              id: hostMessage.agentId,
+              task: hostMessage.agentId,
+              dependsOn: [],
+              status: "running",
+              process: [],
+            };
+            const process = [
+              ...item.process,
               {
+                event: hostMessage.event,
+                content: hostMessage.content,
                 callId: hostMessage.callId,
                 toolName: hostMessage.toolName,
                 input: hostMessage.input,
-                status: "running",
+                output: hostMessage.output,
+                succeeded: hostMessage.succeeded,
               },
-            ],
+            ].slice(-40);
+            const agents = existing
+              ? progress.agents.map((agent) => agent.id === item.id ? { ...item, process } : agent)
+              : [...progress.agents, { ...item, process }];
+            return { ...current, [hostMessage.runId]: { ...progress, agents } };
+          });
+          if (hostMessage.event === "tool_started" || hostMessage.event === "tool_finished") {
+            updateAssistantTurn(hostMessage.runId, (turn) => {
+              const activityId = toolActivityId(hostMessage.callId, hostMessage.agentId);
+              const existing = turn.activity.find((entry) => entry.id === activityId);
+              return {
+                ...turn,
+                activity: upsertAssistantActivity(turn.activity, {
+                  id: activityId,
+                  kind: "tool",
+                  label: hostMessage.toolName ?? existing?.label ?? "Tool",
+                  input: hostMessage.input ?? existing?.input ?? (hostMessage.event === "tool_started" ? hostMessage.content : undefined),
+                  output: hostMessage.output ?? existing?.output ?? (hostMessage.event === "tool_finished" ? hostMessage.content : undefined),
+                  status: hostMessage.event === "tool_started"
+                    ? "running"
+                    : hostMessage.succeeded === false
+                      ? "failed"
+                      : "completed",
+                }),
+              };
+            });
+          }
+          return;
+        }
+
+        case "toolCallStarted": {
+          updateAssistantTurn(hostMessage.runId, (turn) => ({
+            ...turn,
+            activity: upsertAssistantActivity(turn.activity, {
+              id: toolActivityId(hostMessage.callId),
+              kind: "tool",
+              label: hostMessage.toolName,
+              input: hostMessage.input,
+              status: "running",
+            }),
           }));
           return;
         }
 
         case "toolCallFinished": {
+          if (hostMessage.succeeded) {
+            try {
+              const workflowState = (JSON.parse(hostMessage.output) as { workflowState?: { step?: number; stateVersion?: number; stopReason?: string } }).workflowState;
+              if (workflowState) {
+                setWorkflowProgress((current) => ({
+                  ...current,
+                  [hostMessage.runId]: {
+                    ...(current[hostMessage.runId] ?? { agents: [] }),
+                    step: workflowState.step,
+                    stateVersion: workflowState.stateVersion,
+                    stopReason: workflowState.stopReason,
+                  },
+                }));
+              }
+            } catch {
+              // Tool output may be plain text; the existing tool-call card remains the source of truth.
+            }
+          }
           updateAssistantTurn(hostMessage.runId, (turn) => ({
             ...turn,
-            toolCalls: turn.toolCalls.map((entry) =>
-              entry.callId === hostMessage.callId
-                ? { ...entry, status: hostMessage.succeeded ? "succeeded" : "failed", output: hostMessage.output }
-                : entry,
-            ),
+            activity: turn.activity.map((entry) => entry.id === toolActivityId(hostMessage.callId) ? {
+              ...entry,
+              output: hostMessage.output,
+              status: hostMessage.succeeded ? "completed" : "failed",
+            } : entry),
           }));
           return;
         }
@@ -278,6 +382,24 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           return;
         }
 
+        case "workflowStateChanged": {
+          setWorkflowProgress((current) => ({
+            ...current,
+            [hostMessage.runId]: { phase: hostMessage.phase, agents: current[hostMessage.runId]?.agents ?? [] },
+          }));
+          updateAssistantTurn(hostMessage.runId, (turn) => ({
+            ...turn,
+            activity: upsertAssistantActivity(turn.activity, {
+              id: "workflow",
+              kind: "workflow",
+              label: "Workflow",
+              detail: `phase: ${hostMessage.phase}`,
+              status: workflowActivityStatus(hostMessage.phase),
+            }),
+          }));
+          return;
+        }
+
         case "editRevertResult": {
           setAppliedEdits((current) => current.flatMap((notification) => {
             if (notification.notificationId !== hostMessage.notificationId) return [notification];
@@ -294,12 +416,15 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         case "subagentPlanCreated": {
           setWorkflowProgress((current) => {
             const progress = current[hostMessage.runId] ?? { agents: [] };
+            const existing = progress.agents.find((agent) => agent.id === hostMessage.agentId);
             const item: WorkflowPlanItem = {
+              ...existing,
               id: hostMessage.agentId,
               task: hostMessage.task,
               role: hostMessage.role,
               dependsOn: hostMessage.dependsOn,
-              status: "pending",
+              status: existing?.status ?? "pending",
+              process: existing?.process ?? [],
             };
             return {
               ...current,
@@ -327,6 +452,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
                     task: hostMessage.agentId,
                     dependsOn: [],
                     status: hostMessage.status,
+                    process: [],
                   },
                 ];
             return { ...current, [hostMessage.runId]: { ...progress, agents } };
@@ -338,6 +464,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           setIsRunning(false);
           updateAssistantTurn(hostMessage.runId, (turn) => ({
             ...turn,
+            activity: turn.activity.map((entry) => entry.status === "running" ? { ...entry, status: "completed" } : entry),
             status: "done",
           }));
           return;
@@ -347,6 +474,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           setIsRunning(false);
           updateAssistantTurn(hostMessage.runId, (turn) => ({
             ...turn,
+            activity: turn.activity.map((entry) => entry.status === "running" ? { ...entry, status: "failed" } : entry),
             error: hostMessage.message,
             status: "error",
           }));
@@ -357,7 +485,11 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           ignoredRunIdsRef.current.delete(hostMessage.runId);
           setInterruptedRun({ runId: hostMessage.runId, conversationId: hostMessage.conversationId, task: hostMessage.task });
           setIsRunning(false);
-          updateAssistantTurn(hostMessage.runId, (turn) => ({ ...turn, status: "interrupted" }));
+          updateAssistantTurn(hostMessage.runId, (turn) => ({
+            ...turn,
+            activity: turn.activity.map((entry) => entry.status === "running" ? { ...entry, status: "interrupted" } : entry),
+            status: "interrupted",
+          }));
           return;
         }
 
@@ -396,7 +528,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
                     reasoning: chatMessage.reasoning ?? "",
                     content: chatMessage.content,
                     status: "done",
-                    toolCalls: [],
+                    activity: chatMessage.reasoning ? [{ id: "reasoning", kind: "thinking", label: "Thinking summary", detail: chatMessage.reasoning, status: "completed" }] : [],
                   },
             ),
           );
@@ -516,7 +648,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   function resumeInterruptedRun() {
     if (!interruptedRun || isRunning) return;
 
-    const runId = createTurnId("run");
+    const runId = interruptedRun.runId;
     setInterruptedRun(undefined);
     setIsRunning(true);
     setTurns((currentTurns) => {
@@ -1132,6 +1264,30 @@ function AssistantAnswer({ content }: { content: string }) {
   return <>{blocks}</>;
 }
 
+function upsertAssistantActivity(activities: AssistantActivity[], next: AssistantActivity): AssistantActivity[] {
+  const index = activities.findIndex((activity) => activity.id === next.id);
+  if (index === -1) return [...activities, next];
+  return activities.map((activity, activityIndex) => activityIndex === index ? { ...activity, ...next } : activity);
+}
+
+function workflowActivityStatus(phase: string): AssistantActivity["status"] {
+  if (phase === "completed") return "completed";
+  if (phase === "cancelled") return "interrupted";
+  if (phase === "failed" || phase === "recovery_required") return "failed";
+  return "running";
+}
+
+function toolActivityId(callId?: string, agentId?: string): string {
+  return callId ? `tool:${callId}` : `tool:${agentId ?? "unknown"}:anonymous`;
+}
+
+function formatActivityIcon(status: AssistantActivity["status"]): string {
+  if (status === "completed") return "✓";
+  if (status === "failed") return "!";
+  if (status === "interrupted") return "‖";
+  return "·";
+}
+
 function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; workflow?: WorkflowProgress; onResume?: () => void }) {
   const [isProcessOpen, setIsProcessOpen] = React.useState(turn.status !== "done");
   const previousStatus = React.useRef(turn.status);
@@ -1140,8 +1296,13 @@ function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; w
     if (turn.status === "done" && previousStatus.current !== "done") {
       setIsProcessOpen(false);
     }
+    if (turn.status === "interrupted" && previousStatus.current === "done") {
+      setIsProcessOpen(true);
+    }
     previousStatus.current = turn.status;
   }, [turn.status]);
+
+  const hasProcess = turn.activity.length > 0 || turn.reasoning.length > 0;
 
   return (
     <article className={`message message-assistant${turn.status === "error" ? " message-error" : ""}`}>
@@ -1150,51 +1311,9 @@ function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; w
         <span>{formatAssistantStatus(turn.status)}</span>
       </div>
 
-      {turn.reasoning.length > 0 ? (
-        <details
-          className="process-details"
-          open={isProcessOpen}
-          onToggle={(event) => setIsProcessOpen(event.currentTarget.open)}
-        >
-          <summary>思考过程</summary>
-          <div className="reasoning-content">{turn.reasoning}</div>
-        </details>
-      ) : null}
+      {hasProcess ? <AssistantProcess turn={turn} isOpen={isProcessOpen} onToggle={setIsProcessOpen} /> : null}
 
-      {turn.toolCalls.length > 0 ? (
-        <details
-          className="tool-calls-details"
-          open={isProcessOpen}
-          onToggle={(event) => setIsProcessOpen(event.currentTarget.open)}
-        >
-          <summary>工具调用</summary>
-          <ul className="tool-calls-list">
-            {turn.toolCalls.map((entry) => (
-              <li
-                key={entry.callId}
-                className={`tool-call-entry tool-call-${entry.status}`}
-                data-call-id={entry.callId}
-              >
-                <div className="tool-call-header">
-                  <span className="tool-call-status-icon" aria-hidden="true">
-                    {entry.status === "running" ? "⏳" : entry.status === "succeeded" ? "✓" : "✗"}
-                  </span>
-                  <span className="tool-call-name">{entry.toolName}</span>
-                  <span className="tool-call-input">{entry.input}</span>
-                </div>
-                {entry.output !== undefined ? (
-                  <details className="tool-call-output-details">
-                    <summary>输出</summary>
-                    <pre className="tool-call-output">{entry.output}</pre>
-                  </details>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
-
-      {workflow?.agents.length ? <WorkflowPlan workflow={workflow} parentStatus={turn.status} /> : null}
+      {workflow?.agents.length || workflow?.step !== undefined ? <WorkflowPlan workflow={workflow} parentStatus={turn.status} /> : null}
       {turn.content.length > 0 ? <div className="message-body assistant-answer"><AssistantAnswer content={turn.content} /></div> : null}
       {turn.status !== "done" && turn.content.length === 0 && !turn.error ? (
         <div className="assistant-placeholder">Waiting for response...</div>
@@ -1213,6 +1332,72 @@ function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; w
   );
 }
 
+function AssistantProcess({
+  turn,
+  isOpen,
+  onToggle,
+}: {
+  turn: AssistantTurn;
+  isOpen: boolean;
+  onToggle: (open: boolean) => void;
+}) {
+  const timelineActivities = turn.activity;
+  const latestActivity = turn.activity[turn.activity.length - 1];
+  const latestLabel = latestActivity?.label;
+  const activityCount = turn.activity.length || 1;
+  const processState = turn.status === "done"
+    ? "completed"
+    : turn.status === "error"
+      ? "failed"
+      : turn.status === "interrupted"
+        ? "interrupted"
+        : "running";
+
+  return (
+    <details
+      className="process-details"
+      open={isOpen}
+      data-process-state={processState}
+      onToggle={(event) => onToggle(event.currentTarget.open)}
+    >
+      <summary className="process-summary">
+        <span className="process-summary-title">思考过程</span>
+        {latestLabel ? <span className="process-summary-latest">{latestLabel}</span> : null}
+        <span className="process-summary-count">{activityCount} {activityCount === 1 ? "step" : "steps"}</span>
+      </summary>
+      {timelineActivities.length > 0 ? (
+        <ol className="process-timeline">
+          {timelineActivities.map((activity) => (
+            <li
+              key={activity.id}
+              className={`process-timeline-step process-timeline-${activity.status}${activity.kind === "tool" ? " process-timeline-tool" : ""}`}
+              data-call-id={activity.kind === "tool" ? activity.id.slice("tool:".length) : undefined}
+            >
+              <span className="process-timeline-marker" aria-hidden="true">{formatActivityIcon(activity.status)}</span>
+              <span className="process-timeline-copy">
+                <span className="process-timeline-label">{activity.label}</span>
+                {activity.detail ? <span className="process-timeline-detail">{activity.detail}</span> : null}
+                {activity.input !== undefined ? (
+                  <details className="process-timeline-field" data-field="input">
+                    <summary className="process-timeline-field-label">Input</summary>
+                    <code className="process-timeline-value">{activity.input}</code>
+                  </details>
+                ) : null}
+                {activity.output !== undefined ? (
+                  <details className="process-timeline-field" data-field="output">
+                    <summary className="process-timeline-field-label">Output</summary>
+                    <code className="process-timeline-value">{activity.output}</code>
+                  </details>
+                ) : null}
+              </span>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </details>
+  );
+}
+
 function WorkflowPlan({ workflow, parentStatus }: { workflow: WorkflowProgress; parentStatus: AssistantTurn["status"] }) {
   const allChildrenSettled = workflow.agents.every((agent) =>
     ["completed", "failed", "cancelled"].includes(agent.status),
@@ -1222,12 +1407,20 @@ function WorkflowPlan({ workflow, parentStatus }: { workflow: WorkflowProgress; 
       ? "completed"
       : parentStatus === "error"
         ? "failed"
+        : parentStatus === "interrupted"
+          ? "cancelled"
         : allChildrenSettled
           ? "running"
           : "pending";
   const items: WorkflowPlanItem[] = [
     ...workflow.agents,
-    { id: "parent-summary", task: "父智能体汇总结果", dependsOn: workflow.agents.map((agent) => agent.id), status: summaryStatus },
+    {
+      id: "parent-summary",
+      task: "父智能体汇总结果",
+      dependsOn: workflow.agents.map((agent) => agent.id),
+      status: summaryStatus,
+      process: [],
+    },
   ];
   const completedCount = items.filter((item) => item.status === "completed").length;
 
@@ -1235,6 +1428,9 @@ function WorkflowPlan({ workflow, parentStatus }: { workflow: WorkflowProgress; 
     <section className="workflow-plan" aria-label="执行计划">
       <div className="workflow-plan-header">
         <strong>执行计划</strong>
+        {workflow.phase ? <span className="workflow-plan-phase">{workflow.phase}</span> : null}
+        {workflow.step !== undefined ? <span className="workflow-plan-phase">step {workflow.step} · v{workflow.stateVersion ?? 0}</span> : null}
+        {workflow.stopReason ? <span className="workflow-plan-phase">{workflow.stopReason}</span> : null}
         <span className="workflow-plan-count">{completedCount} / {items.length}</span>
       </div>
       <ol className="workflow-plan-list">
@@ -1252,12 +1448,55 @@ function WorkflowPlan({ workflow, parentStatus }: { workflow: WorkflowProgress; 
               <span className="workflow-plan-meta">
                 {item.role ? `${item.role} · ` : ""}{formatWorkflowStatus(item.status)}
               </span>
+              {item.process.length > 0 ? <WorkflowNodeProcess events={item.process} /> : null}
             </span>
           </li>
         ))}
       </ol>
     </section>
   );
+}
+
+function WorkflowNodeProcess({ events }: { events: WorkflowNodeProcessEvent[] }) {
+  const visibleEvents = events.filter((event) => event.event !== "tool_started" && event.event !== "tool_finished");
+  if (visibleEvents.length === 0) {
+    return null;
+  }
+
+  const latest = visibleEvents[visibleEvents.length - 1];
+  const latestClass = workflowNodeEventClass(latest);
+  return (
+    <details className="workflow-node-process" open={latest.event === "error"}>
+      <summary>
+        <span className={`workflow-node-process-kind workflow-node-process-${latestClass}`}>
+          {formatWorkflowNodeEvent(latest.event, latest.succeeded)}
+        </span>
+        <span className="workflow-node-process-latest">{latest.content}</span>
+      </summary>
+      <ol className="workflow-node-process-list">
+        {visibleEvents.map((event, index) => (
+          <li key={`${event.callId ?? event.event}-${index}`} className={`workflow-node-process-${workflowNodeEventClass(event)}`}>
+            <span className="workflow-node-process-kind">{formatWorkflowNodeEvent(event.event, event.succeeded)}</span>
+            {event.toolName ? <code>{event.toolName}</code> : null}
+            <span>{event.content}</span>
+          </li>
+        ))}
+      </ol>
+    </details>
+  );
+}
+
+function workflowNodeEventClass(event: WorkflowNodeProcessEvent): string {
+  return event.event === "tool_finished" && event.succeeded === false ? "error" : event.event;
+}
+
+function formatWorkflowNodeEvent(event: WorkflowNodeEventKind, succeeded?: boolean): string {
+  if (event === "thinking") return "过程摘要";
+  if (event === "tool_started") return "工具开始";
+  if (event === "tool_finished" && succeeded === false) return "工具失败";
+  if (event === "tool_finished") return "工具结束";
+  if (event === "error") return "失败";
+  return "输出片段";
 }
 
 function formatWorkflowStatus(status: WorkflowPlanStatus): string {

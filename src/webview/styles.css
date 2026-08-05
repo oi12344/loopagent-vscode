@@ -272,8 +272,157 @@ h1 {
 .process-details {
   background: var(--vscode-textBlockQuote-background, transparent);
   border-left: 2px solid var(--vscode-textLink-foreground);
+  display: grid;
+  gap: 8px;
   min-width: 0;
   padding: 6px 8px;
+}
+
+.process-summary {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.process-summary-title {
+  color: var(--vscode-foreground);
+  font-weight: 600;
+}
+
+.process-summary-latest {
+  color: var(--vscode-descriptionForeground);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.process-summary-count {
+  color: var(--vscode-descriptionForeground);
+  flex: none;
+  font-size: 11px;
+}
+
+.process-timeline {
+  display: grid;
+  gap: 7px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.process-timeline-step {
+  align-items: start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 16px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.process-timeline-marker {
+  align-items: center;
+  border: 1px solid var(--vscode-descriptionForeground);
+  border-radius: 50%;
+  color: var(--vscode-descriptionForeground);
+  display: inline-flex;
+  font-size: 10px;
+  height: 14px;
+  justify-content: center;
+  line-height: 1;
+  margin-top: 1px;
+  width: 14px;
+}
+
+.process-timeline-running .process-timeline-marker {
+  animation: process-pulse 1.4s ease-in-out infinite;
+  border-color: var(--vscode-progressBar-background, var(--vscode-charts-blue));
+  color: var(--vscode-progressBar-background, var(--vscode-charts-blue));
+}
+
+.process-timeline-completed .process-timeline-marker {
+  border-color: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-charts-green));
+  color: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-charts-green));
+}
+
+.process-timeline-failed .process-timeline-marker {
+  border-color: var(--vscode-errorForeground);
+  color: var(--vscode-errorForeground);
+}
+
+.process-timeline-interrupted .process-timeline-marker {
+  border-color: var(--vscode-charts-orange, var(--vscode-descriptionForeground));
+  color: var(--vscode-charts-orange, var(--vscode-descriptionForeground));
+}
+
+.process-timeline-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.process-timeline-label {
+  color: var(--vscode-foreground);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.process-timeline-detail {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.process-timeline-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.process-timeline-field-label {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.process-timeline-field summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.process-timeline-field summary::-webkit-details-marker {
+  display: none;
+}
+
+.process-timeline-value {
+  background: var(--vscode-textCodeBlock-background, transparent);
+  color: var(--vscode-editor-foreground);
+  display: block;
+  font-size: 11px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 4px 6px;
+  white-space: pre-wrap;
+}
+
+.process-details[data-process-state="running"] {
+  border-left-color: var(--vscode-progressBar-background, var(--vscode-charts-blue));
+}
+
+.process-details[data-process-state="failed"] {
+  border-left-color: var(--vscode-errorForeground);
+}
+
+.process-details[data-process-state="interrupted"] {
+  border-left-color: var(--vscode-charts-orange, var(--vscode-descriptionForeground));
+}
+
+@keyframes process-pulse {
+  0%,
+  100% { opacity: 0.45; }
+  50% { opacity: 1; }
 }
 
 .process-details summary {
@@ -284,84 +433,8 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-.reasoning-content {
-  color: var(--vscode-descriptionForeground);
-  font-size: 12px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-
 .assistant-placeholder {
   margin: 0;
-}
-
-.tool-calls-details {
-  background: var(--vscode-textBlockQuote-background, transparent);
-  border-left: 2px solid var(--vscode-charts-blue, var(--vscode-textLink-foreground));
-  min-width: 0;
-  padding: 6px 8px;
-}
-
-.tool-calls-details summary {
-  color: var(--vscode-descriptionForeground);
-  cursor: pointer;
-  font-size: 12px;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
-}
-
-.tool-calls-list {
-  display: grid;
-  gap: 6px;
-  list-style: none;
-  margin: 6px 0 0;
-  padding: 0;
-}
-
-.tool-call-entry {
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
-.tool-call-header {
-  align-items: baseline;
-  color: var(--vscode-descriptionForeground);
-  display: flex;
-  gap: 6px;
-}
-
-.tool-call-name {
-  font-weight: 600;
-}
-
-.tool-call-input {
-  color: var(--vscode-editor-foreground);
-  white-space: pre-wrap;
-}
-
-.tool-call-failed .tool-call-status-icon {
-  color: var(--vscode-errorForeground);
-}
-
-.tool-call-succeeded .tool-call-status-icon {
-  color: var(--vscode-charts-green, var(--vscode-testing-iconPassed, currentColor));
-}
-
-.tool-call-output-details summary {
-  color: var(--vscode-descriptionForeground);
-  cursor: pointer;
-  font-size: 11px;
-}
-
-.tool-call-output {
-  background: var(--vscode-textCodeBlock-background, transparent);
-  font-size: 11px;
-  margin: 4px 0 0;
-  max-height: 240px;
-  overflow: auto;
-  padding: 4px 6px;
-  white-space: pre-wrap;
 }
 
 .command-approvals {
@@ -642,6 +715,60 @@ h1 {
 
 .workflow-plan-failed .workflow-plan-icon,
 .workflow-plan-cancelled .workflow-plan-icon {
+  color: var(--vscode-errorForeground);
+}
+
+.workflow-node-process {
+  color: var(--vscode-descriptionForeground);
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+  min-width: 0;
+}
+
+.workflow-node-process summary {
+  align-items: baseline;
+  cursor: pointer;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.workflow-node-process-latest {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workflow-node-process-list {
+  border-left: 1px solid var(--vscode-panel-border, transparent);
+  display: grid;
+  gap: 3px;
+  list-style: none;
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 0 0 0 8px;
+}
+
+.workflow-node-process-list li {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.workflow-node-process-kind {
+  color: var(--vscode-descriptionForeground);
+  flex: none;
+  font-size: 11px;
+}
+
+.workflow-node-process-tool_finished {
+  color: var(--vscode-gitDecoration-addedResourceForeground, var(--vscode-charts-green));
+}
+
+.workflow-node-process-error {
   color: var(--vscode-errorForeground);
 }
 

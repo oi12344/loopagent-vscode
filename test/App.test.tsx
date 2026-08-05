@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/webview/App";
@@ -229,9 +229,11 @@ describe("LoopAgent webview app", () => {
 
     postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "LoopAgent" });
     postHostMessage({ type: "assistantDelta", runId: "run-1", content: "Existing answer" });
+    postHostMessage({ type: "workflowStateChanged", runId: "run-1", phase: "implement" });
     postHostMessage({ type: "subagentStateChanged", runId: "run-1", agentId: "implementer-1", status: "running" });
 
     expect(screen.getByText("Existing answer")).toBeInTheDocument();
+    expect(screen.getByText("implement")).toBeInTheDocument();
     expect(screen.getByText("implementer-1")).toBeInTheDocument();
     expect(screen.getByText("执行中")).toBeInTheDocument();
   });
@@ -271,6 +273,96 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByText("3 / 3")).toBeInTheDocument();
   });
 
+  it("renders live process evidence under the matching graph node", () => {
+    render(<App />);
+
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "LoopAgent" });
+    postHostMessage({
+      type: "workflowNodeEvent",
+      runId: "run-1",
+      agentId: "subagent-1",
+      event: "thinking",
+      content: "starting",
+    });
+    postHostMessage({
+      type: "subagentPlanCreated",
+      runId: "run-1",
+      agentId: "subagent-1",
+      task: "运行验证",
+      role: "executor",
+      dependsOn: [],
+    });
+    postHostMessage({ type: "toolCallStarted", runId: "run-1", callId: "call-1", toolName: "runCommand", input: "npm test" });
+    postHostMessage({
+      type: "workflowNodeEvent",
+      runId: "run-1",
+      agentId: "subagent-1",
+      event: "tool_started",
+      content: "npm test",
+      callId: "call-1",
+      toolName: "runCommand",
+      input: "npm test",
+    });
+    postHostMessage({
+      type: "workflowNodeEvent",
+      runId: "run-1",
+      agentId: "subagent-1",
+      event: "tool_finished",
+      content: "passed",
+      callId: "call-1",
+      succeeded: true,
+      output: "passed",
+    });
+    postHostMessage({ type: "toolCallFinished", runId: "run-1", callId: "call-1", succeeded: true, output: "passed" });
+    postHostMessage({
+      type: "workflowNodeEvent",
+      runId: "run-1",
+      agentId: "subagent-1",
+      event: "tool_finished",
+      content: "boom",
+      callId: "call-2",
+      succeeded: false,
+    });
+
+    const process = document.querySelector(".process-details");
+    const tool = document.querySelector('[data-call-id="call-1"]');
+    expect(process).toHaveAttribute("data-process-state", "running");
+    expect(document.querySelectorAll('[data-call-id="call-1"]')).toHaveLength(1);
+    expect(tool?.textContent).toContain("npm test");
+    expect(tool?.textContent).toContain("passed");
+
+    const plan = screen.getByRole("region", { name: "执行计划" });
+    expect(plan.querySelector(".workflow-node-process")).toBeInTheDocument();
+    expect(plan).not.toHaveTextContent("passed");
+    expect(plan).not.toHaveTextContent("boom");
+    expect(screen.getByText("运行验证").closest("li")).toHaveAttribute("data-agent-id", "subagent-1");
+  });
+
+  it("marks the parent workflow summary cancelled when the run is interrupted", () => {
+    render(<App />);
+
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "LoopAgent" });
+    postHostMessage({
+      type: "subagentPlanCreated",
+      runId: "run-1",
+      agentId: "subagent-1",
+      task: "运行验证",
+      role: "executor",
+      dependsOn: [],
+    });
+    postHostMessage({ type: "workflowStateChanged", runId: "run-1", phase: "failed" });
+    postHostMessage({
+      type: "runInterrupted",
+      runId: "run-1",
+      conversationId: "conversation-1",
+      task: "运行验证",
+    });
+
+    const parent = document.querySelector('.workflow-plan-item:not([data-agent-id])');
+    expect(parent).toHaveAttribute("data-status", "cancelled");
+    expect(parent).toHaveTextContent("已取消");
+  });
+
   it("shows dynamic subagent progress before a workflow phase is reported", () => {
     render(<App />);
 
@@ -308,6 +400,43 @@ describe("LoopAgent webview app", () => {
 
     await user.type(screen.getByLabelText("Message"), "again");
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  });
+
+  it("renders a live process timeline for thinking, workflow, and tools", () => {
+    render(<App />);
+
+    postHostMessage({ type: "runStarted", runId: "run-1", task: "Inspect the project" });
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "DeepSeek" });
+    postHostMessage({ type: "assistantThinking", runId: "run-1", message: "Planning the next step" });
+    postHostMessage({ type: "workflowStateChanged", runId: "run-1", phase: "executing" });
+    postHostMessage({ type: "toolCallStarted", runId: "run-1", callId: "call-1", toolName: "exploreCode", input: "src/extension" });
+
+    const process = document.querySelector(".process-details");
+    expect(process).toHaveAttribute("data-process-state", "running");
+    expect(process).toHaveAttribute("open");
+    expect(screen.getByText("Planning the next step")).toBeInTheDocument();
+    expect(screen.getAllByText("exploreCode")).not.toHaveLength(0);
+    expect(document.querySelectorAll(".process-timeline-step").length).toBeGreaterThanOrEqual(2);
+
+    postHostMessage({ type: "toolCallFinished", runId: "run-1", callId: "call-1", succeeded: true, output: "found files" });
+    postHostMessage({ type: "runFinished", runId: "run-1" });
+
+    expect(process).toHaveAttribute("data-process-state", "completed");
+    expect(process).not.toHaveAttribute("open");
+  });
+
+  it("reopens process context when a finished run becomes interrupted", () => {
+    render(<App />);
+
+    postHostMessage({ type: "runStarted", runId: "run-1", task: "Inspect the project" });
+    postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "DeepSeek" });
+    postHostMessage({ type: "assistantThinking", runId: "run-1", message: "Waiting for recovery" });
+    postHostMessage({ type: "assistantFinished", runId: "run-1" });
+    postHostMessage({ type: "runInterrupted", runId: "run-1", conversationId: "conversation-1", task: "Inspect the project" });
+
+    const process = document.querySelector(".process-details");
+    expect(process).toHaveAttribute("data-process-state", "interrupted");
+    expect(process).toHaveAttribute("open");
   });
 
   it("renders assistant markdown as formatted content without control symbols", () => {
@@ -363,7 +492,7 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByText("思考过程").closest("details")).not.toHaveAttribute("open");
   });
 
-  it("shows only provider reasoning in Process and right-aligns user tasks", () => {
+  it("shows high-level thinking and provider reasoning in the process timeline", () => {
     render(<App />);
 
     postHostMessage({ type: "runStarted", runId: "run-1", task: "Inspect the project" });
@@ -375,7 +504,7 @@ describe("LoopAgent webview app", () => {
     postHostMessage({ type: "runFinished", runId: "run-1" });
 
     expect(screen.getByText("Inspecting the active file. Checking callers.")).toBeInTheDocument();
-    expect(screen.queryByText("Building code context")).not.toBeInTheDocument();
+    expect(screen.getByText("Building code context")).toBeInTheDocument();
     expect(screen.queryByText("Running tool exploreCode")).not.toBeInTheDocument();
     expect(screen.getByText("Inspect the project").closest("article")).toHaveClass("message-user-right");
     expect(screen.getByText("思考过程").closest("details")).not.toHaveAttribute("open");
@@ -413,25 +542,66 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
 
-  it("renders concurrent tool calls with input and output in a collapsed timeline", () => {
+  it("renders paired tool input and output in the process timeline order", () => {
     render(<App />);
 
     postHostMessage({ type: "runStarted", runId: "run-1", task: "Run some commands" });
     postHostMessage({ type: "assistantStarted", runId: "run-1", provider: "DeepSeek" });
+    postHostMessage({ type: "assistantThinking", runId: "run-1", message: "Choose the commands" });
     postHostMessage({ type: "toolCallStarted", runId: "run-1", callId: "1-1", toolName: "runCommand", input: "echo first" });
     postHostMessage({ type: "toolCallStarted", runId: "run-1", callId: "1-2", toolName: "runCommand", input: "echo second" });
     postHostMessage({ type: "toolCallFinished", runId: "run-1", callId: "1-1", succeeded: true, output: "first" });
     postHostMessage({ type: "toolCallFinished", runId: "run-1", callId: "1-2", succeeded: false, output: "boom" });
 
-    expect(screen.getByText("工具调用")).toBeInTheDocument();
-    expect(screen.getAllByText("runCommand")).toHaveLength(2);
-    expect(screen.getByText("echo first")).toBeInTheDocument();
+    const steps = Array.from(document.querySelectorAll(".process-timeline-step"));
+    expect(steps).toHaveLength(3);
+    expect(steps.map((step) => step.textContent)).toEqual([
+      expect.stringContaining("Choose the commands"),
+      expect.stringContaining("echo first"),
+      expect.stringContaining("echo second"),
+    ]);
+    expect(steps[1]?.textContent).toContain("first");
+    expect(steps[2]?.textContent).toContain("boom");
     expect(screen.getByText("echo second")).toBeInTheDocument();
-    expect(screen.getByText("first")).toBeInTheDocument();
     expect(screen.getByText("boom")).toBeInTheDocument();
+    expect(document.querySelector(".tool-calls-details")).not.toBeInTheDocument();
 
     postHostMessage({ type: "runFinished", runId: "run-1" });
-    expect(screen.getByText("工具调用").closest("details")).not.toHaveAttribute("open");
+    expect(document.querySelector(".process-details")).not.toHaveAttribute("open");
+  });
+
+  it("renders plan-generation evidence and collapsible tool input/output", () => {
+    render(<App />);
+
+    postHostMessage({ type: "runStarted", runId: "run-plan-evidence", task: "生成计划" });
+    postHostMessage({ type: "assistantStarted", runId: "run-plan-evidence", provider: "DeepSeek" });
+    postHostMessage({ type: "assistantThinking", runId: "run-plan-evidence", message: "生成工作流计划" });
+    postHostMessage({ type: "assistantThinking", runId: "run-plan-evidence", message: "已收到候选计划，开始解析和校验" });
+    postHostMessage({ type: "assistantThinking", runId: "run-plan-evidence", message: "计划校验通过：1 个节点，依赖关系有效" });
+    postHostMessage({ type: "toolCallStarted", runId: "run-plan-evidence", callId: "call-1", toolName: "runCommand", input: "npm test" });
+    postHostMessage({ type: "toolCallFinished", runId: "run-plan-evidence", callId: "call-1", succeeded: true, output: "passed" });
+
+    expect(screen.getByText("生成工作流计划")).toBeInTheDocument();
+    expect(screen.getByText("已收到候选计划，开始解析和校验")).toBeInTheDocument();
+    expect(screen.getByText("计划校验通过：1 个节点，依赖关系有效")).toBeInTheDocument();
+
+    const tool = document.querySelector('[data-call-id="call-1"]');
+    expect(tool).toBeInTheDocument();
+    const inputDetails = tool?.querySelector('details[data-field="input"]');
+    const outputDetails = tool?.querySelector('details[data-field="output"]');
+    expect(tool?.querySelectorAll("details")).toHaveLength(2);
+    expect(inputDetails).toHaveTextContent("Input");
+    expect(outputDetails).toHaveTextContent("Output");
+    expect(inputDetails).not.toHaveAttribute("open");
+    expect(outputDetails).not.toHaveAttribute("open");
+
+    fireEvent.click(inputDetails?.querySelector("summary") as HTMLElement);
+    expect(inputDetails).toHaveAttribute("open");
+    expect(outputDetails).not.toHaveAttribute("open");
+
+    fireEvent.click(outputDetails?.querySelector("summary") as HTMLElement);
+    expect(inputDetails).toHaveAttribute("open");
+    expect(outputDetails).toHaveAttribute("open");
   });
 
   it("does not render legacy agent events as Process", () => {
