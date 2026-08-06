@@ -25,11 +25,11 @@ describe("resolveRole", () => {
 		}
 	});
 
-	it("keeps analysis roles read-only and gives executor the four workspace tools", () => {
+	it("keeps analysis roles read-only and gives executor the five workspace tools", () => {
 		for (const role of ["explorer", "reviewer", "planner"] as const) {
-			expect(ROLE_PROFILES[role].allowedTools).toEqual(["exploreCode", "readFile"]);
+			expect(ROLE_PROFILES[role].allowedTools).toEqual(["browseSymbols", "exploreCode", "readFile"]);
 		}
-		expect(ROLE_PROFILES.executor.allowedTools).toEqual(["exploreCode", "readFile", "applyEdit", "runCommand"]);
+		expect(ROLE_PROFILES.executor.allowedTools).toEqual(["browseSymbols", "exploreCode", "readFile", "applyEdit", "runCommand"]);
 	});
 
   it("gives each role a distinct system prompt", () => {

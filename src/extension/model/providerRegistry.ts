@@ -6,7 +6,7 @@ import type { ReactAgentTool } from "../agent/reactTypes";
 import type { ToolInvoker } from "../agent/toolRegistry";
 import { createOpenAiReactModelTurn } from "../agent/openAiReactModelTurn";
 import { createReactAgentRunner } from "../agent/reactAgentRunner";
-import { createDynamicWorkflowTools } from "../agent/dynamicWorkflowTools";
+import { createWorkflowTools } from "../agent/workflowTools";
 import { createWorkflowOrchestrator, type WorkflowEvent } from "../agent/workflowOrchestrator";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import type { ParserRuntime } from "../intelligence/parser/parserRuntime";
@@ -50,31 +50,6 @@ const DIRECT_TOOL_GUIDANCE = [
   "Do not invent repository facts.",
 ];
 
-const GRAPH_TOOL_GUIDANCE = [
-  // --- Routing decision ---
-  "You have direct tools (browseSymbols, exploreCode, readFile, applyEdit, runCommand) and one graph tool (runDynamicGraph).",
-  "Use direct tools for any task that can be answered by a single sequential chain: one call path, one file, one question at a time.",
-  "Call runDynamicGraph only when the task requires 3 or more genuinely independent explorations that produce no shared intermediate results, or when sequential steps would exhaust the direct-tool budget.",
-
-  // --- Node design ---
-  "Each graph node must be narrowly scoped to one call path, one file decision, or one bounded question. Never ask a node to enumerate the whole repository or recursively explore.",
-  "Set timeoutMs to 60000 for every model-backed node. Build one graph and report node failures rather than rebuilding equivalent graphs repeatedly.",
-
-  // --- Aggregation and data flow ---
-  "dependsOn controls scheduling only; it does not forward upstream output. To use upstream results in a downstream node, map each dependency's <node-id>.content through inputMapping.",
-  "For parallel explorations, create independent read-only nodes and aggregate all of their results yourself in the parent turn after runDynamicGraph returns.",
-
-  // --- Reviewer pattern ---
-  "Add a reviewer node only when the user explicitly requests independent review. When parallel analysis plus review is requested, make the analysis nodes independent of each other and have the single reviewer depend on all of them.",
-
-  // --- toolHints and resolvers ---
-  "toolHints must list actually available tools. For read-only nodes, valid choices are browseSymbols, exploreCode, and readFile. Do not invent tools such as listFiles or glob.",
-  "Use the resolvers field only when the task requires fanout, conditional expansion, or bounded iterative refinement. Every resolver nodeId must reference an existing initial node.",
-
-  // --- Hard constraints ---
-  "Graph nodes cannot call runDynamicGraph. Nested workflows are not supported.",
-];
-
 const REACT_SYSTEM_PROMPT = [
   "You are LoopAgent, a coding assistant working in the current VS Code workspace.",
   ...DIRECT_TOOL_GUIDANCE,
@@ -82,7 +57,12 @@ const REACT_SYSTEM_PROMPT = [
 
 const AGENT_SYSTEM_PROMPT = [
   "You are LoopAgent, a coding assistant working in the current VS Code workspace.",
-  ...GRAPH_TOOL_GUIDANCE,
+  "When a task has independent parts that can be explored or executed concurrently, use spawnSubagent to delegate work:",
+  "- explorer role: locate source code, symbols, call paths (read-only)",
+  "- reviewer role: inspect code for defects and risks (read-only)",
+  "- planner role: break work into ordered steps (read-only)",
+  "- executor role: implement changes with applyEdit and runCommand",
+  "Use waitForSubagents to collect results. Each subagent runs independently with its own tool access based on role.",
   ...DIRECT_TOOL_GUIDANCE,
 ].join("\n");
 
@@ -99,7 +79,6 @@ export type CreateConfiguredAgentRunnerDeps = {
   projectMemory?: ProjectMemory;
   enableWorkflowTools?: boolean;
   imageAnalysisService?: ImageAnalysisService;
-  workflowCheckpointStore?: Pick<ConversationStore, "claimWorkflowCheckpoint" | "saveWorkflowCheckpoint" | "loadWorkflowCheckpoint" | "getWorkflowCheckpointRunId" | "clearWorkflowCheckpoint">;
 };
 
 export async function createConfiguredAgentRunner(
@@ -227,15 +206,11 @@ export async function createConfiguredAgentRunner(
         },
       });
       const unsubscribe = orchestrator.onEvent((event) => events.push(toHostMessage(event, request.runId)));
-      const graphTools = createDynamicWorkflowTools({
+      const workflowTools = createWorkflowTools({
         orchestrator,
         availableTools: parentTools,
-        signal: request.signal,
-        conversationId: request.conversationId,
-        runId: request.runId,
-        checkpointStore: deps.workflowCheckpointStore,
       });
-      const tools = [...parentTools, ...graphTools];
+      const tools = [...parentTools, ...workflowTools];
       const parentRunner = createParentRunner(
         tools,
         undefined,

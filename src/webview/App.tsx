@@ -506,7 +506,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
           setWorkflowProgress(Object.fromEntries(
             hostMessage.messages.flatMap((chatMessage, index) =>
               chatMessage.role === "assistant" && chatMessage.workflow
-                ? [[chatMessage.runId ?? `restored-${index}`, chatMessage.workflow]]
+                ? [[chatMessage.runId ?? `restored-${index}`, chatMessage.workflow as WorkflowProgress]]
                 : [],
             ),
           ));

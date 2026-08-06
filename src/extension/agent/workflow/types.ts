@@ -1,7 +1,7 @@
 import type { AgentRunner } from "../../agentRunner";
 import type { ReactAgentTool } from "../reactTypes";
 import type { ToolInvoker } from "../toolRegistry";
-import type { WorkflowDiagnosticLog } from "../../../shared/workflowCheckpoint";
+import type { WorkflowDiagnosticLog } from "../../../shared/workflowDiagnostics";
 
 export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
