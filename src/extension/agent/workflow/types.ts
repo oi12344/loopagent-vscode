@@ -27,6 +27,8 @@ export type SubagentResult = {
   error?: string;
   toolCallCount?: number;
   diagnosticLog?: readonly WorkflowDiagnosticLog[];
+  verificationStatus?: "passed" | "failed" | "skipped" | "not-run";
+  verificationDetails?: string;
 };
 
 export type SubagentDiagnosticLog = WorkflowDiagnosticLog;

@@ -6,6 +6,9 @@ import { validateDAG } from "./workflow/dagValidator";
 import { resolveRole } from "./workflow/roleRegistry";
 import { selectTools } from "./workflow/toolRouter";
 import { evaluateSubagentProgress } from "./workflow/subagentProgress";
+import { determineVerificationStatus } from "./workflow/verificationDetector";
+import { evaluateTimeoutAdjustment } from "./workflow/adaptiveTimeout";
+import { extractExplorerFindings, cacheExplorerFindings } from "./workflow/explorerCache";
 import type { CreateSubagentConfig, SubagentResult, SubagentRoleId, SubagentRunnerFactory, SubagentStatus, WorkflowLimits } from "./workflow/types";
 import type { WorkflowDiagnosticLog } from "../../shared/workflowDiagnostics";
 import type { ProjectMemory } from "../memory/projectMemory";
@@ -167,7 +170,17 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
 
     if (entry.timeout) clearTimeout(entry.timeout);
     const diagnosticLog = result.status === "failed" ? summarizeSubagentMessages(entry.messages) : undefined;
-    const settledResult = diagnosticLog && diagnosticLog.length > 0 ? { ...result, diagnosticLog } : result;
+
+    // 检测验证状态
+    const verification = determineVerificationStatus(snapshot.role, entry.messages, result.status);
+
+    const settledResult: SubagentResult = {
+      ...result,
+      ...(diagnosticLog && diagnosticLog.length > 0 ? { diagnosticLog } : {}),
+      verificationStatus: verification.verificationStatus,
+      verificationDetails: verification.verificationDetails,
+    };
+
     entry.context.finish(settledResult);
     entry.resolveResult(settledResult);
     emit({ type: "SubagentStatusChanged", subagentId: snapshot.id, status: result.status });
@@ -195,6 +208,15 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
       evidence: [],
     };
     void options.projectMemory.recordOutcome(outcome, expectedGeneration);
+
+    // 如果是 explorer 角色且成功完成，缓存探索发现
+    if (snapshot.role === "explorer" && result.status === "completed") {
+      const entry = entries.get(snapshot.id);
+      if (entry) {
+        const findings = extractExplorerFindings(entry.messages, result.content);
+        void cacheExplorerFindings(options.projectMemory, snapshot.task, findings, expectedGeneration);
+      }
+    }
   }
 
   function cancelPendingDependents(dependencyId: string): void {
@@ -238,6 +260,7 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
       // 就立刻停止。名义时长用轮次乘间隔而不是实测墙钟，文案才是确定的。
       let checkCount = 0;
       let lastMessageCount = 0;
+      let currentTimeoutMs = entry.timeoutMs;
       const scheduleProgressCheck = (): void => {
         entry.timeout = setTimeout(() => {
           if (controller.signal.aborted || entry.context.snapshot().status !== "running") return;
@@ -247,14 +270,19 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
           lastMessageCount = entry.messages.length;
 
           if (verdict.state === "progressing" || verdict.state === "blocked") {
-            if (nominalElapsedMs + entry.timeoutMs <= entry.maxTimeoutMs) {
+            // 使用自适应超时评估是否需要调整超时时长
+            const adjustment = evaluateTimeoutAdjustment(entry.messages);
+            const adjustedTimeout = Math.floor(entry.timeoutMs * adjustment.suggestedMultiplier);
+            currentTimeoutMs = Math.min(adjustedTimeout, entry.maxTimeoutMs - nominalElapsedMs);
+
+            if (nominalElapsedMs + currentTimeoutMs <= entry.maxTimeoutMs) {
               emit({
                 type: "SubagentMessage",
                 subagentId: snapshot.id,
                 message: {
                   type: "agentEvent",
                   runId: snapshot.id,
-                  message: `progress check at ${nominalElapsedMs}ms: ${verdict.state} (${verdict.reason})`,
+                  message: `progress check at ${nominalElapsedMs}ms: ${verdict.state} (${verdict.reason}). Timeout adjustment: ${adjustment.reason}`,
                 },
               });
               scheduleProgressCheck();

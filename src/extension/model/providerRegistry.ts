@@ -8,6 +8,7 @@ import { createOpenAiReactModelTurn } from "../agent/openAiReactModelTurn";
 import { createReactAgentRunner } from "../agent/reactAgentRunner";
 import { createWorkflowTools } from "../agent/workflowTools";
 import { createWorkflowOrchestrator, type WorkflowEvent } from "../agent/workflowOrchestrator";
+import { classifyTask, getExecutionGuidance } from "../agent/taskClassifier";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import type { ParserRuntime } from "../intelligence/parser/parserRuntime";
 import { createTreeSitterParserRuntime } from "../intelligence/parser/treeSitterRuntime";
@@ -142,7 +143,26 @@ export async function createConfiguredAgentRunner(
         imagePrompt = deps.imageAnalysisService.buildSystemPromptFragment(imageAnalyses);
       }
 
-      return [basePrompt, runtimePrompt, memoryPrompt, imagePrompt].filter(Boolean).join("\n\n");
+      // Task classification guidance
+      let taskGuidance = "";
+      try {
+        const classification = classifyTask(request.task);
+        const guidance = getExecutionGuidance(classification);
+        taskGuidance = [
+          `# Task Complexity Analysis`,
+          `Complexity: ${classification.complexity} (confidence: ${classification.confidence})`,
+          `Reasoning: ${classification.reasoning}`,
+          ``,
+          `# Execution Guidance`,
+          guidance,
+          ``,
+          `Note: This is a suggestion based on pattern matching. You may choose a different approach if you have strong evidence that the task requires it.`,
+        ].join("\n");
+      } catch {
+        // Task classification is advisory only and must not block execution.
+      }
+
+      return [basePrompt, taskGuidance, runtimePrompt, memoryPrompt, imagePrompt].filter(Boolean).join("\n\n");
     };
 
   const createParentRunner = (

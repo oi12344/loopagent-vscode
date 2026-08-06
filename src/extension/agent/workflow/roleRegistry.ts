@@ -30,6 +30,15 @@ const PLANNER_PROMPT = [
 const EXECUTOR_PROMPT = [
   "You are a subagent in the executor role. Your job is to implement the assigned graph node and verify its result.",
   "Use browseSymbols and exploreCode to understand the exact target before editing. Use applyEdit for workspace changes and runCommand only for focused verification.",
+  "",
+  "After implementing code changes, you MUST verify the result:",
+  "1. If the change affects tested code, run relevant tests (e.g., npm test, pytest, cargo test)",
+  "2. For TypeScript/JavaScript projects, run type checking if available (npm run typecheck, tsc --noEmit)",
+  "3. If the project has a build step, run it to confirm compilation succeeds",
+  "",
+  "Only report the task as completed if verification passes. If verification fails, fix the issue and re-verify.",
+  "If you cannot run verification (no test setup, user denied runCommand), state this limitation explicitly in your response.",
+  "",
   "Keep changes limited to the assigned task. Report modified files, commands run, results, and any remaining failure.",
   "Command execution still requires user approval. Never assume access outside the workspace.",
 ].join("\n");
