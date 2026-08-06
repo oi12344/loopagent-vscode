@@ -4,6 +4,7 @@ import {
   type WorkspaceIntelligence,
   type WorkspaceIntelligenceBudgets,
   type WorkspaceSourceFile,
+  type SymbolRef,
 } from "./workspaceIntelligence";
 import { renderPersistedCodeIntelligencePrompt } from "./context/codeIntelligencePrompt";
 import { createWorkspaceIndexer, type WorkspaceFileRef, type WorkspaceIndexer } from "./indexing/workspaceIndexer";
@@ -182,6 +183,26 @@ export function createVsCodeWorkspaceIntelligence(
       return (await buildResult(query)).prompt;
     },
     buildCodeIntelligenceResult: buildResult,
+    async browseSymbols(query: string): Promise<SymbolRef[]> {
+      await persistenceReady;
+      if (persistentClient) {
+        try {
+          const nodes = await persistentClient.searchNodes(query, 30);
+          if (nodes.length > 0) {
+            return nodes.map((n) => ({
+              name: n.nodeName,
+              qualifiedName: n.qualifiedName,
+              kind: n.kind,
+              filePath: n.filePath,
+              startLine: n.startLine,
+            }));
+          }
+        } catch {
+          // fall through to memory fallback
+        }
+      }
+      return memoryIntelligence.browseSymbols!(query);
+    },
     getStatus: () => memoryIntelligence.getStatus(),
     getDiagnostics: () => [
       ...memoryIntelligence.getDiagnostics(),
