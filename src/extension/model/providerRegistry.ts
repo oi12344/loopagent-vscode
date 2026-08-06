@@ -1,10 +1,12 @@
 import type * as vscode from "vscode";
 
 import { createExploreCodeTool } from "../agent/exploreCodeTool";
+import { createBrowseSymbolsTool } from "../agent/browseSymbolsTool";
 import type { ReactAgentTool } from "../agent/reactTypes";
+import type { ToolInvoker } from "../agent/toolRegistry";
 import { createOpenAiReactModelTurn } from "../agent/openAiReactModelTurn";
 import { createReactAgentRunner } from "../agent/reactAgentRunner";
-import { createWorkflowTools } from "../agent/workflowTools";
+import { createDynamicWorkflowTools } from "../agent/dynamicWorkflowTools";
 import { createWorkflowOrchestrator, type WorkflowEvent } from "../agent/workflowOrchestrator";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import type { ParserRuntime } from "../intelligence/parser/parserRuntime";
@@ -21,31 +23,56 @@ import { createDeepSeekProvider } from "./providers/deepseekProvider";
 import { resolveRole } from "../agent/workflow/roleRegistry";
 import type { ImageAnalysisService } from "../vision/imageAnalysisService";
 import type { ImageAnalysisContext } from "../vision/imageAnalysisService";
+import type { ConversationStore } from "../conversation/conversationStore";
 
 const DIRECT_TOOL_GUIDANCE = [
-  "Use exploreCode when answering questions about repository implementation, symbol locations, call paths, or project facts.",
-  "Prefer concise code-oriented search queries with likely English identifiers, then answer from the returned observation.",
-  "Trace behavior from current production entry points; ignore historical documents, tests, and unreferenced legacy modules unless the user asks for them.",
-  "Before answering, verify every claimed call edge against the current source returned by exploreCode.",
-  "After each exploreCode observation, decide whether the available source evidence is sufficient to answer the user's question.",
-  "If the available source evidence is sufficient, answer immediately without calling another tool.",
-  "Only call exploreCode again for a concrete missing fact required to answer the user; use a focused query that does not overlap previous queries.",
-  "When separate read-only searches are needed, you may request them in one assistant turn.",
-  "Do not request an exact duplicate search or search again for facts already supported by source evidence.",
-  "Do not keep searching for completeness or to reconfirm facts already supported by source evidence.",
-  "Before editing, read the relevant file content with readFile.",
-  "For non-local changes, public behavior changes, or unclear conventions, first use exploreCode to find the closest existing implementation.",
-  "Read that implementation, its direct callers, relevant types or data definitions, and tests before applying changes.",
-  "Follow the discovered structure, naming, error handling, and boundaries; if no reliable example exists, state the missing convention instead of inventing a new architecture.",
-  "Skip this exploration for clearly scoped single-file changes.",
-  "Propose all workspace changes only through applyEdit.",
-  "After reading the relevant files, call applyEdit immediately with the complete change proposal.",
-  "Do not ask the user for textual confirmation before calling applyEdit; applyEdit opens the review interface and handles confirmation.",
+  // --- Discovery ---
+  "When you do not know what symbols exist in the codebase, call browseSymbols with a concept or partial name first to discover actual identifiers. Then use those exact names in exploreCode.",
+  "When symbols are already known, call exploreCode directly with a concise, code-oriented query using likely English identifiers.",
+  "Trace behavior from current production entry points. Ignore historical documents, tests, and unreferenced legacy modules unless the user explicitly asks about them.",
+
+  // --- Evidence sufficiency ---
+  "After each tool result, judge whether the evidence is sufficient to answer the user's question. If it is, answer immediately without calling another tool.",
+  "Call exploreCode again only for a concrete fact that is still missing. Use a query focused on that specific gap; do not repeat or overlap prior queries.",
+  "Independent read-only lookups may be issued in a single turn.",
+
+  // --- Editing ---
+  "Before editing any file, read its current content with readFile.",
+  "For changes that touch public interfaces, multiple call sites, or conventions you have not yet seen: use exploreCode to locate the closest existing implementation, then read that implementation, its direct callers, relevant types, and tests before writing.",
+  "Follow the discovered structure, naming, and error-handling patterns. If no reliable pattern exists, state the gap instead of inventing a new architecture.",
+  "Skip the exploration phase for clearly scoped single-file changes.",
+  "Propose all workspace changes through applyEdit. Call applyEdit immediately after reading the relevant files — do not ask the user for textual confirmation first.",
   "Do not claim an edit succeeded until applyEdit reports that it was applied.",
-  "Use runCommand when tests, type checks, or builds are relevant to verify a change.",
-  "If the user rejects a command, do not request the same command again.",
-  "Answer only from supported evidence and state any material limitation.",
-  "Do not invent repository facts when the tool does not provide enough evidence.",
+  "Use runCommand to run tests, type checks, or builds when relevant to verify a change. Do not repeat a command the user has rejected.",
+
+  // --- Answer quality ---
+  "Answer only from evidence returned by tools. State any material limitation when the evidence is insufficient.",
+  "Do not invent repository facts.",
+];
+
+const GRAPH_TOOL_GUIDANCE = [
+  // --- Routing decision ---
+  "You have direct tools (browseSymbols, exploreCode, readFile, applyEdit, runCommand) and one graph tool (runDynamicGraph).",
+  "Use direct tools for any task that can be answered by a single sequential chain: one call path, one file, one question at a time.",
+  "Call runDynamicGraph only when the task requires 3 or more genuinely independent explorations that produce no shared intermediate results, or when sequential steps would exhaust the direct-tool budget.",
+
+  // --- Node design ---
+  "Each graph node must be narrowly scoped to one call path, one file decision, or one bounded question. Never ask a node to enumerate the whole repository or recursively explore.",
+  "Set timeoutMs to 60000 for every model-backed node. Build one graph and report node failures rather than rebuilding equivalent graphs repeatedly.",
+
+  // --- Aggregation and data flow ---
+  "dependsOn controls scheduling only; it does not forward upstream output. To use upstream results in a downstream node, map each dependency's <node-id>.content through inputMapping.",
+  "For parallel explorations, create independent read-only nodes and aggregate all of their results yourself in the parent turn after runDynamicGraph returns.",
+
+  // --- Reviewer pattern ---
+  "Add a reviewer node only when the user explicitly requests independent review. When parallel analysis plus review is requested, make the analysis nodes independent of each other and have the single reviewer depend on all of them.",
+
+  // --- toolHints and resolvers ---
+  "toolHints must list actually available tools. For read-only nodes, valid choices are browseSymbols, exploreCode, and readFile. Do not invent tools such as listFiles or glob.",
+  "Use the resolvers field only when the task requires fanout, conditional expansion, or bounded iterative refinement. Every resolver nodeId must reference an existing initial node.",
+
+  // --- Hard constraints ---
+  "Graph nodes cannot call runDynamicGraph. Nested workflows are not supported.",
 ];
 
 const REACT_SYSTEM_PROMPT = [
@@ -55,9 +82,8 @@ const REACT_SYSTEM_PROMPT = [
 
 const AGENT_SYSTEM_PROMPT = [
   "You are LoopAgent, a coding assistant working in the current VS Code workspace.",
+  ...GRAPH_TOOL_GUIDANCE,
   ...DIRECT_TOOL_GUIDANCE,
-  "When a task has independent parts, use spawnSubagent to delegate them and waitForSubagents to collect the results before answering.",
-  "Use cancelSubagent when a delegated task is no longer needed; subagents cannot create nested workflows.",
 ].join("\n");
 
 export type CreateConfiguredAgentRunnerDeps = {
@@ -73,6 +99,7 @@ export type CreateConfiguredAgentRunnerDeps = {
   projectMemory?: ProjectMemory;
   enableWorkflowTools?: boolean;
   imageAnalysisService?: ImageAnalysisService;
+  workflowCheckpointStore?: Pick<ConversationStore, "claimWorkflowCheckpoint" | "saveWorkflowCheckpoint" | "loadWorkflowCheckpoint" | "getWorkflowCheckpointRunId" | "clearWorkflowCheckpoint">;
 };
 
 export async function createConfiguredAgentRunner(
@@ -93,8 +120,10 @@ export async function createConfiguredAgentRunner(
     thinking: config.thinking,
   });
 
+  const browseSymbolsTool = createBrowseSymbolsTool(workspaceIntelligence);
   const readOnlyTools = [
     createExploreCodeTool(workspaceIntelligence),
+    ...(browseSymbolsTool ? [browseSymbolsTool] : []),
     ...(deps.readFileTool ? [deps.readFileTool] : []),
   ];
   const parentTools = [
@@ -142,6 +171,7 @@ export async function createConfiguredAgentRunner(
     requiredToolNames: string[] | undefined,
     basePrompt: string,
     requiredAnyOfToolNames?: string[],
+    invokeTool?: ToolInvoker,
   ): AgentRunner => createReactAgentRunner({
     providerName: provider.displayName,
     tools,
@@ -157,6 +187,7 @@ export async function createConfiguredAgentRunner(
     onCheckpoint: deps.onCheckpoint,
     requiredToolNames,
     requiredAnyOfToolNames,
+    invokeTool,
     analyzeImages: deps.imageAnalysisService
       ? async (request) => {
           return await deps.imageAnalysisService!.analyzeAttachments(
@@ -175,12 +206,13 @@ export async function createConfiguredAgentRunner(
       const events = createAsyncQueue<HostToWebviewMessage>();
       const orchestrator = createWorkflowOrchestrator({
         signal: request.signal,
-        createRunner: ({ tools, role }) => {
+        createRunner: ({ tools, role, invokeTool }) => {
           const childTools = [...tools];
           const childProfile = resolveRole(role);
           return createReactAgentRunner({
             providerName: provider.displayName,
             tools: childTools,
+            invokeTool,
             modelTurn: createOpenAiReactModelTurn({ provider, tools: childTools }),
             systemPromptProvider: async () => {
               let runtimePrompt = "";
@@ -195,16 +227,21 @@ export async function createConfiguredAgentRunner(
         },
       });
       const unsubscribe = orchestrator.onEvent((event) => events.push(toHostMessage(event, request.runId)));
-      const workflowTools = createWorkflowTools({
+      const graphTools = createDynamicWorkflowTools({
         orchestrator,
         availableTools: parentTools,
+        signal: request.signal,
+        conversationId: request.conversationId,
+        runId: request.runId,
+        checkpointStore: deps.workflowCheckpointStore,
       });
-      const tools = [...parentTools, ...workflowTools];
+      const tools = [...parentTools, ...graphTools];
       const parentRunner = createParentRunner(
         tools,
         undefined,
         AGENT_SYSTEM_PROMPT,
         tools.map((tool) => tool.name),
+        (request, signal) => orchestrator.invokeTool(tools, request, signal),
       );
 
       let parentError: unknown;

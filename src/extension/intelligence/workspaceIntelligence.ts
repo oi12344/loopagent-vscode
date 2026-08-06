@@ -1,6 +1,6 @@
 import { createCodeIntelligenceContext, type CodeIntelligenceSnippet } from "./context/codeIntelligenceContext";
 import { renderCodeIntelligencePrompt } from "./context/codeIntelligencePrompt";
-import type { CodeEdge, ImportBinding, IndexDiagnostic, UnresolvedReference } from "./graph/graphTypes";
+import type { CodeEdge, CodeNode, ImportBinding, IndexDiagnostic, UnresolvedReference } from "./graph/graphTypes";
 import { createSearchIndex } from "./graph/searchIndex";
 import { createSemanticGraph } from "./graph/semanticGraph";
 import { createPythonAdapter } from "./languages/pythonAdapter";
@@ -35,9 +35,18 @@ export type WorkspaceIntelligenceDeps = {
   parserRuntime?: ParserRuntime;
 };
 
+export type SymbolRef = {
+  name: string;
+  qualifiedName: string;
+  kind: string;
+  filePath: string;
+  startLine: number;
+};
+
 export type WorkspaceIntelligence = {
   buildCodeIntelligencePrompt(query: string): Promise<string>;
   buildCodeIntelligenceResult?(query: string): Promise<CodeIntelligenceResult>;
+  browseSymbols?(query: string): Promise<SymbolRef[]>;
   getStatus(): CodeIndexStatus;
   getDiagnostics(): IndexDiagnostic[];
 };
@@ -235,6 +244,49 @@ export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): Wo
     },
     async buildCodeIntelligencePrompt(query) {
       return (await this.buildCodeIntelligenceResult!(query)).prompt;
+    },
+    async browseSymbols(query) {
+      const nodeById = new Map<string, CodeNode>();
+      const searchIdx = createSearchIndex();
+      let nodeCount = 0;
+      let stopIndexing = false;
+
+      try {
+        const files = await deps.readWorkspaceFiles();
+        const currentFilePaths = new Set(files.map((f) => f.path));
+        for (const cachedFilePath of extractionCacheByFile.keys()) {
+          if (!currentFilePaths.has(cachedFilePath)) {
+            extractionCacheByFile.delete(cachedFilePath);
+          }
+        }
+        for (const file of files) {
+          if (stopIndexing) break;
+          const adapter = adapters.find((a) => a.languageIds.includes(file.languageId));
+          if (!adapter) continue;
+          if (Buffer.byteLength(file.text, "utf8") > budgets.maxFileBytes) continue;
+          const result = await extractWorkspaceFile(file, adapter);
+          for (const node of result.nodes) {
+            if (nodeCount >= budgets.maxNodes) { stopIndexing = true; break; }
+            nodeById.set(node.id, node);
+            searchIdx.addNode(node);
+            nodeCount++;
+          }
+        }
+      } catch {
+        return [];
+      }
+
+      const nodeIds = searchIdx.search(query, 30);
+      return nodeIds
+        .map((id) => nodeById.get(id))
+        .filter((n): n is CodeNode => n !== undefined)
+        .map((n) => ({
+          name: n.name,
+          qualifiedName: n.qualifiedName,
+          kind: n.kind,
+          filePath: n.filePath,
+          startLine: n.startLine,
+        }));
     },
     getStatus() {
       return status;

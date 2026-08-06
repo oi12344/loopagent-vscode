@@ -322,7 +322,15 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       } else if (message.type === "commandApprovalResolved") {
         this.commandApprovalBroker.resolve(message.approvalId, message.approved);
       } else if (message.type === "editRevertRequested") {
-        void this.editPreviewService.revertFiles(message.notificationId, message.paths);
+        void this.editPreviewService.revertFiles(message.notificationId, message.paths).then((result) => {
+          webviewView.webview.postMessage({
+            type: "editRevertResult",
+            notificationId: message.notificationId,
+            paths: message.paths,
+            succeeded: result === "Changes were undone.",
+            message: result,
+          } satisfies HostToWebviewMessage);
+        });
       } else if (message.type === "editFileOpened") {
         void this.editPreviewService.openFilePreview(message.notificationId, message.path);
       }

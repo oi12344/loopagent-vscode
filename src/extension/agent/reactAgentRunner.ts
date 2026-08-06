@@ -3,7 +3,7 @@ import type { InterruptedRunCheckpoint } from "../../shared/chatTypes";
 import type { MemoryEvidence } from "../memory/types";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import type { ReactAgentMessage, ReactAgentRunOutcome, ReactAgentTool, ReactAgentToolRequest, ReactModelTurn } from "./reactTypes";
-import { createToolRegistry } from "./toolRegistry";
+import { createToolInvoker, type ToolInvoker } from "./toolRegistry";
 import { createDefaultReactTools } from "./tools";
 import type { ImageAnalysisContext } from "../vision/imageAnalysisService";
 
@@ -23,6 +23,7 @@ export type CreateReactAgentRunnerOptions = {
   recordMemoryRunOutcome?: (outcome: ReactAgentRunOutcome) => void | Promise<void>;
   /** 图片分析结果注入函数（由外部 extension.ts 提供） */
   analyzeImages?: (request: AgentRunRequest) => Promise<ImageAnalysisContext[]>;
+  invokeTool?: ToolInvoker;
 };
 
 export function createReactAgentRunner({
@@ -37,8 +38,9 @@ export function createReactAgentRunner({
   onCheckpoint,
   recordMemoryRunOutcome,
   analyzeImages,
+  invokeTool: configuredInvokeTool,
 }: CreateReactAgentRunnerOptions): AgentRunner {
-  const toolRegistry = createToolRegistry(tools);
+  const invokeTool = configuredInvokeTool ?? createToolInvoker(tools);
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
 
   return {
@@ -217,7 +219,7 @@ export function createReactAgentRunner({
                 };
               }
               try {
-                const result = await toolRegistry.invoke(toolRequest, signal);
+                const result = await invokeTool(toolRequest, signal);
                 return { content: result.content, succeeded: true, productive: result.productive ?? true, evidence: result.evidence };
               } catch (error) {
                 return { content: `Tool error: ${formatRunError(error)}`, succeeded: false, productive: false, evidence: [] as MemoryEvidence[] };

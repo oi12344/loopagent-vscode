@@ -497,6 +497,45 @@ describe("workflow orchestrator", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(runCalls).toBe(0);
   });
+
+  it("owns the run-scoped tool invocation and cancels active calls", async () => {
+    let observedSignal: AbortSignal | undefined;
+    const tool: ReactAgentTool = {
+      name: "runScopedTool",
+      description: "Waits until the coordinator cancels the call.",
+      inputSchema: {},
+      invoke: ({ signal }) => new Promise<string>((resolve) => {
+        observedSignal = signal;
+        signal.addEventListener("abort", () => resolve("cancelled by coordinator"), { once: true });
+      }),
+    };
+    const orchestrator = createWorkflowOrchestrator({
+      createRunner: () => runner(async function* () {}),
+    });
+    const pending = orchestrator.invokeTool(
+      [tool],
+      { id: "tool-1", name: "runScopedTool", rawArguments: "{}", input: {} },
+      new AbortController().signal,
+    );
+
+    await vi.waitFor(() => expect(observedSignal).toBeDefined());
+    orchestrator.cancelAll();
+
+    await expect(pending).resolves.toEqual({ content: "cancelled by coordinator", evidence: [] });
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it("rejects a tool that is outside the current invocation set", async () => {
+    const orchestrator = createWorkflowOrchestrator({
+      createRunner: () => runner(async function* () {}),
+    });
+
+    await expect(orchestrator.invokeTool(
+      [],
+      { id: "tool-1", name: "missingTool", rawArguments: "{}", input: {} },
+      new AbortController().signal,
+    )).rejects.toThrow("Unknown tool: missingTool");
+  });
 });
 
 const tools: ReactAgentTool[] = [

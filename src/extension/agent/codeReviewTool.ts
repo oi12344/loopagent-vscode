@@ -135,7 +135,7 @@ const analyzers: Analyzer[] = [
       for (let i = 0; i < lines.length; i++) {
         const trimmed = lines[i].trim();
         // 匹配空 catch 块: catch (...) {}
-        if (/^catch\s*\([^)]*\)\s*\{\s*\}\s*$/.test(trimmed)) {
+        if (/\bcatch\s*\([^)]*\)\s*\{\s*\}\s*$/.test(trimmed)) {
           issues.push({
             severity: "error",
             category: "bug",

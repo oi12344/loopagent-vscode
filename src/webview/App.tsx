@@ -630,14 +630,20 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
 
   function dismissAppliedEdit(notificationId: string) {
     removeAppliedEdit(notificationId);
-    vscodeApi.postMessage({ type: "editDismissRequested", notificationId });
   }
 
   function revertEditFile(notificationId: string, path: string) {
+    setAppliedEdits((current) => current.flatMap((notification) => {
+      if (notification.notificationId !== notificationId) return [notification];
+      const files = notification.files.filter((filePath) => filePath !== path);
+      const fileStats = notification.fileStats.filter((stat) => stat.path !== path);
+      return files.length > 0 ? [{ ...notification, files, fileStats }] : [];
+    }));
     vscodeApi.postMessage({ type: "editRevertRequested", notificationId, paths: [path] });
   }
 
   function revertAllEditFiles(notificationId: string) {
+    removeAppliedEdit(notificationId);
     vscodeApi.postMessage({ type: "editRevertRequested", notificationId, paths: [] });
   }
 
