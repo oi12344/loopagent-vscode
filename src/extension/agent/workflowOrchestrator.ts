@@ -9,6 +9,7 @@ import { evaluateSubagentProgress } from "./workflow/subagentProgress";
 import { determineVerificationStatus } from "./workflow/verificationDetector";
 import { evaluateTimeoutAdjustment } from "./workflow/adaptiveTimeout";
 import { extractExplorerFindings, cacheExplorerFindings } from "./workflow/explorerCache";
+import { createWorktreeManager, type WorktreeInfo, type WorktreeManager } from "./workflow/worktreeManager";
 import type { CreateSubagentConfig, SubagentResult, SubagentRoleId, SubagentRunnerFactory, SubagentStatus, WorkflowLimits } from "./workflow/types";
 import type { WorkflowDiagnosticLog } from "../../shared/workflowDiagnostics";
 import type { ProjectMemory } from "../memory/projectMemory";
@@ -32,6 +33,15 @@ export type WorkflowOrchestratorOptions = {
    * spec's revised isolation clause.
    */
   projectMemory?: ProjectMemory;
+  /**
+   * 工作区根路径（用于 worktree 隔离）
+   */
+  workspacePath?: string;
+  /**
+   * 是否为 executor 子代理启用 worktree 隔离
+   * 默认为 true（如果在 git 仓库中）
+   */
+  enableWorktreeIsolation?: boolean;
 };
 
 export type WorkflowOrchestrator = {
@@ -66,11 +76,58 @@ type SubagentEntry = {
   controller?: AbortController;
   timeout?: ReturnType<typeof setTimeout>;
   expectedGeneration?: number;
+  /** Worktree 信息（仅 executor 角色） */
+  worktree?: WorktreeInfo;
 };
 
 const MAX_DIAGNOSTIC_LOG_ENTRIES = 24;
 const MAX_DIAGNOSTIC_LOG_CHARS = 800;
 const MAX_DIAGNOSTIC_TOTAL_CHARS = 8_000;
+
+/**
+ * 修改工具请求以使用 worktree 路径
+ * 将原始工作区路径替换为 worktree 路径
+ */
+function modifyRequestForWorktree(
+  request: ReactAgentToolRequest,
+  worktreePath: string,
+  originalWorkspacePath: string,
+): ReactAgentToolRequest {
+  // 对于需要修改路径的工具，将其参数中的路径从原始工作区路径替换为 worktree 路径
+  const toolsNeedingPathModification = ["readFile", "applyEdit", "exploreCode", "browseSymbols", "runCommand"];
+
+  if (!toolsNeedingPathModification.includes(request.tool)) {
+    return request;
+  }
+
+  // 深度克隆请求以避免修改原始对象
+  const modifiedRequest = structuredClone(request);
+
+  // 递归替换参数中的路径
+  function replacePaths(obj: any): any {
+    if (typeof obj === "string") {
+      // 如果字符串包含原始工作区路径，替换为 worktree 路径
+      if (obj.includes(originalWorkspacePath)) {
+        return obj.replace(originalWorkspacePath, worktreePath);
+      }
+      return obj;
+    }
+    if (Array.isArray(obj)) {
+      return obj.map(replacePaths);
+    }
+    if (obj && typeof obj === "object") {
+      const result: any = {};
+      for (const [key, value] of Object.entries(obj)) {
+        result[key] = replacePaths(value);
+      }
+      return result;
+    }
+    return obj;
+  }
+
+  modifiedRequest.params = replacePaths(modifiedRequest.params);
+  return modifiedRequest;
+}
 
 export function summarizeSubagentMessages(messages: readonly HostToWebviewMessage[]): WorkflowDiagnosticLog[] {
   const logs: WorkflowDiagnosticLog[] = [];
@@ -134,6 +191,17 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
   let nextId = 1;
   let cancellingAll = false;
 
+  // 初始化 worktree 管理器（如果提供了工作区路径）
+  let worktreeManager: WorktreeManager | undefined;
+  let isGitRepo = false;
+  if (options.workspacePath) {
+    worktreeManager = createWorktreeManager(options.workspacePath);
+    // 异步检查是否在 git 仓库中
+    void worktreeManager.isGitRepo().then((result) => {
+      isGitRepo = result;
+    });
+  }
+
   function invokeTool(
     tools: readonly ReactAgentTool[],
     request: ReactAgentToolRequest,
@@ -188,6 +256,23 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
     if (result.status !== "completed") cancelPendingDependents(snapshot.id);
 
     recordSubagentOutcome(snapshot, settledResult, entry.expectedGeneration);
+
+    // 清理 worktree（如果存在）
+    if (entry.worktree && worktreeManager) {
+      const keepChanges = result.status === "completed" && verification.verificationStatus === "passed";
+      void worktreeManager.cleanupWorktree(entry.worktree, keepChanges).catch((error) => {
+        // 记录清理失败，但不影响子代理的结果
+        emit({
+          type: "SubagentMessage",
+          subagentId: snapshot.id,
+          message: {
+            type: "agentEvent",
+            runId: snapshot.id,
+            message: `Warning: Failed to cleanup worktree: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        });
+      });
+    }
   }
 
   function recordSubagentOutcome(
@@ -309,13 +394,50 @@ export function createWorkflowOrchestrator(options: WorkflowOrchestratorOptions)
         }, entry.timeoutMs);
       };
       scheduleProgressCheck();
+
+      // 为 executor 子代理创建 worktree（如果启用）
+      if (snapshot.role === "executor" && worktreeManager && isGitRepo && options.enableWorktreeIsolation !== false) {
+        try {
+          const worktreeInfo = await worktreeManager.createWorktree(snapshot.id, snapshot.task);
+          entry.worktree = worktreeInfo;
+          emit({
+            type: "SubagentMessage",
+            subagentId: snapshot.id,
+            message: {
+              type: "agentEvent",
+              runId: snapshot.id,
+              message: `Created isolated worktree at ${worktreeInfo.path}`,
+            },
+          });
+        } catch (error) {
+          // Worktree 创建失败不应阻止子代理运行，记录警告即可
+          emit({
+            type: "SubagentMessage",
+            subagentId: snapshot.id,
+            message: {
+              type: "agentEvent",
+              runId: snapshot.id,
+              message: `Warning: Failed to create worktree, proceeding without isolation: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          });
+        }
+      }
+
       const runner = await options.createRunner({
         subagentId: snapshot.id,
         task: snapshot.task,
         role: snapshot.role,
         signal: controller.signal,
         tools: snapshot.tools,
-        invokeTool: ((request, signal) => invokeTool(snapshot.tools, request, signal)) satisfies ToolInvoker,
+        invokeTool: ((request, signal) => {
+          // 如果有 worktree，需要将工具调用重定向到 worktree 路径
+          if (entry.worktree) {
+            // 对于文件系统相关的工具，需要修改路径参数
+            const modifiedRequest = modifyRequestForWorktree(request, entry.worktree.path, options.workspacePath!);
+            return invokeTool(snapshot.tools, modifiedRequest, signal);
+          }
+          return invokeTool(snapshot.tools, request, signal);
+        }) satisfies ToolInvoker,
       });
       if (controller.signal.aborted || entry.context.snapshot().status !== "running") return;
       let failure: string | undefined;
