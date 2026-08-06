@@ -16,7 +16,7 @@ export function createWorkflowTools({ orchestrator, availableTools }: WorkflowTo
         type: "object",
         properties: {
           task: { type: "string", minLength: 1 },
-          role: { type: "string", enum: ["explorer", "reviewer", "planner"] },
+          role: { type: "string", enum: ["explorer", "reviewer", "planner", "executor"] },
           dependsOn: { type: "array", items: { type: "string", minLength: 1 } },
           toolHints: { type: "array", items: { type: "string", minLength: 1 } },
           timeoutMs: { type: "integer", minimum: 1 },
@@ -110,7 +110,7 @@ function requireTimeout(value: unknown): number {
   return value;
 }
 
-const VALID_ROLES: ReadonlySet<string> = new Set(["explorer", "reviewer", "planner"]);
+const VALID_ROLES: ReadonlySet<string> = new Set(["explorer", "reviewer", "planner", "executor"]);
 
 function requireRole(value: unknown): SubagentRoleId {
   if (typeof value !== "string" || !VALID_ROLES.has(value)) {
