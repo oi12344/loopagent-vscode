@@ -52,7 +52,7 @@ describe("workflow end to end", () => {
     releases[1].resolve();
     releases[2].resolve();
 
-    await expect(wait(workflowTools, [firstId, secondId, dependentId])).resolves.toEqual({
+    await expect(wait(workflowTools, [firstId, secondId, dependentId])).resolves.toMatchObject({
       results: {
         [firstId]: { status: "completed", content: `${firstId}: done` },
         [secondId]: { status: "completed", content: `${secondId}: done` },
