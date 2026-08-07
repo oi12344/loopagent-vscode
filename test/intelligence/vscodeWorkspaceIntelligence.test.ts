@@ -62,6 +62,7 @@ describe("VS workspace helpers", () => {
     expect(detectWorkspaceLanguageId("scripts/tool.js")).toBe("javascript");
     expect(detectWorkspaceLanguageId("scripts/tool.jsx")).toBe("javascriptreact");
     expect(detectWorkspaceLanguageId("tools/index.py")).toBe("python");
+    expect(detectWorkspaceLanguageId("src/main/java/App.java")).toBe("java");
     expect(detectWorkspaceLanguageId("README.md")).toBeUndefined();
   });
 

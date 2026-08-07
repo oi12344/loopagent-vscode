@@ -5,7 +5,13 @@ import { Language, Parser } from "web-tree-sitter";
 import type { IndexDiagnostic } from "../graph/graphTypes";
 import type { ParsedSource, ParserRuntime, SyntaxTree } from "./parserRuntime";
 
-export type TreeSitterLanguageId = "typescript" | "typescriptreact" | "javascript" | "javascriptreact" | "python";
+export type TreeSitterLanguageId =
+  | "typescript"
+  | "typescriptreact"
+  | "javascript"
+  | "javascriptreact"
+  | "python"
+  | "java";
 
 export type TreeSitterParserRuntimeOptions = {
   wasmDirectory?: string;
@@ -20,9 +26,40 @@ const LANGUAGE_WASM_BY_ID: Record<TreeSitterLanguageId, string> = {
   javascript: "tree-sitter-javascript.wasm",
   javascriptreact: "tree-sitter-javascript.wasm",
   python: "tree-sitter-python.wasm",
+  java: "tree-sitter-java.wasm",
 };
 
 const initPromises = new Map<string, Promise<void>>();
+const languagePromises = new Map<string, Promise<Language>>();
+
+export async function getTreeSitterParser(
+  languageId: string,
+  options: TreeSitterParserRuntimeOptions = {},
+): Promise<Parser> {
+  const normalizedLanguageId = normalizeLanguageId(languageId);
+  if (!normalizedLanguageId) {
+    throw new Error(`Tree-sitter does not support language ${languageId}`);
+  }
+
+  const wasmDirectory = options.wasmDirectory ?? path.join(__dirname, "tree-sitter");
+  const parserWasmPath = options.parserWasmPath ?? path.join(wasmDirectory, "web-tree-sitter.wasm");
+  const grammarWasmDirectory = options.grammarWasmDirectory ?? wasmDirectory;
+  await initializeParser(parserWasmPath);
+
+  const wasmPath =
+    options.languageWasmPaths?.[normalizedLanguageId] ??
+    path.join(grammarWasmDirectory, LANGUAGE_WASM_BY_ID[normalizedLanguageId]);
+  const languageKey = `${parserWasmPath}:${wasmPath}`;
+  let languagePromise = languagePromises.get(languageKey);
+  if (!languagePromise) {
+    languagePromise = Language.load(wasmPath);
+    languagePromises.set(languageKey, languagePromise);
+  }
+
+  const parser = new Parser();
+  parser.setLanguage(await languagePromise);
+  return parser;
+}
 
 export function createTreeSitterParserRuntime(options: TreeSitterParserRuntimeOptions = {}): ParserRuntime {
   const wasmDirectory = options.wasmDirectory ?? path.join(__dirname, "tree-sitter");

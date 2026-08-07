@@ -58,6 +58,8 @@ function dispatch(request: SqliteWorkerRequest): unknown {
       return runtime.indexNodeSearchTokens(request.snapshot);
     case "listIndexedFiles":
       return runtime.listIndexedFiles();
+    case "getIndexedFile":
+      return runtime.getIndexedFile(request.fileUri);
     case "updateFileMetadata":
       return runtime.updateFileMetadata(request.update);
     case "removeFile":

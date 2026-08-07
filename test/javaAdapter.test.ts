@@ -1,6 +1,23 @@
+import path from "node:path";
+import { createRequire } from "node:module";
 import { describe, it, expect } from "vitest";
 import { createJavaAdapter } from "../src/extension/intelligence/languages/javaAdapter";
 import type { ParsedSource } from "../src/extension/intelligence/parser/parserRuntime";
+import { createTreeSitterParserRuntime } from "../src/extension/intelligence/parser/treeSitterRuntime";
+
+const require = createRequire(import.meta.url);
+const parserWasmPath = require.resolve("web-tree-sitter/web-tree-sitter.wasm");
+const grammarWasmDirectory = path.join(process.cwd(), "node_modules", "@vscode", "tree-sitter-wasm", "wasm");
+
+async function extractWithTree(text: string) {
+  const runtime = createTreeSitterParserRuntime({ parserWasmPath, grammarWasmDirectory });
+  const parsed = await runtime.parse("app/Sample.java", "java", text);
+  try {
+    return createJavaAdapter().extract(parsed);
+  } finally {
+    parsed.tree?.delete();
+  }
+}
 
 describe("JavaAdapter", () => {
   const adapter = createJavaAdapter();
@@ -84,5 +101,52 @@ public interface LogisticsService {
     expect(result.importBindings.length).toBeGreaterThan(0);
     const resultImport = result.importBindings.find((imp) => imp.localName === "Result");
     expect(resultImport).toBeDefined();
+  });
+
+  it("does not treat 'return null;' as a field in the regex fallback", () => {
+    const source = `
+package com.example;
+
+public class Result<T> {
+    public T get() {
+        return null;
+    }
+}
+`;
+
+    const parsed: ParsedSource = {
+      filePath: "Result.java",
+      text: source,
+      tree: null,
+    };
+
+    const result = adapter.extract(parsed);
+
+    const nullField = result.nodes.find((n) => n.kind === "property" && n.name === "null");
+    expect(nullField).toBeUndefined();
+  });
+
+  it("gives overloaded methods distinct node ids via the AST extractor", async () => {
+    const source = [
+      "package com.example;",
+      "",
+      "public class Result<T> {",
+      "    public T get() {",
+      "        return null;",
+      "    }",
+      "",
+      "    public T get(T fallback) {",
+      "        return fallback;",
+      "    }",
+      "}",
+      "",
+    ].join("\n");
+
+    const result = await extractWithTree(source);
+    const methods = result.nodes.filter((n) => n.kind === "function" && n.name === "get");
+
+    expect(methods).toHaveLength(2);
+    expect(methods[0].id).not.toBe(methods[1].id);
+    expect(new Set(result.nodes.map((n) => n.id)).size).toBe(result.nodes.length);
   });
 });

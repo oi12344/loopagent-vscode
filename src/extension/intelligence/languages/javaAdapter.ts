@@ -47,7 +47,28 @@ function extractJavaFallback(parsed: ParsedSource): ExtractionResult {
   // 简单的正则匹配来提取类、接口、方法等
   const classPattern = /^\s*(?:public|private|protected)?\s*(?:static|final|abstract)?\s*(?:class|interface|enum)\s+(\w+)/;
   const methodPattern = /^\s*(?:public|private|protected)?\s*(?:static|final|abstract|synchronized)?\s*(?:<[^>]+>\s*)?(?:[\w<>\[\]]+)\s+(\w+)\s*\(/;
-  const fieldPattern = /^\s*(?:public|private|protected)?\s*(?:static|final)?\s*[\w<>\[\]]+\s+(\w+)\s*[=;]/;
+  const fieldPattern = /^\s*(?:public|private|protected)?\s*(?:static|final)?\s*([\w<>\[\]]+)\s+(\w+)\s*[=;]/;
+  const fieldStatementKeywords = new Set([
+    "return",
+    "throw",
+    "yield",
+    "break",
+    "continue",
+    "new",
+    "if",
+    "for",
+    "while",
+    "else",
+    "do",
+    "switch",
+    "case",
+    "assert",
+    "synchronized",
+    "catch",
+    "try",
+    "super",
+    "this",
+  ]);
   const importPattern = /^\s*import\s+([\w.]+);/;
 
   let currentClass = "";
@@ -145,8 +166,8 @@ function extractJavaFallback(parsed: ParsedSource): ExtractionResult {
 
     // 提取字段（简单版本）
     const fieldMatch = line.match(fieldPattern);
-    if (fieldMatch && currentClass && !line.includes("(")) {
-      const fieldName = fieldMatch[1];
+    if (fieldMatch && currentClass && !line.includes("(") && !fieldStatementKeywords.has(fieldMatch[1])) {
+      const fieldName = fieldMatch[2];
       const fqn = packageName
         ? `${packageName}.${currentClass}.${fieldName}`
         : `${currentClass}.${fieldName}`;

@@ -73,7 +73,7 @@ export type CreateVsCodeWorkspaceIntelligenceOptions = Partial<WorkspaceIntellig
 
 const DEFAULT_MAX_FILE_BYTES = 100_000;
 const DEFAULT_MAX_WORKSPACE_FILES = 512;
-const SOURCE_INCLUDE_PATTERN = "{**/*.ts,**/*.tsx,**/*.js,**/*.jsx,**/*.py}";
+const SOURCE_INCLUDE_PATTERN = "{**/*.ts,**/*.tsx,**/*.js,**/*.jsx,**/*.py,**/*.java}";
 const SOURCE_EXCLUDE_PATTERN =
   "{**/node_modules/**,**/dist/**,**/.git/**,**/.local-vscode-*/**,**/.env,**/.env.*,**/*secret*,**/*token*,**/*api_key*,**/*apikey*}";
 

@@ -241,6 +241,29 @@ export class SqliteIndexStore {
     }));
   }
 
+  getIndexedFile(fileUri: string): StoredFileMetadata | undefined {
+    const row = this.database.prepare(`
+      SELECT uri, content_hash, byte_length, mtime, extractor_ver, chunker_ver
+      FROM files WHERE uri = ? AND index_state = 'ready'
+    `).get(fileUri) as {
+      uri: string;
+      content_hash: string;
+      byte_length: number;
+      mtime: number;
+      extractor_ver: number;
+      chunker_ver: number;
+    } | undefined;
+    if (!row) return undefined;
+    return {
+      uri: row.uri,
+      contentHash: row.content_hash,
+      byteLength: row.byte_length,
+      mtime: row.mtime,
+      extractorVersion: row.extractor_ver,
+      chunkerVersion: row.chunker_ver,
+    };
+  }
+
   searchCodeChunks(query: string, limit: number): StoredCodeChunk[] {
     if (!Number.isInteger(limit) || limit <= 0 || limit > MAX_CODE_SEARCH_CHUNKS) {
       throw new Error("Code chunk search limit must be a positive integer");
@@ -347,6 +370,11 @@ export class SqliteIndexStore {
       const insertNodeMetadata = this.database.prepare(`
         INSERT INTO search_node_metadata(node_id, kind, scope, file_priority, definition_match)
         VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(node_id) DO UPDATE SET
+          kind = excluded.kind,
+          scope = excluded.scope,
+          file_priority = excluded.file_priority,
+          definition_match = excluded.definition_match
       `);
 
       for (const node of snapshot.nodes) {

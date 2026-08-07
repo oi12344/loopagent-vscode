@@ -169,8 +169,9 @@ export function extractJavaAst(parsed: ParsedSource): ExtractionResult {
     const fqn = `${parentNode.id}.${methodName}`;
     const range = toCodeRange(node);
 
+    const nodeId = `${fqn}:${range.startLine}:${range.startColumn}`;
     const methodNode: CodeNode = {
-      id: fqn,
+      id: nodeId,
       kind: "function",
       name: methodName,
       qualifiedName: fqn,
@@ -184,9 +185,9 @@ export function extractJavaAst(parsed: ParsedSource): ExtractionResult {
     codeNodeBySyntaxNode.set(node, methodNode);
 
     edges.push({
-      id: `edge:${parentNode.id}:contains:${fqn}:${range.startLine}`,
+      id: `edge:${parentNode.id}:contains:${nodeId}`,
       source: parentNode.id,
-      target: fqn,
+      target: nodeId,
       kind: "contains",
       filePath: parsed.filePath,
       line: range.startLine,

@@ -7,6 +7,7 @@ import * as vscode from "vscode";
 import { createApplyEditTool } from "./extension/agent/applyEditTool";
 import { createEditPreviewService } from "./extension/agent/editPreviewService";
 import { createReadFileTool } from "./extension/agent/readFileTool";
+import { createListDirectoryTool } from "./extension/agent/listDirectoryTool";
 import { createRunCommandTool } from "./extension/agent/runCommandTool";
 import { createCommandApprovalBroker, type CommandApprovalBroker } from "./extension/agent/commandApprovalBroker";
 import { startAgentRun, type AgentRunHandle } from "./extension/agentRunner";
@@ -213,9 +214,11 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private readonly workspaceIntelligence;
   private readonly editPreviewService;
   private readonly readFileTool;
+  private readonly listDirectoryTool;
   private readonly applyEditTool;
   private readonly runCommandTool;
   private readonly commandApprovalBroker: CommandApprovalBroker;
+  private readonly commandOutputChannel: vscode.OutputChannel;
   private activeWebviewView: vscode.WebviewView | undefined;
   private readonly conversationStore: ConversationStore & { close?(): void };
   private readonly conversationManager: ConversationManager;
@@ -253,8 +256,16 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       },
     });
     this.readFileTool = createReadFileTool(vscode);
+    this.listDirectoryTool = createListDirectoryTool(vscode);
     this.applyEditTool = createApplyEditTool(this.editPreviewService);
-    this.runCommandTool = createRunCommandTool(vscode, { approve: this.commandApprovalBroker.approve });
+
+    // 创建命令执行输出通道（用于自动恢复日志）
+    this.commandOutputChannel = vscode.window.createOutputChannel('LoopAgent - Command Execution');
+    this.runCommandTool = createRunCommandTool(vscode, {
+      approve: this.commandApprovalBroker.approve,
+      enableAutoRecovery: true,
+      outputChannel: this.commandOutputChannel,
+    });
 
     // 初始化视觉服务
     this.visionService = new LocalVisionService(context.extensionPath, {
@@ -530,6 +541,7 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       runner: createConfiguredAgentRunner(this.context, model, {
         workspaceIntelligence: this.workspaceIntelligence,
         readFileTool: this.readFileTool,
+        listDirectoryTool: this.listDirectoryTool,
         applyEditTool: this.applyEditTool,
         runCommandTool: this.runCommandTool,
         imageAnalysisService: this.imageAnalysisService,

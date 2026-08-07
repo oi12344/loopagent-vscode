@@ -55,23 +55,8 @@ async function createVsCodeRuntimeContextSource(): Promise<CodeRuntimeContextSou
               },
         }
       : undefined,
-    visibleEditors: vscode.window.visibleTextEditors.map((editor) => toRuntimeDocument(editor.document)),
-    openTabs: vscode.window.tabGroups.all
-      .flatMap((group) => group.tabs)
-      .map((tab) => {
-        const uri = getTabUri(tab);
-        if (!uri) {
-          return undefined;
-        }
-
-        return {
-          path: uri.fsPath,
-          languageId: getLanguageIdForUri(uri),
-          isDirty: tab.isDirty,
-          isPinned: tab.isPinned,
-        };
-      })
-      .filter((tab): tab is NonNullable<typeof tab> => Boolean(tab)),
+    visibleEditors: [],
+    openTabs: [],
     projectFiles: await readProjectFiles(roots),
     diagnostics: vscode.languages
       .getDiagnostics()

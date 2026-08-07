@@ -209,7 +209,8 @@ export function createReactAgentRunner({
                 return { content: `Tool error: ${toolRequest.parseError}`, succeeded: false, productive: false, evidence: [] as MemoryEvidence[] };
               }
               // ponytail: 同批次并发的相同调用会漏判（记录发生在批次结束后），可接受 —— maxToolRequestsPerStep 封顶
-              const cached = succeededCalls.get(`${toolRequest.name}:${toolRequest.rawArguments}`);
+              const signature = computeToolCallSignature(toolRequest);
+              const cached = succeededCalls.get(signature);
               if (cached !== undefined) {
                 return {
                   content: `重复调用：已用相同参数调用过 ${toolRequest.name}，上次结果：${cached}。请改变查询或给出最终答案。`,
@@ -246,7 +247,7 @@ export function createReactAgentRunner({
                 output: getToolOutputPreview(content),
               } satisfies HostToWebviewMessage;
               if (outcome.succeeded) {
-                succeededCalls.set(`${request.name}:${request.rawArguments}`, content.slice(0, 200));
+                succeededCalls.set(computeToolCallSignature(request), content.slice(0, 200));
                 toolFailures.set(request.name, 0);
                 evidence.push(...outcome.evidence);
               } else {
@@ -436,4 +437,70 @@ function formatRunError(error: unknown): string {
   }
 
   return "ReAct agent run failed";
+}
+
+/**
+ * 计算工具调用签名，用于重复调用检测
+ *
+ * 对于有意义的参数差异（如不同端口、不同文件路径、不同查询），生成不同的签名。
+ * 忽略无关紧要的差异（如参数顺序、格式化空格）。
+ */
+function computeToolCallSignature(toolRequest: ReactAgentToolRequest): string {
+  const toolName = toolRequest.name;
+
+  // 尝试解析参数
+  let params: Record<string, unknown>;
+  try {
+    params = JSON.parse(toolRequest.rawArguments);
+  } catch {
+    // 解析失败，直接使用原始字符串
+    return `${toolName}:${toolRequest.rawArguments}`;
+  }
+
+  // 提取关键参数（根据工具类型）
+  const keyParts: string[] = [toolName];
+
+  // runCommand: 区分命令中的关键参数（端口号、文件路径等）
+  if (toolName === "runCommand" && typeof params.command === "string") {
+    const command = params.command;
+
+    // 提取端口号（如 :8890, :8889）
+    const portMatch = command.match(/:(\d{4,5})\b/);
+    if (portMatch) {
+      keyParts.push(`port:${portMatch[1]}`);
+    }
+
+    // 提取文件路径关键部分
+    const pathMatch = command.match(/(?:^|\s)([a-zA-Z]:[\\\/][\w\\\/.-]+|\/[\w\/.-]+|\.?\/[\w\/.-]+)/);
+    if (pathMatch) {
+      keyParts.push(`path:${pathMatch[1]}`);
+    }
+
+    // 提取命令主体（去除路径和端口后的核心部分）
+    const commandCore = command
+      .replace(/[a-zA-Z]:[\\\/][\w\\\/.-]+/g, '<path>')
+      .replace(/\/[\w\/.-]+/g, '<path>')
+      .replace(/:\d{4,5}\b/g, ':<port>')
+      .replace(/\s+/g, ' ')
+      .trim();
+    keyParts.push(`cmd:${commandCore.slice(0, 100)}`);
+
+    // cwd 参数也加入签名
+    if (typeof params.cwd === "string") {
+      keyParts.push(`cwd:${params.cwd}`);
+    }
+  }
+  // 其他工具：按参数键排序后序列化（忽略顺序差异）
+  else {
+    const sortedKeys = Object.keys(params).sort();
+    for (const key of sortedKeys) {
+      const value = params[key];
+      const valueStr = typeof value === "string"
+        ? value.slice(0, 100)
+        : JSON.stringify(value).slice(0, 100);
+      keyParts.push(`${key}:${valueStr}`);
+    }
+  }
+
+  return keyParts.join('|');
 }

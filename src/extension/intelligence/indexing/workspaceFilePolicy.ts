@@ -28,5 +28,6 @@ export function detectWorkspaceLanguageId(filePath: string): string | undefined 
   if (normalized.endsWith(".jsx")) return "javascriptreact";
   if (normalized.endsWith(".js")) return "javascript";
   if (normalized.endsWith(".py")) return "python";
+  if (normalized.endsWith(".java")) return "java";
   return undefined;
 }

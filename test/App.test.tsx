@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/webview/App";
 import type { HostToWebviewMessage, WebviewToHostMessage } from "../src/shared/messages";
+import type { ChatMessage } from "../src/shared/chatTypes";
 
 afterEach(cleanup);
 
@@ -336,6 +337,41 @@ describe("LoopAgent webview app", () => {
     expect(plan).not.toHaveTextContent("passed");
     expect(plan).not.toHaveTextContent("boom");
     expect(screen.getByText("运行验证").closest("li")).toHaveAttribute("data-agent-id", "subagent-1");
+  });
+
+  it("bounds the number of restored messages rendered in the chat log", () => {
+    render(<App />);
+
+    const messages: ChatMessage[] = Array.from({ length: 120 }, (_, index) => ({
+      role: index % 2 === 0 ? "user" : "assistant",
+      content: `restored-${index}`,
+      runId: `run-${index}`,
+    }));
+
+    postHostMessage({ type: "conversationRestored", conversationId: "conv-large", messages });
+
+    expect(screen.getByText("restored-119")).toBeInTheDocument();
+    expect(screen.queryByText("restored-0")).not.toBeInTheDocument();
+    expect(screen.getByText(/earlier messages hidden/i)).toBeInTheDocument();
+  });
+
+  it("bounds the rendered process steps while keeping the total count", () => {
+    render(<App />);
+
+    postHostMessage({ type: "assistantStarted", runId: "run-large", provider: "LoopAgent" });
+    for (let index = 0; index < 80; index += 1) {
+      postHostMessage({
+        type: "toolCallStarted",
+        runId: "run-large",
+        callId: `call-${index}`,
+        toolName: "runCommand",
+        input: `echo ${index}`,
+      });
+    }
+
+    expect(screen.getByText("80 steps")).toBeInTheDocument();
+    expect(screen.queryByText("echo 0")).not.toBeInTheDocument();
+    expect(screen.getByText("echo 79")).toBeInTheDocument();
   });
 
   it("marks the parent workflow summary cancelled when the run is interrupted", () => {

@@ -15,6 +15,11 @@ src/**
 test/**
 dist/test/**
 *.vsix
+tmp_*
+temp_*
+check_*.js
+query_*.js
+read_*.js
 package-lock.json
 tsconfig.json
 vitest.config.ts

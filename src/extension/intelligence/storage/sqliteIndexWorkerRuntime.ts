@@ -29,6 +29,7 @@ export type SqliteWorkerStore = Pick<
   | "applyFileSnapshot"
   | "indexNodeSearchTokens"
   | "listIndexedFiles"
+  | "getIndexedFile"
   | "updateFileMetadata"
   | "removeFile"
   | "searchCodeChunks"
@@ -46,6 +47,7 @@ export type SqliteIndexWorkerRuntime = {
   applyFileSnapshot(snapshot: ExtractionSnapshot): void;
   indexNodeSearchTokens(snapshot: ExtractionSnapshot): void;
   listIndexedFiles(): StoredFileMetadata[];
+  getIndexedFile(fileUri: string): StoredFileMetadata | undefined;
   updateFileMetadata(update: FileMetadataUpdate): void;
   removeFile(fileUri: string): void;
   searchCodeChunks(query: string, limit: number): StoredCodeChunk[];
@@ -217,6 +219,9 @@ export function createSqliteIndexWorkerRuntime(deps: RuntimeDependencies): Sqlit
     },
     listIndexedFiles() {
       return requireStore().listIndexedFiles();
+    },
+    getIndexedFile(fileUri) {
+      return requireStore().getIndexedFile(fileUri);
     },
     updateFileMetadata(update) {
       runWriter((activeStore, activeOwner) => activeStore.updateFileMetadata(activeOwner, update));

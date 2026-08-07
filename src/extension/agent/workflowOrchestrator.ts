@@ -88,45 +88,61 @@ const MAX_DIAGNOSTIC_TOTAL_CHARS = 8_000;
  * 修改工具请求以使用 worktree 路径
  * 将原始工作区路径替换为 worktree 路径
  */
-function modifyRequestForWorktree(
+const TOOLS_NEEDING_WORKTREE_PATH_MODIFICATION = new Set([
+  "readFile",
+  "applyEdit",
+  "exploreCode",
+  "browseSymbols",
+  "runCommand",
+]);
+
+export function modifyRequestForWorktree(
   request: ReactAgentToolRequest,
   worktreePath: string,
   originalWorkspacePath: string,
 ): ReactAgentToolRequest {
   // 对于需要修改路径的工具，将其参数中的路径从原始工作区路径替换为 worktree 路径
-  const toolsNeedingPathModification = ["readFile", "applyEdit", "exploreCode", "browseSymbols", "runCommand"];
-
-  if (!toolsNeedingPathModification.includes(request.tool)) {
+  if (!TOOLS_NEEDING_WORKTREE_PATH_MODIFICATION.has(request.name)) {
+    return request;
+  }
+  if (!originalWorkspacePath) {
     return request;
   }
 
-  // 深度克隆请求以避免修改原始对象
-  const modifiedRequest = structuredClone(request);
-
   // 递归替换参数中的路径
-  function replacePaths(obj: any): any {
-    if (typeof obj === "string") {
+  const replacePaths = (value: unknown): unknown => {
+    if (typeof value === "string") {
       // 如果字符串包含原始工作区路径，替换为 worktree 路径
-      if (obj.includes(originalWorkspacePath)) {
-        return obj.replace(originalWorkspacePath, worktreePath);
-      }
-      return obj;
+      return value.split(originalWorkspacePath).join(worktreePath);
     }
-    if (Array.isArray(obj)) {
-      return obj.map(replacePaths);
+    if (Array.isArray(value)) {
+      return value.map(replacePaths);
     }
-    if (obj && typeof obj === "object") {
-      const result: any = {};
-      for (const [key, value] of Object.entries(obj)) {
-        result[key] = replacePaths(value);
-      }
-      return result;
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, replacePaths(entry)]),
+      );
     }
-    return obj;
+    return value;
+  };
+
+  const modifiedInput = replacePaths(request.input);
+
+  // `input` 是工具实际执行使用的参数（见 toolRegistry.invokeRegisteredTool），而
+  // `rawArguments` 被 computeToolCallSignature 用于重复调用去重。两者必须保持一致，
+  // 否则去重签名看到原路径、实际执行走 worktree 路径。这里从替换后的 input 重新序列化，
+  // 而不是对原 JSON 文本做替换 —— Windows 路径在 JSON 里是转义的（E:\\zz\\...），
+  // 按未转义路径做字符串替换匹配不到。
+  let modifiedRawArguments = request.rawArguments;
+  if (request.parseError === undefined) {
+    try {
+      modifiedRawArguments = JSON.stringify(modifiedInput);
+    } catch {
+      // 含循环引用等无法序列化的输入：保留原文本，input 的替换仍然生效。
+    }
   }
 
-  modifiedRequest.params = replacePaths(modifiedRequest.params);
-  return modifiedRequest;
+  return { ...request, input: modifiedInput, rawArguments: modifiedRawArguments };
 }
 
 export function summarizeSubagentMessages(messages: readonly HostToWebviewMessage[]): WorkflowDiagnosticLog[] {

@@ -27,6 +27,11 @@ const TREE_SITTER_ASSETS = [
     sourcePath: path.join("wasm", "tree-sitter-python.wasm"),
     outputName: "tree-sitter-python.wasm",
   },
+  {
+    packageName: "@vscode/tree-sitter-wasm",
+    sourcePath: path.join("wasm", "tree-sitter-java.wasm"),
+    outputName: "tree-sitter-java.wasm",
+  },
 ];
 
 async function copyTreeSitterAssets({ outputDir = path.join(__dirname, "..", "dist", "tree-sitter") } = {}) {

@@ -5,6 +5,22 @@ import type { RunCommandApprovalRequest, RunCommandApprover } from "./runCommand
 
 const APPROVAL_TIMEOUT_MS = 5 * 60_000;
 
+// 安全命令白名单（与 runCommandTool.ts 保持一致）
+const SAFE_COMMAND_PATTERNS = [
+  /^git\s+/i,                    // git 命令
+  /^npm\s+(install|ci|test)/i,   // npm 安全命令
+  /^findstr\s+/i,                // Windows findstr
+  /^grep\s+/i,                   // grep 搜索
+  /^ls\s+/i,                     // 列出文件
+  /^dir\s+/i,                    // Windows dir
+  /^cat\s+/i,                    // 读取文件
+  /^type\s+/i,                   // Windows type
+];
+
+function isSafeCommand(command: string): boolean {
+  return SAFE_COMMAND_PATTERNS.some((pattern) => pattern.test(command));
+}
+
 export type CommandApprovalBrokerHost = {
   /** 面板当前是否可见；不可见时直接走原生弹窗，不发 webview 卡片 */
   isWebviewVisible(): boolean;
@@ -24,6 +40,11 @@ export function createCommandApprovalBroker(host: CommandApprovalBrokerHost): Co
 
   return {
     async approve(request: RunCommandApprovalRequest): Promise<boolean> {
+      // 白名单命令自动通过，不显示审批卡片
+      if (isSafeCommand(request.command)) {
+        return true;
+      }
+
       if (!host.isWebviewVisible()) {
         return host.fallbackApprove(request);
       }

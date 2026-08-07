@@ -3,6 +3,7 @@ import { renderCodeIntelligencePrompt } from "./context/codeIntelligencePrompt";
 import type { CodeEdge, CodeNode, ImportBinding, IndexDiagnostic, UnresolvedReference } from "./graph/graphTypes";
 import { createSearchIndex } from "./graph/searchIndex";
 import { createSemanticGraph } from "./graph/semanticGraph";
+import { createJavaAdapter } from "./languages/javaAdapter";
 import { createPythonAdapter } from "./languages/pythonAdapter";
 import { createTypeScriptAdapter } from "./languages/typescriptAdapter";
 import type { ExtractionResult, LanguageAdapter } from "./languages/languageAdapter";
@@ -77,7 +78,7 @@ type CachedExtraction = {
 // vscodeWorkspaceIntelligence.ts which tries persistent SQLite first, then falls back to this.
 // Do not add persistence logic here; keep it pure in-memory for isolation from the SQLite layer.
 export function createWorkspaceIntelligence(deps: WorkspaceIntelligenceDeps): WorkspaceIntelligence {
-  const adapters = [createTypeScriptAdapter(), createPythonAdapter()];
+  const adapters = [createTypeScriptAdapter(), createPythonAdapter(), createJavaAdapter()];
   const budgets = { ...DEFAULT_BUDGETS, ...deps.budgets };
   const extractionCacheByFile = createLruCache<string, CachedExtraction>(budgets.maxFiles);
   let status: CodeIndexStatus = "idle";

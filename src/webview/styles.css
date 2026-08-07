@@ -114,6 +114,13 @@ h1 {
   padding-right: 2px;
 }
 
+.chat-log-window-note,
+.process-window-note {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  margin: 0;
+}
+
 .empty-state {
   align-self: center;
   justify-self: center;

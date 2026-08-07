@@ -37,6 +37,7 @@ export type SqliteIndexWorkerClient = {
   applyFileSnapshot(snapshot: ExtractionSnapshot): Promise<void>;
   indexNodeSearchTokens(snapshot: ExtractionSnapshot): Promise<void>;
   listIndexedFiles(): Promise<StoredFileMetadata[]>;
+  getIndexedFile(fileUri: string): Promise<StoredFileMetadata | undefined>;
   updateFileMetadata(update: FileMetadataUpdate): Promise<void>;
   removeFile(fileUri: string): Promise<void>;
   searchCodeChunks(query: string, limit: number): Promise<StoredCodeChunk[]>;
@@ -94,6 +95,10 @@ class DefaultSqliteIndexWorkerClient implements SqliteIndexWorkerClient {
 
   listIndexedFiles(): Promise<StoredFileMetadata[]> {
     return this.request((id) => ({ id, kind: "listIndexedFiles" }));
+  }
+
+  getIndexedFile(fileUri: string): Promise<StoredFileMetadata | undefined> {
+    return this.request((id) => ({ id, kind: "getIndexedFile", fileUri }));
   }
 
   updateFileMetadata(update: FileMetadataUpdate): Promise<void> {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { createJavaAdapter } from "../languages/javaAdapter";
 import { createPythonAdapter } from "../languages/pythonAdapter";
 import { createTypeScriptAdapter } from "../languages/typescriptAdapter";
 import type { ParserRuntime } from "../parser/parserRuntime";
@@ -8,7 +9,7 @@ import type { IndexChange } from "../storage/sqliteIndexStore";
 import { buildExtractionSnapshot } from "./extractionSnapshot";
 import { isIndexableWorkspacePath } from "./workspaceFilePolicy";
 
-const EXTRACTOR_VERSION = 1;
+const EXTRACTOR_VERSION = 2;
 const CHUNKER_VERSION = 2;
 
 export type WorkspaceFileRef = {
@@ -23,6 +24,7 @@ type WorkspaceIndexerStore = Pick<
   SqliteIndexWorkerClient,
   | "getStatus"
   | "listIndexedFiles"
+  | "getIndexedFile"
   | "enqueueChanges"
   | "claimNextJob"
   | "applyFileSnapshot"
@@ -51,7 +53,7 @@ export type WorkspaceIndexer = {
 };
 
 export function createWorkspaceIndexer(deps: WorkspaceIndexerDependencies): WorkspaceIndexer {
-  const adapters = [createTypeScriptAdapter(), createPythonAdapter()];
+  const adapters = [createTypeScriptAdapter(), createPythonAdapter(), createJavaAdapter()];
   let disposed = false;
   let started = false;
   let drainPromise: Promise<void> | undefined;
@@ -93,7 +95,7 @@ export function createWorkspaceIndexer(deps: WorkspaceIndexerDependencies): Work
       return;
     }
     const contentHash = createHash("sha256").update(text, "utf8").digest("hex");
-    const stored = (await deps.store.listIndexedFiles()).find((candidate) => candidate.uri === fileUri);
+    const stored = await deps.store.getIndexedFile(fileUri);
     const metadata = {
       uri: fileUri,
       byteLength,
@@ -150,12 +152,22 @@ export function createWorkspaceIndexer(deps: WorkspaceIndexerDependencies): Work
         if (!stored) {
           changes.push({ fileUri: file.uri, eventKind: "create" });
         } else if (
-          stored.mtime !== file.mtime ||
-          stored.byteLength !== file.byteLength ||
           stored.extractorVersion !== EXTRACTOR_VERSION ||
           stored.chunkerVersion !== CHUNKER_VERSION
         ) {
           changes.push({ fileUri: file.uri, eventKind: "change" });
+        } else if (stored.mtime !== file.mtime || stored.byteLength !== file.byteLength) {
+          // mtime or byteLength changed - read file and check contentHash to avoid false rebuilds
+          try {
+            const text = await deps.readFile(file.uri);
+            const contentHash = createHash("sha256").update(text, "utf8").digest("hex");
+            if (stored.contentHash !== contentHash) {
+              changes.push({ fileUri: file.uri, eventKind: "change" });
+            }
+          } catch {
+            // Read failed - treat as needing reindex
+            changes.push({ fileUri: file.uri, eventKind: "change" });
+          }
         }
       }
       for (const stored of storedFiles) {

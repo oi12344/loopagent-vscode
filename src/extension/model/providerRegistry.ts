@@ -32,6 +32,11 @@ const DIRECT_TOOL_GUIDANCE = [
   "When symbols are already known, call exploreCode directly with a concise, code-oriented query using likely English identifiers.",
   "Trace behavior from current production entry points. Ignore historical documents, tests, and unreferenced legacy modules unless the user explicitly asks about them.",
 
+  // --- Directory Exploration ---
+  "When exploring directory structure (finding modules, locating configuration files, understanding project layout), use listDirectory instead of runCommand('dir') or runCommand('ls').",
+  "listDirectory returns structured output and is faster than shell commands for directory listing.",
+  "For code-level queries (finding functions, classes, interfaces), prefer browseSymbols and exploreCode over directory traversal.",
+
   // --- Evidence sufficiency ---
   "After each tool result, judge whether the evidence is sufficient to answer the user's question. If it is, answer immediately without calling another tool.",
   "Call exploreCode again only for a concrete fact that is still missing. Use a query focused on that specific gap; do not repeat or overlap prior queries.",
@@ -40,11 +45,22 @@ const DIRECT_TOOL_GUIDANCE = [
   // --- Editing ---
   "Before editing any file, read its current content with readFile.",
   "For changes that touch public interfaces, multiple call sites, or conventions you have not yet seen: use exploreCode to locate the closest existing implementation, then read that implementation, its direct callers, relevant types, and tests before writing.",
+  "For single-file changes: if the file exports functions, types, or classes, search for their usages with exploreCode before editing. If the change is to private implementation details only, direct editing may suffice.",
   "Follow the discovered structure, naming, and error-handling patterns. If no reliable pattern exists, state the gap instead of inventing a new architecture.",
-  "Skip the exploration phase for clearly scoped single-file changes.",
-  "Propose all workspace changes through applyEdit. Call applyEdit immediately after reading the relevant files — do not ask the user for textual confirmation first.",
+  "Propose all workspace changes through applyEdit. When evidence is insufficient (unfamiliar codebase, missing context, unclear impact), present your understanding and proposed approach first. When the change is well-scoped and you have verified all affected code, call applyEdit directly.",
   "Do not claim an edit succeeded until applyEdit reports that it was applied.",
   "Use runCommand to run tests, type checks, or builds when relevant to verify a change. Do not repeat a command the user has rejected.",
+
+  // --- runCommand Auto-Recovery & Background Mode ---
+  "runCommand returns structured JSON with alternatives when commands fail. Parse the JSON response to access:",
+  "  - success: boolean indicating if the command succeeded",
+  "  - error.type: categorized error (not_found, execution_failure, timeout, permission, buffer_overflow)",
+  "  - error.alternatives: array of recovery strategies ranked by successProbability",
+  "When runCommand fails, immediately parse error.alternatives and execute the first action where automation='auto' and successProbability>0.7.",
+  "Do NOT ask the user for permission when alternatives have automation='auto' and risk='low' — execute them directly.",
+  "Do NOT retry the same command more than 3 times. Switch strategies using the alternatives array instead.",
+  "Example: mvn fails with 'command not found' → alternatives suggest './mvnw' with 0.95 probability → execute './mvnw' immediately.",
+  "For long-running processes (servers, services, build tasks), use runCommand with background:true to prevent timeout termination. The process will detach and return immediately with its PID.",
 
   // --- Answer quality ---
   "Answer only from evidence returned by tools. State any material limitation when the evidence is insufficient.",
@@ -72,6 +88,7 @@ export type CreateConfiguredAgentRunnerDeps = {
   workspaceIntelligence?: WorkspaceIntelligence;
   parserRuntime?: ParserRuntime;
   readFileTool?: ReactAgentTool;
+  listDirectoryTool?: ReactAgentTool;
   applyEditTool?: ReactAgentTool;
   runCommandTool?: ReactAgentTool;
   onCheckpoint?: (checkpoint: InterruptedRunCheckpoint) => void | Promise<void>;
@@ -105,6 +122,7 @@ export async function createConfiguredAgentRunner(
     createExploreCodeTool(workspaceIntelligence),
     ...(browseSymbolsTool ? [browseSymbolsTool] : []),
     ...(deps.readFileTool ? [deps.readFileTool] : []),
+    ...(deps.listDirectoryTool ? [deps.listDirectoryTool] : []),
   ];
   const parentTools = [
     ...readOnlyTools,

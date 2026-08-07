@@ -17,6 +17,7 @@ export type SqliteWorkerRequest =
   | { id: number; kind: "applyFileSnapshot"; snapshot: ExtractionSnapshot }
   | { id: number; kind: "indexNodeSearchTokens"; snapshot: ExtractionSnapshot }
   | { id: number; kind: "listIndexedFiles" }
+  | { id: number; kind: "getIndexedFile"; fileUri: string }
   | { id: number; kind: "updateFileMetadata"; update: FileMetadataUpdate }
   | { id: number; kind: "removeFile"; fileUri: string }
   | { id: number; kind: "searchCodeChunks"; query: string; limit: number }

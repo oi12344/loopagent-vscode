@@ -45,6 +45,8 @@ type AssistantTurn = {
 };
 
 type ChatTurn = UserTurn | AssistantTurn;
+const MAX_RENDERED_TURNS = 80;
+const MAX_RENDERED_PROCESS_STEPS = 40;
 type InterruptedRun = { runId: string; conversationId: string; task: string };
 type WorkflowPlanStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 type WorkflowNodeProcessEvent = {
@@ -775,24 +777,29 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
             <TaskSuggestions onSelect={submitTask} />
           </>
         ) : (
-          turns.map((turn) => {
-            if (turn.role === "user") {
-              return <UserMessage key={turn.id} turn={turn} />;
-            }
+          <>
+            {turns.length > MAX_RENDERED_TURNS ? (
+              <p className="chat-log-window-note">Earlier messages hidden; showing the latest {MAX_RENDERED_TURNS}.</p>
+            ) : null}
+            {turns.slice(-MAX_RENDERED_TURNS).map((turn) => {
+              if (turn.role === "user") {
+                return <UserMessage key={turn.id} turn={turn} />;
+              }
 
-            return (
-              <AssistantMessage
-                key={turn.id}
-                turn={turn}
-                workflow={workflowProgress[turn.runId]}
-                onResume={
-                  turn.status === "interrupted" && interruptedRun?.runId === turn.runId
-                    ? resumeInterruptedRun
-                    : undefined
-                }
-              />
-            );
-          })
+              return (
+                <AssistantMessage
+                  key={turn.id}
+                  turn={turn}
+                  workflow={workflowProgress[turn.runId]}
+                  onResume={
+                    turn.status === "interrupted" && interruptedRun?.runId === turn.runId
+                      ? resumeInterruptedRun
+                      : undefined
+                  }
+                />
+              );
+            })}
+          </>
         )}
         {pendingApprovals.length > 0 ? (
           <div className="command-approvals" aria-label="Pending command approvals">
@@ -1118,14 +1125,14 @@ function EditApprovalCard({
   );
 }
 
-function UserMessage({ turn }: { turn: UserTurn }) {
+const UserMessage = React.memo(function UserMessage({ turn }: { turn: UserTurn }) {
   return (
     <article className="message message-user message-user-right">
       <div className="message-meta">You</div>
       <div className="message-body">{turn.content}</div>
     </article>
   );
-}
+});
 
 function formatAnswerInline(text: string): React.ReactNode[] {
   return text.split(/(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__)/g).map((part, index) => {
@@ -1139,7 +1146,7 @@ function formatAnswerInline(text: string): React.ReactNode[] {
   });
 }
 
-function AssistantAnswer({ content }: { content: string }) {
+const AssistantAnswer = React.memo(function AssistantAnswer({ content }: { content: string }) {
   const lines = content.replace(/\\n/g, "\n").replace(/\r\n?/g, "\n").split("\n");
   const blocks: React.ReactNode[] = [];
   let paragraph: string[] = [];
@@ -1268,7 +1275,7 @@ function AssistantAnswer({ content }: { content: string }) {
   }
 
   return <>{blocks}</>;
-}
+});
 
 function upsertAssistantActivity(activities: AssistantActivity[], next: AssistantActivity): AssistantActivity[] {
   const index = activities.findIndex((activity) => activity.id === next.id);
@@ -1294,7 +1301,7 @@ function formatActivityIcon(status: AssistantActivity["status"]): string {
   return "·";
 }
 
-function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; workflow?: WorkflowProgress; onResume?: () => void }) {
+const AssistantMessage = React.memo(function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; workflow?: WorkflowProgress; onResume?: () => void }) {
   const [isProcessOpen, setIsProcessOpen] = React.useState(turn.status !== "done");
   const previousStatus = React.useRef(turn.status);
 
@@ -1336,7 +1343,7 @@ function AssistantMessage({ turn, workflow, onResume }: { turn: AssistantTurn; w
       ) : null}
     </article>
   );
-}
+});
 
 function AssistantProcess({
   turn,
@@ -1347,7 +1354,8 @@ function AssistantProcess({
   isOpen: boolean;
   onToggle: (open: boolean) => void;
 }) {
-  const timelineActivities = turn.activity;
+  const timelineActivities = turn.activity.slice(-MAX_RENDERED_PROCESS_STEPS);
+  const hiddenActivityCount = turn.activity.length - timelineActivities.length;
   const latestActivity = turn.activity[turn.activity.length - 1];
   const latestLabel = latestActivity?.label;
   const activityCount = turn.activity.length || 1;
@@ -1372,33 +1380,38 @@ function AssistantProcess({
         <span className="process-summary-count">{activityCount} {activityCount === 1 ? "step" : "steps"}</span>
       </summary>
       {timelineActivities.length > 0 ? (
-        <ol className="process-timeline">
-          {timelineActivities.map((activity) => (
-            <li
-              key={activity.id}
-              className={`process-timeline-step process-timeline-${activity.status}${activity.kind === "tool" ? " process-timeline-tool" : ""}`}
-              data-call-id={activity.kind === "tool" ? activity.id.slice("tool:".length) : undefined}
-            >
-              <span className="process-timeline-marker" aria-hidden="true">{formatActivityIcon(activity.status)}</span>
-              <span className="process-timeline-copy">
-                <span className="process-timeline-label">{activity.label}</span>
-                {activity.detail ? <span className="process-timeline-detail">{activity.detail}</span> : null}
-                {activity.input !== undefined ? (
-                  <details className="process-timeline-field" data-field="input">
-                    <summary className="process-timeline-field-label">Input</summary>
-                    <code className="process-timeline-value">{activity.input}</code>
-                  </details>
-                ) : null}
-                {activity.output !== undefined ? (
-                  <details className="process-timeline-field" data-field="output">
-                    <summary className="process-timeline-field-label">Output</summary>
-                    <code className="process-timeline-value">{activity.output}</code>
-                  </details>
-                ) : null}
-              </span>
-            </li>
-          ))}
-        </ol>
+        <>
+          {hiddenActivityCount > 0 ? (
+            <p className="process-window-note">Showing the latest {MAX_RENDERED_PROCESS_STEPS} steps.</p>
+          ) : null}
+          <ol className="process-timeline">
+            {timelineActivities.map((activity) => (
+              <li
+                key={activity.id}
+                className={`process-timeline-step process-timeline-${activity.status}${activity.kind === "tool" ? " process-timeline-tool" : ""}`}
+                data-call-id={activity.kind === "tool" ? activity.id.slice("tool:".length) : undefined}
+              >
+                <span className="process-timeline-marker" aria-hidden="true">{formatActivityIcon(activity.status)}</span>
+                <span className="process-timeline-copy">
+                  <span className="process-timeline-label">{activity.label}</span>
+                  {activity.detail ? <span className="process-timeline-detail">{activity.detail}</span> : null}
+                  {activity.input !== undefined ? (
+                    <details className="process-timeline-field" data-field="input">
+                      <summary className="process-timeline-field-label">Input</summary>
+                      <code className="process-timeline-value">{activity.input}</code>
+                    </details>
+                  ) : null}
+                  {activity.output !== undefined ? (
+                    <details className="process-timeline-field" data-field="output">
+                      <summary className="process-timeline-field-label">Output</summary>
+                      <code className="process-timeline-value">{activity.output}</code>
+                    </details>
+                  ) : null}
+                </span>
+              </li>
+            ))}
+          </ol>
+        </>
       ) : null}
     </details>
   );
