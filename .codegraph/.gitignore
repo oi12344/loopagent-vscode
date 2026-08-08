@@ -1,6 +1,0 @@
-# Code graph index - auto-generated
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
-daemon.log
-daemon.pid

@@ -10,3 +10,9 @@ debug.log
 .loopagent/
 .claude/
 graphify-out/
+.codegraph/
+.e2e-multifile-scratch/
+.playwright-mcp/
+.superpowers/sdd/
+.vscode/
+.zcode/plans/

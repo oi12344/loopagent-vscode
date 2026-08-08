@@ -59,6 +59,7 @@
 - [搜索索引优化实施计划](plans/2026-07-18-search-index-optimization-plan.md)
 
 ## 设计文档（specs/）
+- [本地目录不提交设计](specs/2026-08-09-ignore-local-directories-design.md)
 
 - [动态工作流检查点与可恢复执行设计](specs/2026-08-01-workflow-checkpoint-recovery-design.md)
 
