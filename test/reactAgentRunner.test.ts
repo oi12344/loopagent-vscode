@@ -1541,6 +1541,87 @@ describe("createReactAgentRunner", () => {
       expect.objectContaining({ type: "runFailed", message: expect.stringContaining("连续失败 3 次") }),
     );
   });
+
+  it("uses a clean model turn to summarize an unhandled parent error", async () => {
+    let turn = 0;
+    const recordMemoryRunOutcome = vi.fn();
+    const runner = createReactAgentRunner({
+      maxSteps: 1,
+      unhandledErrorMode: "summarize-and-finish",
+      recordMemoryRunOutcome,
+      tools: [{
+        name: "readFile",
+        description: "Read a file.",
+        inputSchema: { type: "object" },
+        invoke: async () => "observed workspace",
+      }],
+      modelTurn: async ({ messages, toolChoice }) => {
+        turn += 1;
+        if (turn === 1) return toolRequest("read-1", "readFile", { path: "src/example.ts" });
+        if (turn === 2) {
+          throw new Error("The reasoning_content in thinking mode must be passed back to the API");
+        }
+
+        expect(toolChoice).toBe("none");
+        expect(messages.every((message) => message.role === "system" || message.role === "user")).toBe(true);
+        expect(messages.at(-1)?.content).toContain("observed workspace");
+        return { kind: "final", content: "Recovered summary" };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(turn).toBe(3);
+    expect(messages).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "Recovered summary" });
+    expect(messages).toContainEqual({ type: "assistantFinished", runId: "run-1" });
+    expect(messages).toContainEqual({ type: "runFinished", runId: "run-1" });
+    expect(messages).not.toContainEqual(expect.objectContaining({ type: "runFailed" }));
+    expect(recordMemoryRunOutcome).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed",
+      finalContent: "Recovered summary",
+    }));
+  });
+
+  it("summarizes a child error while preserving its failed status", async () => {
+    let turn = 0;
+    const runner = createReactAgentRunner({
+      unhandledErrorMode: "summarize-and-fail",
+      modelTurn: async ({ messages, toolChoice }) => {
+        turn += 1;
+        if (turn === 1) throw new Error("child execution failed");
+        expect(toolChoice).toBe("none");
+        expect(messages.every((message) => message.role === "system" || message.role === "user")).toBe(true);
+        return { kind: "final", content: "Child recovery summary" };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(turn).toBe(2);
+    expect(messages).toContainEqual({ type: "runFailed", runId: "run-1", message: "Child recovery summary" });
+    expect(messages).not.toContainEqual(expect.objectContaining({ type: "runFinished" }));
+  });
+
+  it("returns a safe local summary when the recovery model is unavailable", async () => {
+    const modelTurn = vi.fn(async () => {
+      throw new Error("Bearer sk-secret-provider-error");
+    });
+    const runner = createReactAgentRunner({
+      unhandledErrorMode: "summarize-and-finish",
+      modelTurn,
+    });
+
+    const messages = await collectRunnerMessages(runner);
+    const finalMessage = messages.find(
+      (message): message is Extract<HostToWebviewMessage, { type: "assistantDelta" }> => message.type === "assistantDelta",
+    );
+
+    expect(modelTurn).toHaveBeenCalledTimes(2);
+    expect(finalMessage?.content).toContain("恢复模型不可用");
+    expect(finalMessage?.content).not.toContain("sk-secret-provider-error");
+    expect(messages).toContainEqual({ type: "runFinished", runId: "run-1" });
+    expect(messages).not.toContainEqual(expect.objectContaining({ type: "runFailed" }));
+  });
 });
 
 function toolRequest(id: string, name: string, input: unknown) {

@@ -21,7 +21,9 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
         stream: async function* ({ messages, tools }) {
           capturedMessages.push(messages);
           capturedToolNames.push((tools ?? []).map((tool) => tool.function.name));
-          yield { type: "contentDelta", content: "ask works" };
+          const isRecovery = messages.at(-1)?.role === "user"
+            && messages.at(-1)?.content.includes("internal execution error");
+          yield { type: "contentDelta", content: isRecovery ? "Recovered summary" : "ask works" };
           yield { type: "finishReason", reason: "stop" };
         },
       }),
@@ -35,12 +37,14 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     );
 
     // 未调用任何真实工具就直接给出最终答案：应被 requiredAnyOfToolNames 门禁拦下并最终失败
-    await expect(collectHostMessages(runner, "Explain this code")).resolves.toContainEqual({
-      type: "runFailed",
-      runId: "run-1",
-      message: expect.stringContaining("one of [exploreCode, spawnSubagent, waitForSubagents, cancelSubagent]"),
-    });
+    const hostMessages = await collectHostMessages(runner, "Explain this code");
+
+    expect(hostMessages).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "Recovered summary" });
+    expect(hostMessages).toContainEqual({ type: "runFinished", runId: "run-1" });
+    expect(hostMessages).not.toContainEqual(expect.objectContaining({ type: "runFailed" }));
     expect(capturedToolNames[0]).toEqual(["exploreCode", "spawnSubagent", "waitForSubagents", "cancelSubagent"]);
+    expect(capturedToolNames.at(-1)).toEqual([]);
+    expect(capturedMessages.at(-1)?.every((message) => message.role === "system" || message.role === "user")).toBe(true);
     const systemPrompt = capturedMessages[0]
       ?.filter((message) => message.role === "system")
       .map((message) => message.content)

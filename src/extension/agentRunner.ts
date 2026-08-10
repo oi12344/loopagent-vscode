@@ -77,6 +77,7 @@ async function pumpRunMessages(
   request: AgentRunRequest,
   postMessage: PostHostMessage,
 ): Promise<void> {
+  let assistantStarted = false;
   try {
     const resolvedRunner = "then" in runner ? await runner : runner;
     if (request.signal.aborted) {
@@ -89,32 +90,30 @@ async function pumpRunMessages(
       }
 
       await postMessage(message);
+      if (message.type === "assistantStarted") assistantStarted = true;
     }
-  } catch (error) {
+  } catch {
     if (request.signal.aborted) {
       return;
     }
 
-    await postMessage({
-      type: "runFailed",
-      runId: request.runId,
-      message: formatRunError(error),
-    });
+    if (!assistantStarted) {
+      await postMessage({ type: "assistantStarted", runId: request.runId, provider: "LoopAgent" });
+    }
+    await postMessage({ type: "assistantDelta", runId: request.runId, content: OUTER_RECOVERY_SUMMARY });
+    await postMessage({ type: "assistantFinished", runId: request.runId });
+    await postMessage({ type: "runFinished", runId: request.runId });
   }
 }
+
+const OUTER_RECOVERY_SUMMARY = [
+  "任务未能完成。",
+  "- 已完成：已保留错误发生前产生的进度。",
+  "- 失败：执行流程发生内部错误，且当前无法调用恢复模型。",
+  "- 剩余：未完成步骤仍需重新执行。",
+  "- 下一步：请检查模型连接和配置后重试。",
+].join("\n");
 
 function createRunId(): string {
   return `run-${Date.now().toString(36)}`;
-}
-
-function formatRunError(error: unknown): string {
-  if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message;
-  }
-
-  if (typeof error === "string" && error.trim().length > 0) {
-    return error;
-  }
-
-  return "Agent run failed";
 }

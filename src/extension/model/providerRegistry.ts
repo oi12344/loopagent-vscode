@@ -192,6 +192,7 @@ export async function createConfiguredAgentRunner(
   ): AgentRunner => createReactAgentRunner({
     providerName: provider.displayName,
     tools,
+    unhandledErrorMode: "summarize-and-finish",
     modelTurn: createOpenAiReactModelTurn({ provider, tools }),
     systemPromptProvider: createSystemPromptProvider(basePrompt),
     recordMemoryRunOutcome: async (outcome) => {
@@ -229,6 +230,7 @@ export async function createConfiguredAgentRunner(
           return createReactAgentRunner({
             providerName: provider.displayName,
             tools: childTools,
+            unhandledErrorMode: "summarize-and-fail",
             invokeTool,
             modelTurn: createOpenAiReactModelTurn({ provider, tools: childTools }),
             systemPromptProvider: async () => {

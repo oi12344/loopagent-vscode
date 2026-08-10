@@ -8,6 +8,10 @@ import { createDefaultReactTools } from "./tools";
 import type { ImageAnalysisContext } from "../vision/imageAnalysisService";
 
 const MAX_CONSECUTIVE_TOOL_FAILURES = 3;
+const MAX_RECOVERY_OBSERVATIONS = 6;
+const MAX_RECOVERY_OBSERVATION_LENGTH = 2_000;
+
+export type UnhandledErrorMode = "fail" | "summarize-and-fail" | "summarize-and-finish";
 
 export type CreateReactAgentRunnerOptions = {
   modelTurn: ReactModelTurn;
@@ -24,6 +28,7 @@ export type CreateReactAgentRunnerOptions = {
   /** 图片分析结果注入函数（由外部 extension.ts 提供） */
   analyzeImages?: (request: AgentRunRequest) => Promise<ImageAnalysisContext[]>;
   invokeTool?: ToolInvoker;
+  unhandledErrorMode?: UnhandledErrorMode;
 };
 
 export function createReactAgentRunner({
@@ -39,6 +44,7 @@ export function createReactAgentRunner({
   recordMemoryRunOutcome,
   analyzeImages,
   invokeTool: configuredInvokeTool,
+  unhandledErrorMode = "fail",
 }: CreateReactAgentRunnerOptions): AgentRunner {
   const invokeTool = configuredInvokeTool ?? createToolInvoker(tools);
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
@@ -51,6 +57,7 @@ export function createReactAgentRunner({
       let status: ReactAgentRunOutcome["status"] = "cancelled";
       let finalContent: string | undefined;
       const evidence: MemoryEvidence[] = [];
+      const messages: ReactAgentMessage[] = [];
       try {
         if (signal.aborted) {
           return;
@@ -59,9 +66,9 @@ export function createReactAgentRunner({
         yield { type: "assistantStarted", runId, provider: providerName } satisfies HostToWebviewMessage;
 
         const resumedCheckpoint = resumeState?.kind === "react" ? resumeState.checkpoint : undefined;
-        const messages: ReactAgentMessage[] = resumedCheckpoint
+        messages.push(...(resumedCheckpoint
           ? resumedCheckpoint.messages.map((message) => message as unknown as ReactAgentMessage)
-          : (request.initialMessages ?? []).map((message) => ({ ...message }));
+          : (request.initialMessages ?? []).map((message) => ({ ...message }))));
         const initialStep = resumedCheckpoint?.step ?? 1;
         const successfulTools = new Set<string>();
         let requiredToolRetries = 0;
@@ -278,7 +285,23 @@ export function createReactAgentRunner({
         }
 
         status = "failed";
-        yield { type: "runFailed", runId, message: formatRunError(error) } satisfies HostToWebviewMessage;
+        if (unhandledErrorMode === "fail") {
+          yield { type: "runFailed", runId, message: formatRunError(error) } satisfies HostToWebviewMessage;
+          return;
+        }
+
+        const summary = await summarizeUnhandledError(modelTurn, task, messages, error, signal);
+        if (signal.aborted) return;
+        finalContent = summary;
+
+        if (unhandledErrorMode === "summarize-and-fail") {
+          yield { type: "runFailed", runId, message: summary } satisfies HostToWebviewMessage;
+          return;
+        }
+
+        yield { type: "assistantDelta", runId, content: summary } satisfies HostToWebviewMessage;
+        yield { type: "assistantFinished", runId } satisfies HostToWebviewMessage;
+        yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
       } finally {
         if (recordMemoryRunOutcome) {
           try {
@@ -290,6 +313,60 @@ export function createReactAgentRunner({
       }
     },
   };
+}
+
+async function summarizeUnhandledError(
+  modelTurn: ReactModelTurn,
+  task: string,
+  messages: readonly ReactAgentMessage[],
+  error: unknown,
+  signal: AbortSignal,
+): Promise<string> {
+  const observations = messages
+    .filter((message): message is Extract<ReactAgentMessage, { role: "tool" }> => message.role === "tool")
+    .slice(-MAX_RECOVERY_OBSERVATIONS)
+    .map((message) => `${message.name}: ${sanitizeRecoveryText(message.content).slice(0, MAX_RECOVERY_OBSERVATION_LENGTH)}`);
+  const evidenceSection = observations.length > 0 ? observations.join("\n\n") : "No usable tool observations were collected.";
+  const recoveryPrompt = [
+    "The agent encountered an internal execution error.",
+    "Return a concise best-effort final response in the same language as the task.",
+    "State what was completed, what failed, what remains, and the safest next action.",
+    "Use only the task and evidence below. Do not call tools, claim success, expose secrets, or include stack traces.",
+    `Task:\n${sanitizeRecoveryText(task)}`,
+    `Failure:\n${sanitizeRecoveryText(formatRunError(error)).slice(0, MAX_RECOVERY_OBSERVATION_LENGTH)}`,
+    `Evidence:\n${evidenceSection}`,
+  ].join("\n\n");
+
+  try {
+    const result = await modelTurn({
+      messages: [
+        { role: "system", content: "You provide safe, factual recovery summaries for failed agent runs." },
+        { role: "user", content: recoveryPrompt },
+      ],
+      signal,
+      toolChoice: "none",
+    });
+    if (result.kind === "final" && result.content.trim().length > 0) {
+      return result.content.trim();
+    }
+  } catch {
+    // The single recovery attempt is intentionally not recursive.
+  }
+
+  return [
+    "任务未能完成。",
+    "- 已完成：已保留失败前收集到的进度。",
+    "- 失败：恢复模型不可用，无法生成进一步总结。",
+    "- 剩余：未完成步骤仍需重新执行。",
+    "- 下一步：请检查模型连接和配置后重试。",
+  ].join("\n");
+}
+
+function sanitizeRecoveryText(value: string): string {
+  return value
+    .replace(/sk-[A-Za-z0-9_-]+/g, "[REDACTED]")
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]")
+    .replace(/(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]");
 }
 
 function getMissingRequirements(

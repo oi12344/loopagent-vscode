@@ -32,7 +32,7 @@ describe("startAgentRun", () => {
     ]);
   });
 
-  it("posts runFailed when the runner throws", async () => {
+  it("posts a safe local summary when an error escapes the runner", async () => {
     const postedMessages: HostToWebviewMessage[] = [];
     const runner: AgentRunner = {
       run: async function* ({ runId, task }) {
@@ -53,8 +53,12 @@ describe("startAgentRun", () => {
 
     expect(postedMessages).toEqual([
       { type: "runStarted", runId: handle.runId, task: "Trigger failure" },
-      { type: "runFailed", runId: handle.runId, message: "runtime exploded" },
+      { type: "assistantStarted", runId: handle.runId, provider: "LoopAgent" },
+      { type: "assistantDelta", runId: handle.runId, content: expect.stringContaining("任务未能完成") },
+      { type: "assistantFinished", runId: handle.runId },
+      { type: "runFinished", runId: handle.runId },
     ]);
+    expect(postedMessages).not.toContainEqual(expect.objectContaining({ message: expect.stringContaining("runtime exploded") }));
   });
 
   it("passes an abort signal that is triggered by cancel", async () => {
