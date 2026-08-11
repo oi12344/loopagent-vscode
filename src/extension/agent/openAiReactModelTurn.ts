@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { ModelMessage, ModelProvider, ModelToolCall } from "../model/types";
 import type {
   ReactAgentMessage,
@@ -32,17 +33,14 @@ export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReac
     for await (const event of provider.stream({
       messages: messages.map(toModelMessage),
       signal,
-      tools:
-        toolChoice === "none"
-          ? undefined
-          : activeTools.map((tool) => ({
-              type: "function",
-              function: {
-                name: tool.name,
-                description: tool.description,
-                parameters: tool.inputSchema,
-              },
-            })),
+      tools: activeTools.map((tool) => ({
+        type: "function",
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.inputSchema,
+        },
+      })),
       toolChoice,
     })) {
       if (event.type === "reasoningDelta") {
@@ -73,6 +71,14 @@ export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReac
       throw new Error("Model finished with tool_calls but returned no tool calls");
     }
 
+    const dsmlCalls = parseDsmlToolCalls(content);
+    if (dsmlCalls) {
+      if (toolChoice === "none") {
+        throw new Error("Model returned tool calls when tool calls were disabled");
+      }
+      return createToolRequests(dsmlCalls, reasoning);
+    }
+
     if (content.length > 0) {
       if (toolChoice === "required" || typeof toolChoice === "object") {
         throw new Error("Model did not call a required tool");
@@ -82,6 +88,29 @@ export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReac
 
     throw new Error("Model response was empty");
   };
+}
+
+function parseDsmlToolCalls(content: string): Map<number, PendingToolCall> | undefined {
+  if (!content.includes("<｜｜DSML｜｜tool_calls>")) return undefined;
+
+  const calls = new Map<number, PendingToolCall>();
+  const invokePattern = /<｜｜DSML｜｜invoke\s+name="([^"]+)">([\s\S]*?)<\/｜｜DSML｜｜invoke>/g;
+  for (const [index, match] of [...content.matchAll(invokePattern)].entries()) {
+    const input: Record<string, unknown> = {};
+    const parameterPattern = /<｜｜DSML｜｜parameter\s+name="([^"]+)"\s+string="(true|false)">([\s\S]*?)<\/｜｜DSML｜｜parameter>/g;
+    for (const parameter of match[2].matchAll(parameterPattern)) {
+      const value = parameter[3].trim();
+      input[parameter[1]] = parameter[2] === "true" ? value : JSON.parse(value);
+    }
+    calls.set(index, {
+      id: `dsml_${randomUUID()}`,
+      name: match[1],
+      arguments: JSON.stringify(input),
+    });
+  }
+
+  if (calls.size === 0) throw new Error("Model returned malformed DSML tool calls");
+  return calls;
 }
 
 function toModelMessage(message: ReactAgentMessage): ModelMessage {

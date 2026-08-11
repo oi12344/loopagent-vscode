@@ -189,4 +189,26 @@ describe("createOpenAiCompatibleClient", () => {
     await expect(result).rejects.toBeInstanceOf(ModelProviderError);
     await expect(result).rejects.toMatchObject({ code });
   });
+
+  it("fails a model request that never responds", async () => {
+    const fetchMock = vi.fn<typeof fetch>((_url, init) => new Promise<Response>((_resolve, reject) => {
+      const fallback = setTimeout(() => reject(new Error("Client did not abort the stalled request")), 100);
+      init?.signal?.addEventListener("abort", () => {
+        clearTimeout(fallback);
+        reject(init.signal?.reason);
+      }, { once: true });
+    }));
+    const client = createOpenAiCompatibleClient({
+      baseUrl: "https://api.deepseek.com",
+      apiKey: "test-api-key",
+      model: "deepseek-v4-flash",
+      fetch: fetchMock,
+      requestTimeoutMs: 10,
+    });
+
+    await expect(collectEvents(client)).rejects.toMatchObject({
+      code: "request_failed",
+      message: "Model request timed out after 10ms",
+    });
+  });
 });

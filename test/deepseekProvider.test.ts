@@ -68,6 +68,51 @@ describe("DeepSeek Provider", () => {
       expect(requestBody.thinking).toEqual({ type: "disabled" });
     });
 
+    it("keeps thinking disabled when finalizing a tool-call history", async () => {
+      const provider = createDeepSeekProvider({
+        apiKey,
+        baseUrl,
+        model,
+        thinking: "enabled",
+        fetch: mockFetch,
+      });
+
+      mockFetch.mockResolvedValue(new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\n'));
+            controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+            controller.close();
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "text/event-stream" } },
+      ));
+
+      const request: ModelRequest = {
+        messages: [
+          { role: "user", content: "inspect the repository" },
+          {
+            role: "assistant",
+            content: "",
+            toolCalls: [{
+              id: "call-1",
+              type: "function",
+              function: { name: "readFile", arguments: '{"path":"README.md"}' },
+            }],
+          },
+          { role: "tool", content: "contents", toolCallId: "call-1", name: "readFile" },
+        ],
+        signal: new AbortController().signal,
+      };
+
+      for await (const _ of provider.stream(request)) {
+        // Consume the response so the request is sent.
+      }
+
+      const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(requestBody.thinking).toEqual({ type: "disabled" });
+    });
+
     it("应该在无工具时保留用户配置的思考模式", async () => {
       const provider = createDeepSeekProvider({
         apiKey,

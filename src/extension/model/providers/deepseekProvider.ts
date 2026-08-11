@@ -30,8 +30,11 @@ export function createDeepSeekProvider({
         throw new ModelProviderError("missing_api_key", "DeepSeek API key is not configured");
       }
 
-      // 有工具时始终禁用思考模式，避免 DeepSeek 以 DSML 文本格式输出工具调用
-      const requestThinking = request.tools && request.tools.length > 0
+      // 工具调用链始终禁用思考模式，避免收尾请求因历史缺少 reasoning_content 被拒绝
+      const hasToolHistory = request.messages.some((message) =>
+        message.role === "tool" || (message.role === "assistant" && (message.toolCalls?.length ?? 0) > 0)
+      );
+      const requestThinking = (request.tools && request.tools.length > 0) || hasToolHistory
         ? "disabled"
         : thinking;
 

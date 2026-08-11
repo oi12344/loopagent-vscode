@@ -1,5 +1,8 @@
 import { ModelProviderError, type ModelMessage, type ModelProvider, type ModelRequest } from "./types";
 
+// ponytail: fixed 120s ceiling; make it configurable only if model latency data requires it.
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+
 type OpenAiCompatibleClientOptions = {
   id?: string;
   displayName?: string;
@@ -8,6 +11,7 @@ type OpenAiCompatibleClientOptions = {
   model: string;
   fetch?: typeof fetch;
   body?: Record<string, unknown>;
+  requestTimeoutMs?: number;
 };
 
 type ChatCompletionChunk = {
@@ -37,12 +41,13 @@ export function createOpenAiCompatibleClient({
   model,
   fetch: fetchImpl = fetch,
   body = {},
+  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 }: OpenAiCompatibleClientOptions): ModelProvider {
   return {
     id,
     displayName: displayName ?? model,
     stream(request) {
-      return streamChatCompletion({ baseUrl, apiKey, model, fetchImpl, body, request });
+      return streamChatCompletion({ baseUrl, apiKey, model, fetchImpl, body, request, requestTimeoutMs });
     },
   };
 }
@@ -54,6 +59,7 @@ async function* streamChatCompletion({
   fetchImpl,
   body,
   request,
+  requestTimeoutMs,
 }: {
   baseUrl: string;
   apiKey: string;
@@ -61,6 +67,7 @@ async function* streamChatCompletion({
   fetchImpl: typeof fetch;
   body: Record<string, unknown>;
   request: ModelRequest;
+  requestTimeoutMs: number;
 }) {
   const serializedMessages = request.messages.map(serializeMessage);
 
@@ -74,49 +81,69 @@ async function* streamChatCompletion({
     customBody: body,
   });
 
-  const response = await fetchImpl(`${trimTrailingSlash(baseUrl)}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: serializedMessages,
-      stream: true,
-      stream_options: { include_usage: true },
-      ...(request.tools
-        ? {
-            tools: request.tools,
-            tool_choice: request.toolChoice ?? "auto",
-          }
-        : {}),
-      ...body,
-    }),
-    signal: request.signal,
-  });
+  const requestController = new AbortController();
+  let timedOut = false;
+  const abortRequest = () => requestController.abort(request.signal.reason);
+  if (request.signal.aborted) abortRequest();
+  else request.signal.addEventListener("abort", abortRequest, { once: true });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    requestController.abort();
+  }, requestTimeoutMs);
 
-  if (!response.ok) {
-    throw await createHttpError(response);
-  }
+  try {
+    const response = await fetchImpl(`${trimTrailingSlash(baseUrl)}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: serializedMessages,
+        stream: true,
+        stream_options: { include_usage: true },
+        ...(request.tools
+          ? {
+              tools: request.tools,
+              tool_choice: request.toolChoice ?? "auto",
+            }
+          : {}),
+        ...body,
+      }),
+      signal: requestController.signal,
+    });
 
-  if (!response.body) {
-    throw new ModelProviderError("request_failed", "Model response did not include a readable body");
-  }
-
-  for await (const chunk of parseServerSentEvents(response.body)) {
-    if (request.signal.aborted) {
-      return;
+    if (!response.ok) {
+      throw await createHttpError(response);
     }
 
-    if (chunk === "[DONE]") {
-      return;
+    if (!response.body) {
+      throw new ModelProviderError("request_failed", "Model response did not include a readable body");
     }
 
-    const parsedChunk = parseChunk(chunk);
-    for (const event of mapChunkEvents(parsedChunk)) {
-      yield event;
+    for await (const chunk of parseServerSentEvents(response.body)) {
+      if (request.signal.aborted) {
+        return;
+      }
+
+      if (chunk === "[DONE]") {
+        return;
+      }
+
+      const parsedChunk = parseChunk(chunk);
+      for (const event of mapChunkEvents(parsedChunk)) {
+        yield event;
+      }
     }
+  } catch (error) {
+    if (timedOut) {
+      throw new ModelProviderError("request_failed", `Model request timed out after ${requestTimeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    request.signal.removeEventListener("abort", abortRequest);
   }
 }
 

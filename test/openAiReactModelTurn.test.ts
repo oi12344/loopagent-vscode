@@ -114,6 +114,44 @@ describe("createOpenAiReactModelTurn", () => {
     ).resolves.toEqual({ kind: "final", content: "Workspace ready." });
   });
 
+  it("converts DeepSeek DSML content into tool requests", async () => {
+    const modelTurn = createOpenAiReactModelTurn({
+      provider: createProvider([
+        {
+          type: "contentDelta",
+          content: [
+            '<｜｜DSML｜｜tool_calls>',
+            '<｜｜DSML｜｜invoke name="readFile">',
+            '<｜｜DSML｜｜parameter name="path" string="true">src/extension/agent/reactAgentRunner.ts</｜｜DSML｜｜parameter>',
+            '<｜｜DSML｜｜parameter name="startLine" string="false">60</｜｜DSML｜｜parameter>',
+            '<｜｜DSML｜｜parameter name="endLine" string="false">150</｜｜DSML｜｜parameter>',
+            '</｜｜DSML｜｜invoke>',
+            '</｜｜DSML｜｜tool_calls>',
+          ].join("\n"),
+        },
+        { type: "finishReason", reason: "stop" },
+      ]),
+      tools: [readFileTool],
+    });
+
+    const result = await modelTurn({
+      messages: [{ role: "user", content: "Review the ReAct implementation." }],
+      signal: new AbortController().signal,
+    });
+
+    expect(result).toMatchObject({
+      kind: "toolRequests",
+      requests: [{
+        name: "readFile",
+        input: { path: "src/extension/agent/reactAgentRunner.ts", startLine: 60, endLine: 150 },
+      }],
+    });
+    if (result.kind === "toolRequests") {
+      expect(result.requests[0].id).toMatch(/^dsml_/);
+      expect(result.assistantMessage.toolCalls?.[0].id).toBe(result.requests[0].id);
+    }
+  });
+
   it("rejects final text when the provider was required to call a tool", async () => {
     const modelTurn = createOpenAiReactModelTurn({
       provider: createProvider([
@@ -193,7 +231,7 @@ describe("createOpenAiReactModelTurn", () => {
     expect(seenToolChoice).toEqual({ type: "function", function: { name: "applyEdit" } });
   });
 
-  it("passes the requested tool choice to the provider", async () => {
+  it("keeps tool definitions when tool calls are disabled", async () => {
     let seenToolChoice: "auto" | "none" | undefined;
     let seenTools: unknown;
     const provider: ModelProvider = {
@@ -215,7 +253,21 @@ describe("createOpenAiReactModelTurn", () => {
     });
 
     expect(seenToolChoice).toBe("none");
-    expect(seenTools).toBeUndefined();
+    expect(seenTools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "exploreCode",
+          description: "Search the current workspace code.",
+          parameters: {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"],
+            additionalProperties: false,
+          },
+        },
+      },
+    ]);
   });
 
   it("returns invalid JSON tool arguments for recoverable feedback", async () => {

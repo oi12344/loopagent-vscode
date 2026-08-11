@@ -43,7 +43,7 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(hostMessages).toContainEqual({ type: "runFinished", runId: "run-1" });
     expect(hostMessages).not.toContainEqual(expect.objectContaining({ type: "runFailed" }));
     expect(capturedToolNames[0]).toEqual(["exploreCode", "spawnSubagent", "waitForSubagents", "cancelSubagent"]);
-    expect(capturedToolNames.at(-1)).toEqual([]);
+    expect(capturedToolNames.at(-1)).toEqual(["exploreCode", "spawnSubagent", "waitForSubagents", "cancelSubagent"]);
     expect(capturedMessages.at(-1)?.every((message) => message.role === "system" || message.role === "user")).toBe(true);
     const systemPrompt = capturedMessages[0]
       ?.filter((message) => message.role === "system")
