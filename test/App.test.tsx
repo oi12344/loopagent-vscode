@@ -32,6 +32,18 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByText("Start a conversation with LoopAgent.")).toBeInTheDocument();
   });
 
+  it("scrolls the conversation log to the latest message", () => {
+    const { container } = render(<App />);
+    const chatLog = container.querySelector<HTMLElement>(".chat-log");
+    if (!chatLog) throw new Error("chat log was not rendered");
+    Object.defineProperty(chatLog, "scrollHeight", { configurable: true, value: 640 });
+
+    postHostMessage({ type: "assistantStarted", runId: "run-scroll", provider: "deepseek" });
+    postHostMessage({ type: "assistantDelta", runId: "run-scroll", content: "new content" });
+
+    expect(chatLog.scrollTop).toBe(640);
+  });
+
   it("submits a suggested workspace task", async () => {
     const user = userEvent.setup();
     const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();

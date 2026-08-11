@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createReactAgentRunner } from "../src/extension/agent/reactAgentRunner";
 import { createRunCommandTool } from "../src/extension/agent/runCommandTool";
+import { ReactModelToolChoiceError } from "../src/extension/agent/reactTypes";
 import type { AgentRunner } from "../src/extension/agentRunner";
 import type { InterruptedRunCheckpoint } from "../src/shared/chatTypes";
 import type { HostToWebviewMessage } from "../src/shared/messages";
@@ -1540,6 +1541,59 @@ describe("createReactAgentRunner", () => {
     expect(messages).toContainEqual(
       expect.objectContaining({ type: "runFailed", message: expect.stringContaining("连续失败 3 次") }),
     );
+  });
+
+  it("emits reasoning deltas before the model turn finishes", async () => {
+    let releaseModel: (() => void) | undefined;
+    const modelReleased = new Promise<void>((resolve) => {
+      releaseModel = resolve;
+    });
+    const runner = createReactAgentRunner({
+      modelTurn: async ({ onReasoningDelta }) => {
+        onReasoningDelta?.("First thought. ");
+        await modelReleased;
+        onReasoningDelta?.("Second thought.");
+        return { kind: "final", content: "Done." };
+      },
+    });
+    const iterator = runner.run({ runId: "run-1", task: "Inspect workspace", signal: new AbortController().signal })[Symbol.asyncIterator]();
+
+    await iterator.next();
+    await iterator.next();
+    await iterator.next();
+    const reasoningMessage = await iterator.next();
+
+    expect(reasoningMessage.value).toEqual({ type: "assistantReasoningDelta", runId: "run-1", content: "First thought. " });
+    releaseModel?.();
+
+    const remaining: HostToWebviewMessage[] = [];
+    for await (const message of { [Symbol.asyncIterator]: () => iterator }) {
+      remaining.push(message);
+    }
+    expect(remaining).toContainEqual({ type: "assistantReasoningDelta", runId: "run-1", content: "Second thought." });
+    expect(remaining).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "Done." });
+  });
+
+  it("retries the final answer after a prohibited tool call", async () => {
+    let turn = 0;
+    const runner = createReactAgentRunner({
+      maxSteps: 1,
+      modelTurn: async ({ messages, toolChoice }) => {
+        turn += 1;
+        if (turn === 1) return toolRequest("read-1", "readFile", { path: "src/example.ts" });
+        if (turn === 2) throw new ReactModelToolChoiceError();
+        expect(toolChoice).toBe("none");
+        expect(messages.at(-1)?.content).toContain("Do not call tools");
+        return { kind: "final", content: "Final answer after protocol retry" };
+      },
+      tools: [{ name: "readFile", description: "Read a file.", inputSchema: {}, invoke: async () => "observed" }],
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(turn).toBe(3);
+    expect(messages).toContainEqual({ type: "assistantDelta", runId: "run-1", content: "Final answer after protocol retry" });
+    expect(messages).not.toContainEqual(expect.objectContaining({ type: "runFailed" }));
   });
 
   it("uses a clean model turn to summarize an unhandled parent error", async () => {

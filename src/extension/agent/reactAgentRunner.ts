@@ -2,7 +2,7 @@ import type { HostToWebviewMessage } from "../../shared/messages";
 import type { InterruptedRunCheckpoint } from "../../shared/chatTypes";
 import type { MemoryEvidence } from "../memory/types";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
-import type { ReactAgentMessage, ReactAgentRunOutcome, ReactAgentTool, ReactAgentToolRequest, ReactModelTurn } from "./reactTypes";
+import { ReactModelToolChoiceError, type ReactAgentMessage, type ReactAgentRunOutcome, type ReactAgentTool, type ReactAgentToolRequest, type ReactModelTurn, type ReactModelTurnResult } from "./reactTypes";
 import { createToolInvoker, type ToolInvoker } from "./toolRegistry";
 import { createDefaultReactTools } from "./tools";
 import type { ImageAnalysisContext } from "../vision/imageAnalysisService";
@@ -72,6 +72,7 @@ export function createReactAgentRunner({
         const initialStep = resumedCheckpoint?.step ?? 1;
         const successfulTools = new Set<string>();
         let requiredToolRetries = 0;
+        let finalAnswerProtocolRetries = 0;
         const succeededCalls = new Map<string, string>(); // 签名 → 结果摘要，用于拦截无意义的重复调用
         const toolFailures = new Map<string, number>(); // 工具名 → 连续失败数，用于失败熔断
 
@@ -137,17 +138,44 @@ export function createReactAgentRunner({
 
           const missingRequirements = getMissingRequirements(requiredToolNames, requiredAnyOfToolNames, successfulTools);
           const toolChoice = isFinalAnswerStep && missingRequirements.length === 0 ? "none" : "auto";
-          const result = await modelTurn({
-            messages,
-            signal,
-            toolChoice,
-          });
+          let result: ReactModelTurnResult | undefined;
+          let streamedReasoning = false;
+          let retryFinalAnswer = false;
+          try {
+            for await (const event of streamModelTurn(modelTurn, {
+              messages,
+              signal,
+              toolChoice,
+            })) {
+              if (event.type === "reasoningDelta") {
+                streamedReasoning = true;
+                yield { type: "assistantReasoningDelta", runId, content: event.content } satisfies HostToWebviewMessage;
+              } else {
+                result = event.result;
+              }
+            }
+          } catch (error) {
+            if (isFinalAnswerStep && error instanceof ReactModelToolChoiceError && finalAnswerProtocolRetries < 1) {
+              finalAnswerProtocolRetries++;
+              retryFinalAnswer = true;
+            } else {
+              throw error;
+            }
+          }
+          if (retryFinalAnswer) {
+            messages.push({
+              role: "user",
+              content: "The previous response attempted a tool call while tools were disabled. Do not call tools. Return only the final answer now.",
+            });
+            continue;
+          }
+          if (!result) throw new Error("Model did not produce a result");
 
           if (signal.aborted) {
             return;
           }
 
-          if (result.reasoning) {
+          if (result.reasoning && !streamedReasoning) {
             yield { type: "assistantReasoningDelta", runId, content: result.reasoning } satisfies HostToWebviewMessage;
           }
 
@@ -172,7 +200,7 @@ export function createReactAgentRunner({
           if (isFinalAnswerStep) {
             const missingTools = getMissingRequirements(requiredToolNames, requiredAnyOfToolNames, successfulTools);
             if (missingTools.length === 0) {
-              if (result.reasoning) {
+              if (result.reasoning && !streamedReasoning) {
                 yield { type: "assistantReasoningDelta", runId, content: result.reasoning } satisfies HostToWebviewMessage;
               }
               yield { type: "assistantDelta", runId, content: result.assistantMessage.content } satisfies HostToWebviewMessage;
@@ -313,6 +341,46 @@ export function createReactAgentRunner({
       }
     },
   };
+}
+
+async function* streamModelTurn(
+  modelTurn: ReactModelTurn,
+  input: Parameters<ReactModelTurn>[0],
+): AsyncGenerator<
+  | { type: "reasoningDelta"; content: string }
+  | { type: "result"; result: ReactModelTurnResult }
+> {
+  const deltas: string[] = [];
+  let wake: (() => void) | undefined;
+  let closed = false;
+  const push = (content: string) => {
+    deltas.push(content);
+    wake?.();
+    wake = undefined;
+  };
+  const outcomePromise = modelTurn({ ...input, onReasoningDelta: push }).then((result) => {
+    closed = true;
+    wake?.();
+    wake = undefined;
+    return { ok: true as const, result };
+  }, (error) => {
+    closed = true;
+    wake?.();
+    wake = undefined;
+    return { ok: false as const, error };
+  });
+
+  while (!closed || deltas.length > 0) {
+    if (deltas.length > 0) {
+      yield { type: "reasoningDelta", content: deltas.shift()! };
+      continue;
+    }
+    await new Promise<void>((resolve) => { wake = resolve; });
+  }
+
+  const outcome = await outcomePromise;
+  if (!outcome.ok) throw outcome.error;
+  yield { type: "result", result: outcome.result };
 }
 
 async function summarizeUnhandledError(

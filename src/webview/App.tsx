@@ -124,12 +124,20 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [pendingApprovals, setPendingApprovals] = React.useState<PendingCommandApproval[]>([]);
   const [appliedEdits, setAppliedEdits] = React.useState<AppliedEditNotification[]>([]);
   const nextTurnId = React.useRef(0);
+  const chatLogRef = React.useRef<HTMLElement | null>(null);
   const composerToolsRef = React.useRef<HTMLDivElement | null>(null);
   const historyMenuRef = React.useRef<HTMLDivElement | null>(null);
   const ignoredRunIdsRef = React.useRef<Set<string>>(new Set());
 
   const selectedModel = modelOptions.find((option) => option.id === selectedModelId) ?? modelOptions[0];
   const effectiveThinkingMode = selectedModel.supportsThinking ? thinkingMode : "disabled";
+
+  React.useLayoutEffect(() => {
+    const chatLog = chatLogRef.current;
+    if (chatLog) {
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+  }, [turns, workflowProgress, pendingApprovals, appliedEdits]);
 
   function createTurnId(prefix: string) {
     const id = `${prefix}-${nextTurnId.current}`;
@@ -770,7 +778,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         </div>
       </header>
 
-      <section className="chat-log" aria-label="Conversation">
+      <section ref={chatLogRef} className="chat-log" aria-label="Conversation">
         {turns.length === 0 ? (
           <>
             <p className="empty-state">Start a conversation with LoopAgent.</p>

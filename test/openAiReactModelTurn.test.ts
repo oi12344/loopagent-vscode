@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createOpenAiReactModelTurn } from "../src/extension/agent/openAiReactModelTurn";
-import type { ReactAgentTool } from "../src/extension/agent/reactTypes";
+import { ReactModelToolChoiceError, type ReactAgentTool } from "../src/extension/agent/reactTypes";
 import type { ModelProvider, ModelStreamEvent } from "../src/extension/model/types";
 
 const exploreCodeTool: ReactAgentTool = {
@@ -97,6 +97,27 @@ describe("createOpenAiReactModelTurn", () => {
         reasoningContent: "Inspecting the workspace. Searching the symbol.",
       },
     });
+  });
+
+  it("forwards each streamed reasoning segment immediately", async () => {
+    const reasoningDeltas: string[] = [];
+    const modelTurn = createOpenAiReactModelTurn({
+      provider: createProvider([
+        { type: "reasoningDelta", content: "First thought. " },
+        { type: "reasoningDelta", content: "Second thought." },
+        { type: "contentDelta", content: "Done." },
+        { type: "finishReason", reason: "stop" },
+      ]),
+      tools: [],
+    });
+
+    await modelTurn({
+      messages: [{ role: "user", content: "Status?" }],
+      signal: new AbortController().signal,
+      onReasoningDelta: (content) => reasoningDeltas.push(content),
+    });
+
+    expect(reasoningDeltas).toEqual(["First thought. ", "Second thought."]);
   });
 
   it("returns concatenated final text", async () => {
@@ -231,7 +252,7 @@ describe("createOpenAiReactModelTurn", () => {
     expect(seenToolChoice).toEqual({ type: "function", function: { name: "applyEdit" } });
   });
 
-  it("keeps tool definitions when tool calls are disabled", async () => {
+  it("omits tool definitions when tool calls are disabled", async () => {
     let seenToolChoice: "auto" | "none" | undefined;
     let seenTools: unknown;
     const provider: ModelProvider = {
@@ -253,21 +274,23 @@ describe("createOpenAiReactModelTurn", () => {
     });
 
     expect(seenToolChoice).toBe("none");
-    expect(seenTools).toEqual([
-      {
-        type: "function",
-        function: {
-          name: "exploreCode",
-          description: "Search the current workspace code.",
-          parameters: {
-            type: "object",
-            properties: { query: { type: "string" } },
-            required: ["query"],
-            additionalProperties: false,
-          },
-        },
-      },
-    ]);
+    expect(seenTools).toBeUndefined();
+  });
+
+  it("rejects structured tool calls when tool calls are disabled", async () => {
+    const modelTurn = createOpenAiReactModelTurn({
+      provider: createProvider([
+        { type: "toolCallDelta", index: 0, id: "call_1", name: "exploreCode", argumentsDelta: "{}" },
+        { type: "finishReason", reason: "tool_calls" },
+      ]),
+      tools: [exploreCodeTool],
+    });
+
+    await expect(modelTurn({
+      messages: [{ role: "user", content: "Status?" }],
+      signal: new AbortController().signal,
+      toolChoice: "none",
+    })).rejects.toBeInstanceOf(ReactModelToolChoiceError);
   });
 
   it("returns invalid JSON tool arguments for recoverable feedback", async () => {

@@ -70,10 +70,18 @@ export type ReactModelTurnResult =
       reasoning?: string;
       assistantMessage: Extract<ReactAgentMessage, { role: "assistant" }>;
       requests: ReactAgentToolRequest[];
-    };
+  };
+
+export class ReactModelToolChoiceError extends Error {
+  constructor() {
+    super("Model returned tool calls when tool calls were disabled");
+    this.name = "ReactModelToolChoiceError";
+  }
+}
 
 export type ReactModelTurn = (input: {
   messages: ReactAgentMessage[];
   signal: AbortSignal;
   toolChoice?: ModelToolChoice;
+  onReasoningDelta?: (content: string) => void;
 }) => Promise<ReactModelTurnResult>;

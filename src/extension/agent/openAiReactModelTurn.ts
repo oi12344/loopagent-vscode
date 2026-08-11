@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { ModelMessage, ModelProvider, ModelToolCall } from "../model/types";
-import type {
-  ReactAgentMessage,
-  ReactAgentTool,
-  ReactAgentToolRequest,
-  ReactModelTurn,
+import {
+  ReactModelToolChoiceError,
+  type ReactAgentMessage,
+  type ReactAgentTool,
+  type ReactAgentToolRequest,
+  type ReactModelTurn,
 } from "./reactTypes";
 
 export type CreateOpenAiReactModelTurnOptions = {
@@ -19,7 +20,7 @@ type PendingToolCall = {
 };
 
 export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReactModelTurnOptions): ReactModelTurn {
-  return async ({ messages, signal, toolChoice = "auto" }) => {
+  return async ({ messages, signal, toolChoice = "auto", onReasoningDelta }) => {
     let content = "";
     let reasoning = "";
     let finishReason: string | undefined;
@@ -28,23 +29,30 @@ export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReac
     // 当 toolChoice 强制某个具体函数时，只暴露该函数：部分模型（如 DeepSeek）不严格遵守
     // tool_choice 的具体函数约束，会改调其它可用工具。仅保留目标工具可确保它一定被调用。
     const forcedToolName = typeof toolChoice === "object" ? toolChoice.function.name : undefined;
-    const activeTools = forcedToolName ? tools.filter((tool) => tool.name === forcedToolName) : tools;
+    const activeTools = toolChoice === "none"
+      ? []
+      : forcedToolName
+        ? tools.filter((tool) => tool.name === forcedToolName)
+        : tools;
 
     for await (const event of provider.stream({
       messages: messages.map(toModelMessage),
       signal,
-      tools: activeTools.map((tool) => ({
-        type: "function",
-        function: {
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.inputSchema,
-        },
-      })),
+      ...(activeTools.length > 0 ? {
+        tools: activeTools.map((tool) => ({
+          type: "function" as const,
+          function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.inputSchema,
+          },
+        })),
+      } : {}),
       toolChoice,
     })) {
       if (event.type === "reasoningDelta") {
         reasoning += event.content;
+        onReasoningDelta?.(event.content);
       } else if (event.type === "contentDelta") {
         content += event.content;
       } else if (event.type === "toolCallDelta") {
@@ -60,6 +68,9 @@ export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReac
     }
 
     if (pendingCalls.size > 0) {
+      if (toolChoice === "none") {
+        throw new ReactModelToolChoiceError();
+      }
       if (finishReason !== "tool_calls") {
         throw new Error(`Unexpected finish reason for tool calls: ${finishReason ?? "missing"}`);
       }
@@ -74,7 +85,7 @@ export function createOpenAiReactModelTurn({ provider, tools }: CreateOpenAiReac
     const dsmlCalls = parseDsmlToolCalls(content);
     if (dsmlCalls) {
       if (toolChoice === "none") {
-        throw new Error("Model returned tool calls when tool calls were disabled");
+        throw new ReactModelToolChoiceError();
       }
       return createToolRequests(dsmlCalls, reasoning);
     }
