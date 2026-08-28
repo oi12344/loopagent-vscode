@@ -4,12 +4,14 @@ import type { MemoryEvidence } from "../memory/types";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import { ReactModelToolChoiceError, type ReactAgentMessage, type ReactAgentRunOutcome, type ReactAgentTool, type ReactAgentToolRequest, type ReactModelTurn, type ReactModelTurnResult } from "./reactTypes";
 import { createToolInvoker, type ToolInvoker } from "./toolRegistry";
+import { evaluateTimeoutAdjustment } from "./workflow/adaptiveTimeout";
 import { createDefaultReactTools } from "./tools";
 import type { ImageAnalysisContext } from "../vision/imageAnalysisService";
 
 const MAX_CONSECUTIVE_TOOL_FAILURES = 3;
 const MAX_RECOVERY_OBSERVATIONS = 6;
 const MAX_RECOVERY_OBSERVATION_LENGTH = 2_000;
+const ADAPTIVE_EXTEND_STEP_MS = 60_000;
 
 export type UnhandledErrorMode = "fail" | "summarize-and-fail" | "summarize-and-finish";
 
@@ -29,6 +31,10 @@ export type CreateReactAgentRunnerOptions = {
   analyzeImages?: (request: AgentRunRequest) => Promise<ImageAnalysisContext[]>;
   invokeTool?: ToolInvoker;
   unhandledErrorMode?: UnhandledErrorMode;
+  /** 运行时长预算基线（毫秒）。未设置则不启用自适应超时，行为完全不变 */
+  runTimeoutMs?: number;
+  /** 自适应延长硬上限（毫秒）。默认 runTimeoutMs * 3 */
+  maxRunTimeoutMs?: number;
 };
 
 export function createReactAgentRunner({
@@ -45,13 +51,24 @@ export function createReactAgentRunner({
   analyzeImages,
   invokeTool: configuredInvokeTool,
   unhandledErrorMode = "fail",
+  runTimeoutMs,
+  maxRunTimeoutMs: configuredMaxRunTimeoutMs,
 }: CreateReactAgentRunnerOptions): AgentRunner {
   const invokeTool = configuredInvokeTool ?? createToolInvoker(tools);
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
+  const maxRunTimeoutMs = runTimeoutMs !== undefined ? (configuredMaxRunTimeoutMs ?? runTimeoutMs * 3) : undefined;
 
   return {
     async *run(request) {
-      const { runId, task, signal, conversationHistory = [], resumeState } = request;
+      const { runId, task, signal: externalSignal, conversationHistory = [], resumeState } = request;
+      const internalAbort = new AbortController();
+      const onExternalAbort = () => internalAbort.abort();
+      if (externalSignal.aborted) internalAbort.abort();
+      else externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+      const signal = internalAbort.signal;
+      const hostMessages: HostToWebviewMessage[] = [];
+      const startTimestamp = Date.now();
+      let deadline = runTimeoutMs !== undefined ? startTimestamp + runTimeoutMs : undefined;
       const requiredToolNames = request.requiredToolNames ?? configuredRequiredToolNames;
       const requiredAnyOfToolNames = configuredRequiredAnyOfToolNames;
       let status: ReactAgentRunOutcome["status"] = "cancelled";
@@ -127,6 +144,20 @@ export function createReactAgentRunner({
           const isFinalAnswerStep = step > maxSteps;
           if (signal.aborted) {
             return;
+          }
+          if (deadline !== undefined) {
+            const now = Date.now();
+            const adjustment = evaluateTimeoutAdjustment(hostMessages);
+            if (adjustment.suggestedMultiplier >= 1.5 && maxRunTimeoutMs !== undefined) {
+              deadline = Math.min(maxRunTimeoutMs, deadline + ADAPTIVE_EXTEND_STEP_MS);
+            } else if (adjustment.suggestedMultiplier < 1) {
+              deadline = Math.min(deadline, startTimestamp + (runTimeoutMs ?? 0));
+            }
+            if (now >= deadline) {
+              internalAbort.abort();
+              yield { type: "runFailed", runId, message: "Run exceeded the adaptive timeout budget." } satisfies HostToWebviewMessage;
+              return;
+            }
           }
 
           yield { type: "assistantThinking", runId, message: `Planning step ${step}` } satisfies HostToWebviewMessage;
@@ -223,13 +254,15 @@ export function createReactAgentRunner({
                 return;
               }
 
-              yield {
+              const toolCallStartedMessage: HostToWebviewMessage = {
                 type: "toolCallStarted",
                 runId,
                 callId: `${step}-${call}`,
                 toolName: request.name,
                 input: getToolInputPreview(request.name, request.input),
-              } satisfies HostToWebviewMessage;
+              };
+              hostMessages.push(toolCallStartedMessage);
+              yield toolCallStartedMessage;
             }
 
             if (signal.aborted) {
@@ -330,8 +363,9 @@ export function createReactAgentRunner({
         yield { type: "assistantDelta", runId, content: summary } satisfies HostToWebviewMessage;
         yield { type: "assistantFinished", runId } satisfies HostToWebviewMessage;
         yield { type: "runFinished", runId } satisfies HostToWebviewMessage;
-      } finally {
-        if (recordMemoryRunOutcome) {
+    } finally {
+      externalSignal.removeEventListener("abort", onExternalAbort);
+      if (recordMemoryRunOutcome) {
           try {
             await recordMemoryRunOutcome({ runId, task, status, finalContent, evidence });
           } catch {

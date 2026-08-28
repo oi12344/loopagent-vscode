@@ -81,6 +81,60 @@ describe("createReactAgentRunner", () => {
     expect(messages).toContainEqual(expect.objectContaining({ type: "toolCallFinished", succeeded: true, output: "coordinator observation" }));
   });
 
+  it("aborts with runFailed when the adaptive timeout budget is exceeded", async () => {
+    const nowSpy = vi.spyOn(Date, "now");
+    let t = 0;
+    nowSpy.mockImplementation(() => { t += 10_000; return t; });
+    try {
+      const runner = createReactAgentRunner({
+        runTimeoutMs: 5_000,
+        tools: [{ name: "echo", description: "", inputSchema: {}, invoke: async () => "ok" }],
+        modelTurn: async () => ({ kind: "final", content: "done" }),
+      });
+      const messages = await collectRunnerMessages(runner);
+      expect(messages).toContainEqual(expect.objectContaining({ type: "runFailed" }));
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("completes normally when the adaptive timeout budget is set but not exceeded", async () => {
+    let turn = 0;
+    const runner = createReactAgentRunner({
+      runTimeoutMs: 100_000,
+      tools: [
+        {
+          name: "echoObservation",
+          description: "Echo a test observation.",
+          inputSchema: { type: "string" },
+          invoke: async () => "observed workspace",
+        },
+      ],
+      modelTurn: async () => {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            kind: "toolRequests",
+            assistantMessage: {
+              role: "assistant",
+              content: "",
+              toolCalls: [
+                { id: "tool-1", type: "function", function: { name: "echoObservation", arguments: '"workspace"' } },
+              ],
+            },
+            requests: [{ id: "tool-1", name: "echoObservation", rawArguments: '"workspace"', input: "workspace" }],
+          };
+        }
+        return { kind: "final", content: "done" };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+
+    expect(messages).toContainEqual(expect.objectContaining({ type: "runFinished" }));
+    expect(messages).not.toContainEqual(expect.objectContaining({ type: "runFailed" }));
+  });
+
   it("saves the next step and tool results in an interrupted-run checkpoint", async () => {
     const checkpoints: InterruptedRunCheckpoint[] = [];
     let turn = 0;
