@@ -444,6 +444,11 @@ export function createReactAgentRunner({
             // Memory persistence is best-effort and must not change the run result.
           }
         }
+        // Output cache stats
+        const cacheStats = toolCache.getStats();
+        if (cacheStats.hits > 0 || cacheStats.misses > 0) {
+          console.log(`[ReactAgent] Tool cache: ${cacheStats.hits} hits, ${cacheStats.misses} misses (${(cacheStats.hitRate * 100).toFixed(1)}% hit rate)`);
+        }
       }
     },
   };

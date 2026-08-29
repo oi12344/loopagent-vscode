@@ -5,6 +5,13 @@ export type CacheEntry = {
   cachedAt: number;
 };
 
+export type CacheStats = {
+  hits: number;
+  misses: number;
+  hitRate: number;
+  size: number;
+};
+
 export type ToolCacheOptions = {
   ttlMs?: number;
   maxEntries?: number;
@@ -14,6 +21,8 @@ export class ToolResultCache {
   private cache = new Map<string, CacheEntry>();
   private readonly ttlMs: number;
   private readonly maxEntries: number;
+  private hits = 0;
+  private misses = 0;
 
   constructor(options: ToolCacheOptions = {}) {
     this.ttlMs = options.ttlMs ?? 5 * 60 * 1000;
@@ -29,12 +38,15 @@ export class ToolResultCache {
   get(key: string): CacheEntry | undefined {
     const entry = this.cache.get(key);
     if (!entry) {
+      this.misses++;
       return undefined;
     }
     if (Date.now() - entry.cachedAt > this.ttlMs) {
       this.cache.delete(key);
+      this.misses++;
       return undefined;
     }
+    this.hits++;
     // Move to end for LRU behavior
     this.cache.delete(key);
     this.cache.set(key, entry);
@@ -64,5 +76,20 @@ export class ToolResultCache {
 
   get size(): number {
     return this.cache.size;
+  }
+
+  getStats(): CacheStats {
+    const total = this.hits + this.misses;
+    return {
+      hits: this.hits,
+      misses: this.misses,
+      hitRate: total > 0 ? this.hits / total : 0,
+      size: this.cache.size,
+    };
+  }
+
+  resetStats(): void {
+    this.hits = 0;
+    this.misses = 0;
   }
 }
