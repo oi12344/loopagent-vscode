@@ -4,9 +4,10 @@ import type { MemoryEvidence } from "../memory/types";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import { ReactModelToolChoiceError, type ReactAgentMessage, type ReactAgentRunOutcome, type ReactAgentTool, type ReactAgentToolRequest, type ReactModelTurn, type ReactModelTurnResult } from "./reactTypes";
 import { createToolInvoker, type ToolInvoker } from "./toolRegistry";
+import { compressConversationHistory } from "./messageCompression";
 import { evaluateTimeoutAdjustment } from "./workflow/adaptiveTimeout";
 import { createDefaultReactTools } from "./tools";
-import type { ImageAnalysisContext } from "../vision/imageAnalysisService";
+import { ToolResultCache } from "./toolCache";
 
 const MAX_CONSECUTIVE_TOOL_FAILURES = 3;
 const MAX_RECOVERY_OBSERVATIONS = 6;
@@ -24,15 +25,15 @@ export type CreateReactAgentRunnerOptions = {
   requiredToolNames?: string[];
   /** 至少一个必须成功调用；与 requiredToolNames（全部满足）语义独立，可同时使用 */
   requiredAnyOfToolNames?: string[];
-  systemPromptProvider?: (request: AgentRunRequest, imageAnalyses?: ImageAnalysisContext[]) => string | Promise<string>;
+  systemPromptProvider?: (request: AgentRunRequest) => string | Promise<string>;
   onCheckpoint?: (checkpoint: InterruptedRunCheckpoint) => void | Promise<void>;
   recordMemoryRunOutcome?: (outcome: ReactAgentRunOutcome) => void | Promise<void>;
-  /** 图片分析结果注入函数（由外部 extension.ts 提供） */
-  analyzeImages?: (request: AgentRunRequest) => Promise<ImageAnalysisContext[]>;
   invokeTool?: ToolInvoker;
   unhandledErrorMode?: UnhandledErrorMode;
   /** 运行时长预算基线（毫秒）。未设置则不启用自适应超时，行为完全不变 */
   runTimeoutMs?: number;
+  /** 模型上下文窗口大小（token 数），用于对话历史压缩的预算计算 */
+  contextWindow?: number;
   /** 自适应延长硬上限（毫秒）。默认 runTimeoutMs * 3 */
   maxRunTimeoutMs?: number;
 };
@@ -48,15 +49,22 @@ export function createReactAgentRunner({
   systemPromptProvider,
   onCheckpoint,
   recordMemoryRunOutcome,
-  analyzeImages,
   invokeTool: configuredInvokeTool,
   unhandledErrorMode = "fail",
   runTimeoutMs,
   maxRunTimeoutMs: configuredMaxRunTimeoutMs,
+  contextWindow = 32_000,
 }: CreateReactAgentRunnerOptions): AgentRunner {
   const invokeTool = configuredInvokeTool ?? createToolInvoker(tools);
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
   const maxRunTimeoutMs = runTimeoutMs !== undefined ? (configuredMaxRunTimeoutMs ?? runTimeoutMs * 3) : undefined;
+  const toolCache = new ToolResultCache({ ttlMs: 5 * 60 * 1000 });
+
+  /** 只读工具列表（可缓存） */
+  const READ_ONLY_TOOLS = new Set([
+    "exploreCode", "browseSymbols", "readFile", "listDirectory",
+    "analyzeImage", "codeReview",
+  ]);
 
   return {
     async *run(request) {
@@ -69,6 +77,7 @@ export function createReactAgentRunner({
       const hostMessages: HostToWebviewMessage[] = [];
       const startTimestamp = Date.now();
       let deadline = runTimeoutMs !== undefined ? startTimestamp + runTimeoutMs : undefined;
+      let consecutiveLowDiversity = 0;
       const requiredToolNames = request.requiredToolNames ?? configuredRequiredToolNames;
       const requiredAnyOfToolNames = configuredRequiredAnyOfToolNames;
       let status: ReactAgentRunOutcome["status"] = "cancelled";
@@ -87,6 +96,8 @@ export function createReactAgentRunner({
           ? resumedCheckpoint.messages.map((message) => message as unknown as ReactAgentMessage)
           : (request.initialMessages ?? []).map((message) => ({ ...message }))));
         const initialStep = resumedCheckpoint?.step ?? 1;
+        const STEP_SAFETY_OVERSHOOT = 3; // 循环上限余量：1 步留给最终答案（isFinalAnswerStep），2 步安全余量应对 requiredTool 等重试
+        const MAX_LOW_DIVERSITY_STEPS = 3; // 连续低多样性步阈值，达到后主动终止死循环
         const successfulTools = new Set<string>();
         let requiredToolRetries = 0;
         let finalAnswerProtocolRetries = 0;
@@ -94,28 +105,19 @@ export function createReactAgentRunner({
         const toolFailures = new Map<string, number>(); // 工具名 → 连续失败数，用于失败熔断
 
         if (!resumedCheckpoint) {
-          // 分析用户上传的图片（如果有）
-          let imageAnalyses: ImageAnalysisContext[] = [];
-          if (analyzeImages && request.attachments && request.attachments.length > 0) {
-            try {
-              yield { type: "assistantThinking", runId, message: "分析上传的图片..." } satisfies HostToWebviewMessage;
-              imageAnalyses = await analyzeImages(request);
-              console.log(`[ReactAgent] Analyzed ${imageAnalyses.length} image(s)`);
-            } catch (error) {
-              console.error("[ReactAgent] Image analysis failed:", error);
-              // 图片分析失败不应阻塞对话，继续执行
-            }
-          }
-
-          const systemPrompt = await resolveSystemPrompt(systemPromptProvider, request, imageAnalyses);
+          const systemPrompt = await resolveSystemPrompt(systemPromptProvider, request);
 
           if (systemPrompt) {
             messages.push({ role: "system", content: systemPrompt });
           }
 
-          for (const historyMsg of conversationHistory) {
+          for (const historyMsg of compressConversationHistory(conversationHistory, {
+            maxTokens: Math.floor(contextWindow * 0.25),
+            keepRecentTokens: Math.floor(contextWindow * 0.1),
+            toolResultExpiryTokens: Math.floor(contextWindow * 0.125),
+          })) {
             messages.push({
-              role: historyMsg.role,
+              role: historyMsg.role as "user" | "assistant",
               content: historyMsg.content,
               ...(historyMsg.reasoning ? { reasoningContent: historyMsg.reasoning } : {}),
             });
@@ -140,7 +142,7 @@ export function createReactAgentRunner({
           });
         };
 
-        for (let step = initialStep; step <= maxSteps + 1 + 2; step++) {
+        for (let step = initialStep; step <= maxSteps + STEP_SAFETY_OVERSHOOT; step++) {
           const isFinalAnswerStep = step > maxSteps;
           if (signal.aborted) {
             return;
@@ -150,8 +152,17 @@ export function createReactAgentRunner({
             const adjustment = evaluateTimeoutAdjustment(hostMessages);
             if (adjustment.suggestedMultiplier >= 1.5 && maxRunTimeoutMs !== undefined) {
               deadline = Math.min(maxRunTimeoutMs, deadline + ADAPTIVE_EXTEND_STEP_MS);
+              consecutiveLowDiversity = 0;
             } else if (adjustment.suggestedMultiplier < 1) {
               deadline = Math.min(deadline, startTimestamp + (runTimeoutMs ?? 0));
+              consecutiveLowDiversity += 1;
+              if (consecutiveLowDiversity >= MAX_LOW_DIVERSITY_STEPS) {
+                internalAbort.abort();
+                yield { type: "runFailed", runId, message: "Run terminated early: repetitive low-diversity steps detected." } satisfies HostToWebviewMessage;
+                return;
+              }
+            } else {
+              consecutiveLowDiversity = 0;
             }
             if (now >= deadline) {
               internalAbort.abort();
@@ -248,6 +259,9 @@ export function createReactAgentRunner({
           }
 
           messages.push(result.assistantMessage);
+          if (result.assistantMessage.content) {
+            yield { type: "assistantDelta", runId, content: result.assistantMessage.content } satisfies HostToWebviewMessage;
+          }
           for (const batch of createToolRequestBatches(result.requests, toolsByName)) {
             for (const { request, call } of batch.requests) {
               if (signal.aborted) {
@@ -269,14 +283,17 @@ export function createReactAgentRunner({
               return;
             }
 
-            const invoke = async (toolRequest: ReactAgentToolRequest) => {
+            const invoke = async (
+              toolRequest: ReactAgentToolRequest,
+              context?: string,
+            ) => {
               if (!toolsByName.has(toolRequest.name)) {
                 return { content: `Tool error: Unknown tool "${toolRequest.name}"`, succeeded: false, productive: false, evidence: [] as MemoryEvidence[] };
               }
               if (toolRequest.parseError) {
                 return { content: `Tool error: ${toolRequest.parseError}`, succeeded: false, productive: false, evidence: [] as MemoryEvidence[] };
               }
-              // ponytail: 同批次并发的相同调用会漏判（记录发生在批次结束后），可接受 —— maxToolRequestsPerStep 封顶
+
               const signature = computeToolCallSignature(toolRequest);
               const cached = succeededCalls.get(signature);
               if (cached !== undefined) {
@@ -287,16 +304,71 @@ export function createReactAgentRunner({
                   evidence: [] as MemoryEvidence[],
                 };
               }
+
+              // Check tool cache for read-only tools
+              if (READ_ONLY_TOOLS.has(toolRequest.name)) {
+                const cacheKey = ToolResultCache.cacheKey(toolRequest.name, toolRequest.input);
+                const cachedResult = toolCache.get(cacheKey);
+                if (cachedResult) {
+                  return {
+                    content: `[缓存] ${cachedResult.content}`,
+                    succeeded: true,
+                    productive: cachedResult.productive,
+                    evidence: cachedResult.evidence as MemoryEvidence[],
+                  };
+                }
+              }
+
               try {
-                const result = await invokeTool(toolRequest, signal);
+                const result = await invokeTool(toolRequest, signal, context);
+                
+                // Cache result for read-only tools
+                if (READ_ONLY_TOOLS.has(toolRequest.name)) {
+                  const cacheKey = ToolResultCache.cacheKey(toolRequest.name, toolRequest.input);
+                  toolCache.set(cacheKey, {
+                    content: result.content,
+                    evidence: result.evidence,
+                    productive: result.productive ?? true,
+                  });
+                }
+
                 return { content: result.content, succeeded: true, productive: result.productive ?? true, evidence: result.evidence };
               } catch (error) {
                 return { content: `Tool error: ${formatRunError(error)}`, succeeded: false, productive: false, evidence: [] as MemoryEvidence[] };
               }
             };
-            const outcomes = batch.concurrent
-              ? await Promise.all(batch.requests.map(({ request }) => invoke(request)))
-              : [await invoke(batch.requests[0]!.request)];
+            const outcomes: Array<{ content: string; succeeded: boolean; productive: boolean; evidence: MemoryEvidence[] }> = [];
+
+            if (batch.concurrent) {
+              // Concurrent: no context passing
+              const duplicateInBatch = new Set<string>();
+              const results = await Promise.all(
+                batch.requests.map(({ request }) => {
+                  const sig = computeToolCallSignature(request);
+                  if (duplicateInBatch.has(sig)) {
+                    return {
+                      content: `重复调用：同批次内已存在相同参数的 ${request.name} 调用，请改变查询或给出最终答案。`,
+                      succeeded: false,
+                      productive: false,
+                      evidence: [] as MemoryEvidence[],
+                    };
+                  }
+                  duplicateInBatch.add(sig);
+                  return invoke(request);
+                }),
+              );
+              outcomes.push(...results);
+            } else {
+              // Sequential: pass context from previous tool
+              let previousOutput: string | undefined;
+              for (const { request } of batch.requests) {
+                const result = await invoke(request, previousOutput);
+                outcomes.push(result);
+                if (result.succeeded && result.productive) {
+                  previousOutput = result.content;
+                }
+              }
+            }
 
             if (signal.aborted) {
               return;
@@ -592,14 +664,13 @@ function getExploreCodeQueryPreview(input: unknown): string {
 async function resolveSystemPrompt(
   provider: CreateReactAgentRunnerOptions["systemPromptProvider"],
   request: AgentRunRequest,
-  imageAnalyses?: ImageAnalysisContext[],
 ): Promise<string | undefined> {
   if (!provider) {
     return undefined;
   }
 
   try {
-    const prompt = await provider(request, imageAnalyses);
+    const prompt = await provider(request);
     return prompt.trim().length > 0 ? prompt : undefined;
   } catch {
     return undefined;
@@ -675,8 +746,8 @@ function computeToolCallSignature(toolRequest: ReactAgentToolRequest): string {
     for (const key of sortedKeys) {
       const value = params[key];
       const valueStr = typeof value === "string"
-        ? value.slice(0, 100)
-        : JSON.stringify(value).slice(0, 100);
+        ? value
+        : JSON.stringify(value);
       keyParts.push(`${key}:${valueStr}`);
     }
   }

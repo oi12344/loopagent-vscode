@@ -76,6 +76,7 @@ describe("createReactAgentRunner", () => {
     expect(invokeTool).toHaveBeenCalledWith(
       expect.objectContaining({ name: "coordinatedTool" }),
       expect.any(AbortSignal),
+      undefined,
     );
     expect(directInvoke).not.toHaveBeenCalled();
     expect(messages).toContainEqual(expect.objectContaining({ type: "toolCallFinished", succeeded: true, output: "coordinator observation" }));
@@ -1744,3 +1745,133 @@ function toolRequest(id: string, name: string, input: unknown) {
     requests: [{ id, name, rawArguments, input }],
   };
 }
+
+describe("pre-tool explanation text", () => {
+  it("yields assistantDelta carrying the explanation before tool calls", async () => {
+    let turn = 0;
+    const runner = createReactAgentRunner({
+      maxSteps: 3,
+      tools: [
+        {
+          name: "exploreCode",
+          description: "Search",
+          inputSchema: { type: "object" },
+          invoke: async () => "code context",
+        },
+      ],
+      modelTurn: async () => {
+        turn += 1;
+        if (turn === 1) {
+          return {
+            kind: "toolRequests" as const,
+            assistantMessage: {
+              role: "assistant" as const,
+              content: "让我先查一下认证实现。",
+              toolCalls: [
+                {
+                  id: "tool-1",
+                  type: "function" as const,
+                  function: { name: "exploreCode", arguments: JSON.stringify({ query: "auth" }) },
+                },
+              ],
+            },
+            requests: [
+              { id: "tool-1", name: "exploreCode", rawArguments: JSON.stringify({ query: "auth" }), input: { query: "auth" } },
+            ],
+          };
+        }
+        return { kind: "final" as const, content: "完成" };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+    expect(messages).toContainEqual({
+      type: "assistantDelta",
+      runId: "run-1",
+      content: "让我先查一下认证实现。",
+    });
+  });
+});
+
+describe("duplicate tool call guard", () => {
+  it("marks the second identical call in the same step as a duplicate", async () => {
+    const runner = createReactAgentRunner({
+      maxSteps: 3,
+      tools: [
+        {
+          name: "exploreCode",
+          description: "Search",
+          inputSchema: { type: "object" },
+          invoke: async () => "code context",
+        },
+      ],
+      modelTurn: async () => ({
+        kind: "toolRequests" as const,
+        assistantMessage: {
+          role: "assistant" as const,
+          content: "",
+          toolCalls: [
+            { id: "t1", type: "function" as const, function: { name: "exploreCode", arguments: JSON.stringify({ query: "x" }) } },
+            { id: "t2", type: "function" as const, function: { name: "exploreCode", arguments: JSON.stringify({ query: "x" }) } },
+          ],
+        },
+        requests: [
+          { id: "t1", name: "exploreCode", rawArguments: JSON.stringify({ query: "x" }), input: { query: "x" } },
+          { id: "t2", name: "exploreCode", rawArguments: JSON.stringify({ query: "x" }), input: { query: "x" } },
+        ],
+      }),
+    });
+
+    const messages = await collectRunnerMessages(runner);
+    const finished = messages.filter(
+      (message): message is Extract<HostToWebviewMessage, { type: "toolCallFinished" }> => message.type === "toolCallFinished",
+    );
+    expect(finished.length).toBeGreaterThanOrEqual(2);
+    expect(finished[1]!.succeeded).toBe(false);
+    expect(finished[1]!.output).toContain("重复调用");
+  });
+});
+
+describe("adaptive early termination", () => {
+  it("terminates early on repetitive low-diversity steps", async () => {
+    let turn = 0;
+    const runner = createReactAgentRunner({
+      maxSteps: 20,
+      runTimeoutMs: 100_000,
+      tools: [
+        {
+          name: "exploreCode",
+          description: "Search",
+          inputSchema: { type: "object" },
+          invoke: async () => "code context",
+        },
+      ],
+      modelTurn: async () => {
+        turn += 1;
+        return {
+          kind: "toolRequests" as const,
+          assistantMessage: {
+            role: "assistant" as const,
+            content: "",
+            toolCalls: [1, 2, 3, 4].map((index) => ({
+              id: `t${turn}-${index}`,
+              type: "function" as const,
+              function: { name: "exploreCode", arguments: JSON.stringify({ query: `x${turn}-${index}` }) },
+            })),
+          },
+          requests: [1, 2, 3, 4].map((index) => ({
+            id: `t${turn}-${index}`,
+            name: "exploreCode",
+            rawArguments: JSON.stringify({ query: `x${turn}-${index}` }),
+            input: { query: `x${turn}-${index}` },
+          })),
+        };
+      },
+    });
+
+    const messages = await collectRunnerMessages(runner);
+    const failed = messages.find((message) => message.type === "runFailed");
+    expect(failed).toBeDefined();
+    expect(String((failed as { message: string }).message)).toContain("repetitive low-diversity");
+  });
+});
