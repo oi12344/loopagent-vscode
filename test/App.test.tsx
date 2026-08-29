@@ -23,9 +23,10 @@ describe("LoopAgent webview app", () => {
     expect(screen.getByRole("heading", { name: "LoopAgent" })).toBeInTheDocument();
     expect(screen.getByRole("form", { name: "Chat composer" })).toHaveClass("chat-composer");
     expect(screen.getByLabelText("Message")).toBeInTheDocument();
-    expect(screen.queryByRole("group", { name: "Mode" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Ask" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("模式")).toBeInTheDocument();
+    expect(screen.getByLabelText("模式")).toHaveValue("execute");
+    expect(screen.getByLabelText("命令权限")).toBeInTheDocument();
+    expect(screen.getByLabelText("命令权限")).toHaveValue("ask");
     expect(screen.getByRole("button", { name: "DeepSeek v4 Flash" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Think: On" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
@@ -56,6 +57,8 @@ describe("LoopAgent webview app", () => {
       runId: expect.stringMatching(/^run-/),
       task: "Explain the active file",
       model: { provider: "deepseek", model: "deepseek-v4-flash", thinking: "enabled" },
+      mode: "execute",
+      commandPermission: "ask",
     });
     expect(screen.getByText("Explain the active file")).toBeInTheDocument();
   });
@@ -218,23 +221,41 @@ describe("LoopAgent webview app", () => {
         model: "deepseek-v4-flash",
         thinking: "disabled",
       },
+      mode: "execute",
+      commandPermission: "ask",
     });
     expect(screen.getByText("hello")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
   });
 
-  it("sends typed tasks without a task mode", async () => {
+  it("sends the selected plan mode and locks it while the run is active", async () => {
     const user = userEvent.setup();
     const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
     render(<App vscodeApi={{ postMessage }} />);
 
+    await user.selectOptions(screen.getByLabelText("模式"), "plan");
     await user.type(screen.getByLabelText("Message"), "Explain this function");
     await user.click(screen.getByRole("button", { name: "Send" }));
 
     expect(postMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "startTask", task: "Explain this function" }),
+      expect.objectContaining({ type: "startTask", task: "Explain this function", mode: "plan" }),
     );
-    expect(postMessage.mock.calls.at(-1)?.[0]).not.toHaveProperty("mode");
+    expect(screen.getByLabelText("模式")).toBeDisabled();
+  });
+
+  it("sends the selected command permission and locks it while the run is active", async () => {
+    const user = userEvent.setup();
+    const postMessage = vi.fn<(message: WebviewToHostMessage) => void>();
+    render(<App vscodeApi={{ postMessage }} />);
+
+    await user.selectOptions(screen.getByLabelText("命令权限"), "full");
+    await user.type(screen.getByLabelText("Message"), "Run the checks");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "startTask", task: "Run the checks", commandPermission: "full" }),
+    );
+    expect(screen.getByLabelText("命令权限")).toBeDisabled();
   });
 
   it("shows workflow and subagent progress without replacing the assistant answer", () => {

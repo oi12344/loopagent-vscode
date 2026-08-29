@@ -22,9 +22,9 @@ import { createConversationStore } from "./extension/conversation/conversationSt
 import type { ConversationStore } from "./extension/conversation/conversationStore";
 import { createPersistentConversationStore } from "./extension/conversation/persistentConversationStore";
 import { createConversationManager, type ConversationManager } from "./extension/conversation/conversationManager";
-import type { WebviewToHostMessage, HostToWebviewMessage, RunModelSelection, MessageAttachment } from "./shared/messages";
+import type { WebviewToHostMessage, HostToWebviewMessage, RunMode, RunModelSelection, CommandPermission, ImageAttachment } from "./shared/messages";
 import type { ChatMessage, InterruptedRunCheckpoint } from "./shared/chatTypes";
-import { LocalVisionService } from "./extension/vision/localVisionService";
+import { DeepSeekVisionService } from "./extension/vision/deepseekVisionService";
 import { ImageAnalysisService } from "./extension/vision/imageAnalysisService";
 
 const chatViewId = "loopagent.chat";
@@ -216,14 +216,13 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
   private readonly readFileTool;
   private readonly listDirectoryTool;
   private readonly applyEditTool;
-  private readonly runCommandTool;
   private readonly commandApprovalBroker: CommandApprovalBroker;
   private readonly commandOutputChannel: vscode.OutputChannel;
   private activeWebviewView: vscode.WebviewView | undefined;
   private readonly conversationStore: ConversationStore & { close?(): void };
   private readonly conversationManager: ConversationManager;
   private currentConversationId: string | undefined;
-  private readonly visionService: LocalVisionService;
+  private readonly visionService: DeepSeekVisionService;
   private readonly imageAnalysisService: ImageAnalysisService;
 
   constructor(private readonly context: vscode.ExtensionContext) {
@@ -261,16 +260,16 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
 
     // 创建命令执行输出通道（用于自动恢复日志）
     this.commandOutputChannel = vscode.window.createOutputChannel('LoopAgent - Command Execution');
-    this.runCommandTool = createRunCommandTool(vscode, {
-      approve: this.commandApprovalBroker.approve,
-      enableAutoRecovery: true,
-      outputChannel: this.commandOutputChannel,
-    });
 
     // 初始化视觉服务
-    this.visionService = new LocalVisionService(context.extensionPath, {
-      pythonPath: vscode.workspace.getConfiguration("loopagent").get("pythonPath"),
-      port: 8765,
+    const modelConfig = vscode.workspace.getConfiguration("loopagent.model");
+    this.visionService = new DeepSeekVisionService({
+      apiKey: async () => {
+        const provider = getConfiguredProviderId();
+        const secretKey = `loopagent.model.apiKey.${provider}`;
+        return context.secrets.get(secretKey);
+      },
+      baseUrl: modelConfig.get<string>("baseUrl", "").trim() || undefined,
     });
     this.imageAnalysisService = new ImageAnalysisService(this.visionService);
 
@@ -449,6 +448,8 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       message.runId,
       checkpoint.task,
       checkpoint.model,
+      checkpoint.mode,
+      checkpoint.commandPermission,
       this.conversationManager.getConversationHistory(conversation.conversationId),
       conversation.conversationId,
       webview,
@@ -486,6 +487,8 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       message.runId,
       message.task,
       message.model,
+      message.mode,
+      message.commandPermission,
       conversationHistory,
       conversation.conversationId,
       webview,
@@ -512,6 +515,8 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
       message.runId,
       message.userMessage,
       message.model,
+      message.mode,
+      message.commandPermission,
       conversationHistory,
       message.conversationId,
       webview,
@@ -524,13 +529,21 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
     runId: string,
     task: string,
     model: RunModelSelection | undefined,
+    mode: RunMode | undefined,
+    commandPermission: CommandPermission | undefined,
     conversationHistory: ChatMessage[],
     conversationId: string,
     webview: vscode.Webview,
     resumeCheckpoint?: InterruptedRunCheckpoint,
-    attachments?: MessageAttachment[],
+    attachments?: ImageAttachment[],
   ): void {
     this.activeRun?.cancel();
+
+    const runCommandTool = createRunCommandTool(vscode, {
+      approve: commandPermission === "full" ? async () => true : this.commandApprovalBroker.approve,
+      enableAutoRecovery: true,
+      outputChannel: this.commandOutputChannel,
+    });
 
     const assistantMessages = new Map<string, { content: string; reasoning: string }>();
 
@@ -543,13 +556,16 @@ class LoopAgentChatViewProvider implements vscode.WebviewViewProvider {
         readFileTool: this.readFileTool,
         listDirectoryTool: this.listDirectoryTool,
         applyEditTool: this.applyEditTool,
-        runCommandTool: this.runCommandTool,
-        imageAnalysisService: this.imageAnalysisService,
+        runCommandTool,
+        visionService: this.visionService,
+        mode,
         onCheckpoint: (checkpoint) => {
           this.conversationManager.saveInterruptedRun({
             ...checkpoint,
             conversationId,
             model,
+            mode,
+            commandPermission,
           });
         },
       }),

@@ -338,4 +338,63 @@ describe("createOpenAiReactModelTurn", () => {
       modelTurn({ messages: [{ role: "user", content: "Status?" }], signal: new AbortController().signal }),
     ).rejects.toThrow(message);
   });
+
+  it("keeps assistant text that precedes streamed tool calls", async () => {
+    const modelTurn = createOpenAiReactModelTurn({
+      provider: createProvider([
+        { type: "contentDelta", content: "Let me search the workspace first. " },
+        { type: "toolCallDelta", index: 0, id: "call_1", name: "exploreCode", argumentsDelta: '{"query":"registry"}' },
+        { type: "finishReason", reason: "tool_calls" },
+      ]),
+      tools: [exploreCodeTool],
+    });
+
+    await expect(
+      modelTurn({ messages: [{ role: "user", content: "Where is it?" }], signal: new AbortController().signal }),
+    ).resolves.toMatchObject({
+      kind: "toolRequests",
+      assistantMessage: { content: "Let me search the workspace first. " },
+    });
+  });
+
+  it("accepts tool calls even when the provider reports a non-tool-calls finish reason", async () => {
+    const modelTurn = createOpenAiReactModelTurn({
+      provider: createProvider([
+        { type: "toolCallDelta", index: 0, id: "call_1", name: "exploreCode", argumentsDelta: '{"query":"x"}' },
+        { type: "finishReason", reason: "stop" },
+      ]),
+      tools: [exploreCodeTool],
+    });
+
+    await expect(
+      modelTurn({ messages: [{ role: "user", content: "Where?" }], signal: new AbortController().signal }),
+    ).resolves.toMatchObject({ kind: "toolRequests" });
+  });
+
+  it("keeps the natural-language prefix when tool calls use DSML", async () => {
+    const modelTurn = createOpenAiReactModelTurn({
+      provider: createProvider([
+        {
+          type: "contentDelta",
+          content: [
+            "I will inspect the file.",
+            '<｜｜DSML｜｜tool_calls>',
+            '<｜｜DSML｜｜invoke name="readFile">',
+            '<｜｜DSML｜｜parameter name="path" string="true">src/main.ts</｜｜DSML｜｜parameter>',
+            '</｜｜DSML｜｜invoke>',
+            '</｜｜DSML｜｜tool_calls>',
+          ].join("\n"),
+        },
+        { type: "finishReason", reason: "stop" },
+      ]),
+      tools: [readFileTool],
+    });
+
+    await expect(
+      modelTurn({ messages: [{ role: "user", content: "Review." }], signal: new AbortController().signal }),
+    ).resolves.toMatchObject({
+      kind: "toolRequests",
+      assistantMessage: { content: "I will inspect the file." },
+    });
+  });
 });

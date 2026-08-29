@@ -414,6 +414,54 @@ h1 {
   white-space: pre-wrap;
 }
 
+.process-timeline-thinking .process-timeline-marker {
+  border: none;
+  background: none;
+  font-size: 12px;
+  height: auto;
+  width: auto;
+  margin-top: 0;
+}
+
+.process-timeline-thinking-block {
+  border: none;
+  margin: 0;
+}
+
+.process-timeline-thinking-block summary {
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 11px;
+  font-style: italic;
+  list-style: none;
+  user-select: none;
+}
+
+.process-timeline-thinking-block summary::-webkit-details-marker {
+  display: none;
+}
+
+.process-timeline-thinking-block summary::before {
+  content: "▸ ";
+}
+
+.process-timeline-thinking-block[open] summary::before {
+  content: "▾ ";
+}
+
+.process-timeline-thinking-text {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  font-style: italic;
+  line-height: 1.5;
+  margin: 4px 0 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 4px 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .process-details[data-process-state="running"] {
   border-left-color: var(--vscode-progressBar-background, var(--vscode-charts-blue));
 }
@@ -836,6 +884,28 @@ textarea:focus {
   min-width: 0;
 }
 
+
+
+.select-dropdown {
+  appearance: none;
+  background: var(--vscode-dropdown-background, var(--vscode-input-background, transparent));
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border, var(--vscode-panel-border, transparent)));
+  border-radius: 4px;
+  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+  cursor: pointer;
+  min-height: 28px;
+  min-width: 80px;
+  padding: 4px 24px 4px 8px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+
+.select-dropdown:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .tool-menu-anchor {
   min-width: 0;
   position: relative;
@@ -953,4 +1023,64 @@ button:disabled {
     min-width: 0;
     width: min(240px, calc(100vw - 16px));
   }
+}
+
+/* 图片附件预览 */
+.attachment-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+}
+
+.attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--vscode-badge-background, rgba(128, 128, 128, 0.15));
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.attachment-thumbnail {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 3px;
+}
+
+.attachment-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--vscode-foreground);
+}
+
+.attachment-remove {
+  background: none;
+  border: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.attachment-remove:hover {
+  color: var(--vscode-errorForeground);
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.attach-button {
+  font-size: 16px;
+  min-width: 32px;
+  padding: 0 8px;
 }

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createRunCommandTool } from "../src/extension/agent/runCommandTool";
 import type { ReactAgentTool } from "../src/extension/agent/reactTypes";
+import { SmartCommandExecutor } from "../src/extension/agent/smartCommandExecutor";
 
 const spawnedPids = new Set<number>();
 
@@ -44,7 +45,7 @@ describe("runCommand tool", () => {
         workspace: { workspaceFolders: [{ uri: { fsPath: workspaceRoot } }] },
         window: { showWarningMessage: approve },
       } as never,
-      { timeoutMs: 5_000, approve: injectedApprove },
+      { timeoutMs: 5_000, approve: injectedApprove, enableAutoRecovery: false },
     );
 
     const result = await invoke(tool, { command: nodeCommand("process.stdout.write('ok')") });
@@ -123,6 +124,62 @@ describe("runCommand tool", () => {
     expect(result).toContain("Output truncated to the last 1024 bytes.");
   });
 
+  it("reports a non-zero command as failed so recovery alternatives can be considered", async () => {
+    const executor = new SmartCommandExecutor();
+
+    const result = await executor.executeWithAutoRecovery(
+      nodeCommand("process.stderr.write('failed'); process.exit(3)"),
+      workspaceRoot,
+      { allowAlternatives: false, timeout: 5_000 },
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      exitCode: 3,
+      error: { type: "execution" },
+    });
+  });
+
+  it("approves one low-risk recovery command separately and does not run other alternatives", async () => {
+    const injectedApprove = vi.fn(async () => true);
+    const executeWithAutoRecovery = vi.fn()
+      .mockResolvedValueOnce({
+        success: false,
+        error: {
+          type: "not_found",
+          message: "not found",
+          alternatives: [
+            { automation: "auto", risk: "low", action: { type: "skip", payload: {} }, successProbability: 0.9, description: "skip" },
+            { automation: "auto", risk: "high", action: { type: "command", payload: { command: "npm install --force" } }, successProbability: 0.9, description: "force" },
+            { automation: "auto", risk: "low", action: { type: "command", payload: { command: "npm test", cwd: workspaceRoot } }, successProbability: 0.8, description: "test" },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ success: true, stdout: "recovered", exitCode: 0 });
+    const tool = createRunCommandTool(
+      {
+        workspace: { workspaceFolders: [{ uri: { fsPath: workspaceRoot } }] },
+        window: { showWarningMessage: approve },
+      } as never,
+      { approve: injectedApprove, executor: { executeWithAutoRecovery } },
+    );
+
+    const result = JSON.parse(await invoke(tool, { command: "npm run verify" })) as Record<string, unknown>;
+
+    expect(injectedApprove).toHaveBeenNthCalledWith(1, expect.objectContaining({ command: "npm run verify" }));
+    expect(injectedApprove).toHaveBeenNthCalledWith(2, expect.objectContaining({ command: "npm test", cwd: workspaceRoot }));
+    expect(executeWithAutoRecovery).toHaveBeenNthCalledWith(
+      2,
+      "npm test",
+      workspaceRoot,
+      expect.objectContaining({ allowAlternatives: false, maxAttempts: 1 }),
+    );
+    expect(result).toMatchObject({
+      success: true,
+      recovery: { attempted: true, command: "npm test", success: true },
+    });
+  });
+
   it("terminates the process tree on timeout and abort", async () => {
     const timeoutPidFile = join(workspaceRoot, "timeout.pid");
     const timeoutPromise = invoke(
@@ -158,7 +215,7 @@ function createTool(
       workspace: { workspaceFolders: [{ uri: { fsPath: workspaceRoot } }] },
       window: { showWarningMessage: approve },
     } as never,
-    { timeoutMs: 5_000, ...options },
+    { timeoutMs: 5_000, enableAutoRecovery: false, ...options },
   );
 }
 

@@ -14,8 +14,8 @@ export type TimeoutAdjustment = {
 /**
  * 判断是否应该延长超时时间
  *
- * @param messages 子代理的所有消息
- * @param recentWindowSize 最近观察窗口的消息数（默认5）
+  * @param messages 子代理的所有消息
+  * @param recentWindowSize 最近观察窗口的消息数（默认5）
  * @returns 超时调整建议
  */
 export function evaluateTimeoutAdjustment(

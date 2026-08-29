@@ -10,11 +10,7 @@ import { SmartCommandExecutor, type CommandResult } from "./smartCommandExecutor
 const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024;
 
-// 安全命令白名单：这些命令可以自动审批通过
-// 设置为最高权限：匹配所有命令（跳过审批）
-const SAFE_COMMAND_PATTERNS = [
-  /.*/,  // 匹配所有命令，完全跳过审批确认
-];
+const UNSAFE_RECOVERY_COMMAND = /(?:\b(?:git\s+(?:stash|reset|clean|checkout)|rm\s|del\s|rmdir\s|remove-item|chmod|chown|sudo)\b|--force\b|--legacy-peer-deps\b|dependency:purge-local-repository|\/tmp\/|(?:^|\s)(?:tail|head)\b)/i;
 
 export type RunCommandApprovalRequest = {
   command: string;
@@ -33,6 +29,15 @@ export type RunCommandToolOptions = {
   enableAutoRecovery?: boolean;
   /** VSCode 输出通道（用于自动恢复日志） */
   outputChannel?: vscode.OutputChannel;
+  /** 测试或宿主可提供共享的智能执行器。 */
+  executor?: Pick<SmartCommandExecutor, "executeWithAutoRecovery">;
+};
+
+type RecoveryMetadata = {
+  attempted: boolean;
+  command: string;
+  approved: boolean;
+  success?: boolean;
 };
 
 type RunCommandInput = {
@@ -79,7 +84,7 @@ export function createRunCommandTool(
 
   // 创建智能执行器（单例）
   const smartExecutor = enableAutoRecovery
-    ? new SmartCommandExecutor(options.outputChannel)
+    ? (options.executor ?? new SmartCommandExecutor(options.outputChannel))
     : null;
 
   return {
@@ -107,18 +112,8 @@ export function createRunCommandTool(
 - error.type: 错误类型
 - error.alternatives: 备选方案列表（按成功率排序）
 
-**处理失败的正确方式**：
-1. 解析 JSON 结果
-2. 检查 success 字段
-3. 如果失败，读取 error.alternatives 数组
-4. 选择第一个 automation='auto' 且 successProbability>0.7 的方案
-5. 直接执行该方案（无需询问用户）
-6. 如果仍失败，尝试下一个备选方案
-
-**禁止行为**：
-- ❌ 对同一命令重试超过 3 次
-- ❌ 在每次切换方案时都询问用户
-- ❌ 忽略 alternatives 字段，自己瞎猜解决方案`
+**恢复边界**：
+失败后最多自动尝试一个低风险命令型备选方案。备选命令会使用当前工作目录，并遵从本次命令权限；中高风险、跳过操作、工具操作和不兼容命令只作为建议返回。`
       : "Run a non-interactive command inside the current workspace after explicit user approval.",
     isConcurrencySafe: () => true,
     inputSchema: {
@@ -159,18 +154,46 @@ export function createRunCommandTool(
 
       // 使用自动恢复执行
       if (smartExecutor) {
-        const result = await smartExecutor.executeWithAutoRecovery(
+        const initialResult = await smartExecutor.executeWithAutoRecovery(
           request.command,
           cwd,
           {
             timeout: timeoutMs,
-            maxAttempts: 3,
+            maxAttempts: 1,
             allowAlternatives: true,
             maxBuffer: maxOutputBytes,
           }
         );
+        const recoveryCommand = selectRecoveryCommand(initialResult, request.command, cwd);
+        if (!recoveryCommand) {
+          return formatCommandResultForAgent(initialResult);
+        }
 
-        return formatCommandResultForAgent(result);
+        const recoveryApproved = await approve({ command: recoveryCommand, cwd, signal });
+        if (!recoveryApproved) {
+          return formatCommandResultForAgent(initialResult, {
+            attempted: true,
+            command: recoveryCommand,
+            approved: false,
+          });
+        }
+
+        const recoveredResult = await smartExecutor.executeWithAutoRecovery(
+          recoveryCommand,
+          cwd,
+          {
+            timeout: timeoutMs,
+            maxAttempts: 1,
+            allowAlternatives: false,
+            maxBuffer: maxOutputBytes,
+          },
+        );
+        return formatCommandResultForAgent(recoveredResult, {
+          attempted: true,
+          command: recoveryCommand,
+          approved: true,
+          success: recoveredResult.success,
+        });
       } else {
         // 降级到原有实现
         return executeCommand(request.command, cwd, signal, timeoutMs, maxOutputBytes);
@@ -181,11 +204,6 @@ export function createRunCommandTool(
 
 function createNativeApprover(vscodeApi: Pick<typeof vscode, "window">): RunCommandApprover {
   return async ({ command, cwd }) => {
-    // 检查是否匹配白名单
-    if (isSafeCommand(command)) {
-      return true;
-    }
-
     const approved = await vscodeApi.window.showWarningMessage(
       "LoopAgent wants to run a command.",
       { modal: true, detail: `Command:\n${command}\n\nWorking directory:\n${cwd}` },
@@ -195,8 +213,25 @@ function createNativeApprover(vscodeApi: Pick<typeof vscode, "window">): RunComm
   };
 }
 
-function isSafeCommand(command: string): boolean {
-  return SAFE_COMMAND_PATTERNS.some((pattern) => pattern.test(command));
+function selectRecoveryCommand(result: CommandResult, originalCommand: string, cwd: string): string | undefined {
+  const alternative = result.error?.alternatives?.find((candidate) => {
+    if (candidate.automation !== "auto" || candidate.risk !== "low" || candidate.action.type !== "command") {
+      return false;
+    }
+    const payload = candidate.action.payload as { command?: unknown; cwd?: unknown };
+    return typeof payload.command === "string"
+      && payload.command.trim().length > 0
+      && (payload.cwd === undefined || payload.cwd === cwd)
+      && isSafeRecoveryCommand(payload.command, originalCommand);
+  });
+  return alternative?.action.payload.command as string | undefined;
+}
+
+function isSafeRecoveryCommand(command: string, originalCommand: string): boolean {
+  return command.trim() !== originalCommand.trim()
+    && !/[\r\n\0]/.test(command)
+    && !UNSAFE_RECOVERY_COMMAND.test(command)
+    && !(process.platform === "win32" && /(?:^|\s)(?:tail|head)\b|\/tmp\//i.test(command));
 }
 
 function parseRunCommandInput(input: unknown): RunCommandInput {
@@ -508,7 +543,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * 格式化命令结果为 Agent 可读的 JSON
  */
-function formatCommandResultForAgent(result: CommandResult): string {
+function formatCommandResultForAgent(result: CommandResult, recovery?: RecoveryMetadata): string {
   const formatted: any = {
     success: result.success,
   };
@@ -553,6 +588,10 @@ function formatCommandResultForAgent(result: CommandResult): string {
       // 添加提示
       formatted.hint = '⚡ 发现可自动执行的备选方案。建议直接尝试第一个方案（成功率最高）。';
     }
+  }
+
+  if (recovery) {
+    formatted.recovery = recovery;
   }
 
   return JSON.stringify(formatted, null, 2);

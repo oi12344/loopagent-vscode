@@ -13,7 +13,7 @@ describe("DeepSeek Provider", () => {
   });
 
   describe("thinking mode behavior", () => {
-    it("应该在有工具时禁用思考模式", async () => {
+    it("应该在有工具时保留用户启用的思考模式", async () => {
       const provider = createDeepSeekProvider({
         apiKey,
         baseUrl,
@@ -64,11 +64,10 @@ describe("DeepSeek Provider", () => {
       const callArgs = mockFetch.mock.calls[0];
       const requestBody = JSON.parse(callArgs[1].body);
 
-      // 验证思考模式被禁用
-      expect(requestBody.thinking).toEqual({ type: "disabled" });
+      expect(requestBody.thinking).toEqual({ type: "enabled" });
     });
 
-    it("keeps thinking disabled when finalizing a tool-call history", async () => {
+    it("keeps thinking enabled when finalizing a tool-call history", async () => {
       const provider = createDeepSeekProvider({
         apiKey,
         baseUrl,
@@ -110,7 +109,7 @@ describe("DeepSeek Provider", () => {
       }
 
       const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(requestBody.thinking).toEqual({ type: "disabled" });
+      expect(requestBody.thinking).toEqual({ type: "enabled" });
     });
 
     it("应该在无工具时保留用户配置的思考模式", async () => {

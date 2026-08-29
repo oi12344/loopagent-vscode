@@ -30,14 +30,6 @@ export function createDeepSeekProvider({
         throw new ModelProviderError("missing_api_key", "DeepSeek API key is not configured");
       }
 
-      // 工具调用链始终禁用思考模式，避免收尾请求因历史缺少 reasoning_content 被拒绝
-      const hasToolHistory = request.messages.some((message) =>
-        message.role === "tool" || (message.role === "assistant" && (message.toolCalls?.length ?? 0) > 0)
-      );
-      const requestThinking = (request.tools && request.tools.length > 0) || hasToolHistory
-        ? "disabled"
-        : thinking;
-
       const client = createOpenAiCompatibleClient({
         id: "deepseek",
         displayName: `DeepSeek ${model}`,
@@ -46,7 +38,7 @@ export function createDeepSeekProvider({
         model,
         fetch: fetchImpl,
         body: {
-          thinking: { type: requestThinking },
+          thinking: { type: thinking },
         },
       });
 

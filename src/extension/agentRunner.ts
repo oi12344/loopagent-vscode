@@ -1,4 +1,4 @@
-import type { HostToWebviewMessage, MessageAttachment } from "../shared/messages";
+import type { HostToWebviewMessage, ImageAttachment } from "../shared/messages";
 import type { ChatMessage, InterruptedRunCheckpoint } from "../shared/chatTypes";
 import type { ReactAgentMessage } from "./agent/reactTypes";
 
@@ -11,8 +11,8 @@ export type AgentRunRequest = {
   requiredToolNames?: string[];
   conversationId?: string;
   resumeState?: AgentResumeState;
-  /** 用户上传的附件（图片、文件等） */
-  attachments?: MessageAttachment[];
+  /** 用户上传的图片附件 */
+  attachments?: ImageAttachment[];
 };
 
 export type AgentResumeState = { kind: "react"; checkpoint: InterruptedRunCheckpoint };
@@ -31,7 +31,7 @@ export type StartAgentRunOptions = {
   conversationHistory?: ChatMessage[];
   conversationId?: string;
   resumeState?: AgentResumeState;
-  attachments?: MessageAttachment[];
+  attachments?: ImageAttachment[];
 };
 
 export type AgentRunHandle = {

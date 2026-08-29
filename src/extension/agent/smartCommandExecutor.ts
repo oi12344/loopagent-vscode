@@ -155,20 +155,42 @@ export class SmartCommandExecutor {
 			);
 
 			const duration = Date.now() - startTime;
+			// 解析 executeCommand 的结果格式
+			const statusMatch = resultText.match(/Status: (exited|timed_out)\nExit code: (.+)\n/);
+			const status = statusMatch?.[1];
+			const stdoutMatch = resultText.match(/stdout:\n([\s\S]*?)\nstderr:/);
+			const stderrMatch = resultText.match(/stderr:\n([\s\S]*?)(?:\n(?:Output truncated|Progress checks:|$))/);
+			const exitCode = statusMatch?.[2] === 'none' ? undefined : Number(statusMatch?.[2]);
+
+			if (status === 'timed_out' || (exitCode !== undefined && exitCode !== 0)) {
+				this.log(`[SmartExecutor] ✗ 命令失败 (耗时 ${duration}ms)`);
+				const result: CommandResult = {
+					success: false,
+					stdout: stdoutMatch?.[1] ?? '',
+					stderr: stderrMatch?.[1] ?? '',
+					exitCode,
+					error: {
+						type: status === 'timed_out' ? 'timeout' : 'execution',
+						message: status === 'timed_out' ? `命令执行超时 (>${duration}ms)` : `命令执行失败 (exit code ${exitCode})`,
+					},
+					context: { command, cwd, duration, attempt: attempts + 1 },
+				};
+				if (allowAlternatives && result.error) {
+					result.error.alternatives = await this.generateAlternatives(command, cwd, result);
+				}
+				return result;
+			}
+
 			this.log(`[SmartExecutor] ✓ 命令成功 (耗时 ${duration}ms)`);
 
 			// 成功后重置计数
 			this.attemptHistory.delete(commandKey);
 
-			// 解析 executeCommand 的结果格式
-			const stdoutMatch = resultText.match(/stdout:\n([\s\S]*?)\nstderr:/);
-			const stderrMatch = resultText.match(/stderr:\n([\s\S]*?)(?:\n(?:Output truncated|Progress checks:|$))/);
-
 			return {
 				success: true,
 				stdout: stdoutMatch?.[1] ?? '',
 				stderr: stderrMatch?.[1] ?? '',
-				exitCode: 0,
+				exitCode: exitCode ?? 0,
 				context: {
 					command,
 					cwd,

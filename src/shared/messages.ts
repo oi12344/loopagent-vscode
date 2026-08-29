@@ -7,18 +7,14 @@ export type EditFileStat = {
   removed: number;
 };
 
-/** 消息附件（图片、文件等） */
-export type MessageAttachment = {
-  /** 附件类型 */
-  type: "image" | "file";
-  /** 本地文件系统路径 */
-  path: string;
+/** 图片附件（base64 编码） */
+export type ImageAttachment = {
   /** 文件名 */
   name: string;
-  /** 文件大小（字节） */
-  sizeBytes: number;
-  /** MIME 类型（可选） */
-  mimeType?: string;
+  /** base64 编码的图片数据（不含 data: 前缀） */
+  base64: string;
+  /** MIME 类型，如 image/png */
+  mimeType: string;
 };
 
 /** AI 模型提供商标识 */
@@ -26,6 +22,12 @@ export type ModelProviderId = "deepseek";
 
 /** 模型思维模式 */
 export type ModelThinkingMode = "disabled" | "enabled";
+
+/** 单次任务的执行边界。 */
+export type RunMode = "plan" | "execute";
+
+/** 命令执行的审批边界。 */
+export type CommandPermission = "ask" | "full";
 
 /** 模型运行配置 */
 export type RunModelSelection = {
@@ -43,7 +45,9 @@ export type WebviewToHostMessage =
       runId: string;
       task: string;
       model?: RunModelSelection;
-      attachments?: MessageAttachment[];
+      mode?: RunMode;
+      commandPermission?: CommandPermission;
+      attachments?: ImageAttachment[];
     }
   | {
       type: "continueConversation";
@@ -51,7 +55,9 @@ export type WebviewToHostMessage =
       conversationId: string;
       userMessage: string;
       model?: RunModelSelection;
-      attachments?: MessageAttachment[];
+      mode?: RunMode;
+      commandPermission?: CommandPermission;
+      attachments?: ImageAttachment[];
     }
   | {
       /** Webview 挂载完成，可以安全接收恢复消息了 */

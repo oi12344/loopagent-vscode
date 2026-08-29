@@ -2,6 +2,8 @@ import type { HostToWebviewMessage } from "../../shared/messages";
 import type { InterruptedRunCheckpoint } from "../../shared/chatTypes";
 import type { MemoryEvidence } from "../memory/types";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
+import type { VisionService } from "../vision/types";
+import type { ImageAttachment } from "../../shared/messages";
 import { ReactModelToolChoiceError, type ReactAgentMessage, type ReactAgentRunOutcome, type ReactAgentTool, type ReactAgentToolRequest, type ReactModelTurn, type ReactModelTurnResult } from "./reactTypes";
 import { createToolInvoker, type ToolInvoker } from "./toolRegistry";
 import { compressConversationHistory } from "./messageCompression";
@@ -38,6 +40,8 @@ export type CreateReactAgentRunnerOptions = {
   maxRunTimeoutMs?: number;
   /** 共享的工具结果缓存实例，用于跨运行复用只读工具结果 */
   toolCache?: ToolResultCache;
+  /** Vision 服务，用于自动分析上传的图片 */
+  visionService?: VisionService;
 };
 
 export function createReactAgentRunner({
@@ -57,6 +61,7 @@ export function createReactAgentRunner({
   maxRunTimeoutMs: configuredMaxRunTimeoutMs,
   contextWindow = 32_000,
   toolCache: sharedToolCache,
+  visionService,
 }: CreateReactAgentRunnerOptions): AgentRunner {
   const invokeTool = configuredInvokeTool ?? createToolInvoker(tools);
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
@@ -129,6 +134,36 @@ export function createReactAgentRunner({
           const latestMessage = messages.at(-1);
           if (latestMessage?.role !== "user" || latestMessage.content !== task) {
             messages.push({ role: "user", content: task });
+          }
+        }
+
+        // 自动分析上传的图片并注入上下文
+        const attachments = request.attachments;
+        if (attachments && attachments.length > 0 && visionService) {
+          const imageAnalyses: string[] = [];
+          for (let i = 0; i < attachments.length; i++) {
+            const attachment = attachments[i];
+            try {
+              const result = await visionService.analyze({
+                attachment,
+                prompt: "请详细描述这张图片的内容，包括文字、UI 元素、布局和关键信息。",
+                signal,
+              });
+              imageAnalyses.push(`[图片 ${i + 1}${attachment.name ? ` - ${attachment.name}` : ""}] ${result.text}`);
+            } catch (error) {
+              imageAnalyses.push(`[图片 ${i + 1}] 分析失败: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+
+          if (imageAnalyses.length > 0) {
+            const imageContext = `用户上传了 ${attachments.length} 张图片，以下是自动分析结果：\n\n${imageAnalyses.join("\n\n")}`;
+            // 在用户消息之前注入图片分析上下文
+            const userMessageIndex = messages.findIndex(m => m.role === "user");
+            if (userMessageIndex >= 0) {
+              messages.splice(userMessageIndex, 0, { role: "user", content: imageContext });
+            } else {
+              messages.push({ role: "user", content: imageContext });
+            }
           }
         }
 
@@ -343,7 +378,7 @@ export function createReactAgentRunner({
             const outcomes: Array<{ content: string; succeeded: boolean; productive: boolean; evidence: MemoryEvidence[] }> = [];
 
             if (batch.concurrent) {
-              // Concurrent: no context passing
+              // Concurrent: cache via invoke, parallel execution
               const duplicateInBatch = new Set<string>();
               const results = await Promise.all(
                 batch.requests.map(({ request }) => {
@@ -362,7 +397,7 @@ export function createReactAgentRunner({
               );
               outcomes.push(...results);
             } else {
-              // Sequential: pass context from previous tool
+              // Sequential: pass context from previous tool (cache via invoke)
               let previousOutput: string | undefined;
               for (const { request } of batch.requests) {
                 const result = await invoke(request, previousOutput);

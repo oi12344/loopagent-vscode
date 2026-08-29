@@ -1,8 +1,11 @@
 import * as React from "react";
 import type {
   EditFileStat,
+  CommandPermission,
   HostToWebviewMessage,
+  ImageAttachment,
   ModelThinkingMode,
+  RunMode,
   RunModelSelection,
   WorkflowNodeEventKind,
 } from "../shared/messages";
@@ -116,6 +119,8 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [turns, setTurns] = React.useState<ChatTurn[]>([]);
   const [selectedModelId, setSelectedModelId] = React.useState(modelOptions[0].id);
   const [thinkingMode, setThinkingMode] = React.useState<ModelThinkingMode>("enabled");
+  const [runMode, setRunMode] = React.useState<RunMode>("execute");
+  const [commandPermission, setCommandPermission] = React.useState<CommandPermission>("ask");
   const [openMenu, setOpenMenu] = React.useState<"model" | "thinking" | "history" | null>(null);
   const [conversationId, setConversationId] = React.useState<string | undefined>(undefined);
   const [conversations, setConversations] = React.useState<ConversationSummary[]>([]);
@@ -123,6 +128,7 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
   const [workflowProgress, setWorkflowProgress] = React.useState<Record<string, WorkflowProgress>>({});
   const [pendingApprovals, setPendingApprovals] = React.useState<PendingCommandApproval[]>([]);
   const [appliedEdits, setAppliedEdits] = React.useState<AppliedEditNotification[]>([]);
+  const [pendingAttachments, setPendingAttachments] = React.useState<ImageAttachment[]>([]);
   const nextTurnId = React.useRef(0);
   const chatLogRef = React.useRef<HTMLElement | null>(null);
   const composerToolsRef = React.useRef<HTMLDivElement | null>(null);
@@ -701,6 +707,65 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
     vscodeApi.postMessage({ type: "switchConversation", conversationId: targetConversationId });
   }
 
+  // --- 图片上传处理 ---
+
+  function fileToImageAttachment(file: File): Promise<ImageAttachment> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        // 移除 data:image/xxx;base64, 前缀
+        const base64 = dataUrl.split(",")[1] ?? "";
+        resolve({ name: file.name, base64, mimeType: file.type });
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function addImagesFromFiles(files: FileList | File[]) {
+    const imageFiles = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    if (imageFiles.length === 0) return;
+
+    const attachments = await Promise.all(imageFiles.map(fileToImageAttachment));
+    setPendingAttachments((prev) => [...prev, ...attachments]);
+  }
+
+  function handlePaste(event: React.ClipboardEvent) {
+    const items = event.clipboardData?.items;
+    if (!items) return;
+
+    const imageFiles: File[] = [];
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) imageFiles.push(file);
+      }
+    }
+
+    if (imageFiles.length > 0) {
+      event.preventDefault();
+      addImagesFromFiles(imageFiles);
+    }
+  }
+
+  function handleDrop(event: React.DragEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer?.files) {
+      addImagesFromFiles(event.dataTransfer.files);
+    }
+  }
+
+  function handleDragOver(event: React.DragEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function removeAttachment(index: number) {
+    setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
+  }
+
   function submitTask(task: string) {
     const trimmedMessage = task.trim();
 
@@ -713,9 +778,11 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
       thinking: effectiveThinkingMode,
     };
     const runId = createTurnId("run");
+    const currentAttachments = pendingAttachments;
 
     setIsRunning(true);
     setOpenMenu(null);
+    setPendingAttachments([]);
     setTurns((currentTurns) => [
       ...currentTurns,
       {
@@ -735,9 +802,20 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         conversationId,
         userMessage: trimmedMessage,
         model: runModel,
+        mode: runMode,
+        commandPermission,
+        attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
       });
     } else {
-      vscodeApi.postMessage({ type: "startTask", runId, task: trimmedMessage, model: runModel });
+      vscodeApi.postMessage({
+        type: "startTask",
+        runId,
+        task: trimmedMessage,
+        model: runModel,
+        mode: runMode,
+        commandPermission,
+        attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
+      });
     }
   }
 
@@ -833,18 +911,68 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
         ) : null}
       </section>
 
-      <form className="chat-composer" aria-label="Chat composer" onSubmit={handleSubmit}>
+      <form
+        className="chat-composer"
+        aria-label="Chat composer"
+        onSubmit={handleSubmit}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+      >
         <label htmlFor="message-input">Message</label>
         <textarea
           id="message-input"
           value={message}
           onChange={(event) => setMessage(event.currentTarget.value)}
-          placeholder="Ask LoopAgent anything about this workspace."
+          onPaste={handlePaste}
+          placeholder="Ask LoopAgent anything about this workspace. Paste or drag images here."
           rows={3}
         />
 
+        {pendingAttachments.length > 0 ? (
+          <div className="attachment-preview" aria-label="Pending image attachments">
+            {pendingAttachments.map((att, index) => (
+              <div key={`${att.name}-${index}`} className="attachment-item">
+                <img
+                  src={`data:${att.mimeType};base64,${att.base64}`}
+                  alt={att.name}
+                  className="attachment-thumbnail"
+                />
+                <span className="attachment-name">{att.name}</span>
+                <button
+                  type="button"
+                  className="attachment-remove"
+                  onClick={() => removeAttachment(index)}
+                  aria-label={`Remove ${att.name}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
         <div className="composer-toolbar">
           <div className="composer-tools" ref={composerToolsRef}>
+            <select
+              className="select-dropdown"
+              aria-label="模式"
+              value={runMode}
+              disabled={isRunning}
+              onChange={(e) => setRunMode(e.target.value as RunMode)}
+            >
+              <option value="execute">执行</option>
+              <option value="plan">计划</option>
+            </select>
+            <select
+              className="select-dropdown"
+              aria-label="命令权限"
+              value={commandPermission}
+              disabled={isRunning}
+              onChange={(e) => setCommandPermission(e.target.value as CommandPermission)}
+            >
+              <option value="ask">请求批准</option>
+              <option value="full">完全访问</option>
+            </select>
             <div className="tool-menu-anchor">
               <button type="button" className="chip-button" onClick={() => setOpenMenu(openMenu === "model" ? null : "model")}>
                 {selectedModel.label}
@@ -867,15 +995,38 @@ export function App({ vscodeApi = createDefaultVsCodeApi() }: AppProps) {
             </div>
           </div>
 
-          {isRunning ? (
-            <button type="button" onClick={handleStop}>
-              Stop
+          <div className="composer-actions">
+            <input
+              type="file"
+              id="image-upload-input"
+              accept="image/*"
+              multiple
+              style={{ display: "none" }}
+              onChange={(e) => {
+                if (e.target.files) addImagesFromFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+            <button
+              type="button"
+              className="chip-button attach-button"
+              disabled={isRunning}
+              onClick={() => document.getElementById("image-upload-input")?.click()}
+              aria-label="Attach image"
+            >
+              📎
             </button>
-          ) : (
-            <button type="submit" disabled={!message.trim()}>
-              Send
-            </button>
-          )}
+
+            {isRunning ? (
+              <button type="button" onClick={handleStop}>
+                Stop
+              </button>
+            ) : (
+              <button type="submit" disabled={!message.trim() && pendingAttachments.length === 0}>
+                Send
+              </button>
+            )}
+          </div>
         </div>
       </form>
     </main>
@@ -1332,10 +1483,11 @@ const AssistantMessage = React.memo(function AssistantMessage({ turn, workflow, 
         <span>{formatAssistantStatus(turn.status)}</span>
       </div>
 
+      {turn.content.length > 0 ? <div className="message-body assistant-answer"><AssistantAnswer content={turn.content} /></div> : null}
+
       {hasProcess ? <AssistantProcess turn={turn} isOpen={isProcessOpen} onToggle={setIsProcessOpen} /> : null}
 
       {workflow?.agents.length || workflow?.step !== undefined ? <WorkflowPlan workflow={workflow} parentStatus={turn.status} /> : null}
-      {turn.content.length > 0 ? <div className="message-body assistant-answer"><AssistantAnswer content={turn.content} /></div> : null}
       {turn.status !== "done" && turn.content.length === 0 && !turn.error ? (
         <div className="assistant-placeholder">Waiting for response...</div>
       ) : null}
@@ -1393,31 +1545,50 @@ function AssistantProcess({
             <p className="process-window-note">Showing the latest {MAX_RENDERED_PROCESS_STEPS} steps.</p>
           ) : null}
           <ol className="process-timeline">
-            {timelineActivities.map((activity) => (
-              <li
-                key={activity.id}
-                className={`process-timeline-step process-timeline-${activity.status}${activity.kind === "tool" ? " process-timeline-tool" : ""}`}
-                data-call-id={activity.kind === "tool" ? activity.id.slice("tool:".length) : undefined}
-              >
-                <span className="process-timeline-marker" aria-hidden="true">{formatActivityIcon(activity.status)}</span>
-                <span className="process-timeline-copy">
-                  <span className="process-timeline-label">{activity.label}</span>
-                  {activity.detail ? <span className="process-timeline-detail">{activity.detail}</span> : null}
-                  {activity.input !== undefined ? (
-                    <details className="process-timeline-field" data-field="input">
-                      <summary className="process-timeline-field-label">Input</summary>
-                      <code className="process-timeline-value">{activity.input}</code>
-                    </details>
-                  ) : null}
-                  {activity.output !== undefined ? (
-                    <details className="process-timeline-field" data-field="output">
-                      <summary className="process-timeline-field-label">Output</summary>
-                      <code className="process-timeline-value">{activity.output}</code>
-                    </details>
-                  ) : null}
-                </span>
-              </li>
-            ))}
+            {timelineActivities.map((activity) => {
+              if (activity.kind === "thinking") {
+                return (
+                  <li
+                    key={activity.id}
+                    className={`process-timeline-step process-timeline-thinking process-timeline-${activity.status}`}
+                  >
+                    <span className="process-timeline-marker" aria-hidden="true">💭</span>
+                    <span className="process-timeline-copy">
+                      <details className="process-timeline-thinking-block" open={activity.status === "running"}>
+                        <summary className="process-timeline-thinking-label">Thinking</summary>
+                        {activity.detail ? <p className="process-timeline-thinking-text">{activity.detail}</p> : null}
+                      </details>
+                    </span>
+                  </li>
+                );
+              }
+
+              return (
+                <li
+                  key={activity.id}
+                  className={`process-timeline-step process-timeline-${activity.status}${activity.kind === "tool" ? " process-timeline-tool" : ""}`}
+                  data-call-id={activity.kind === "tool" ? activity.id.slice("tool:".length) : undefined}
+                >
+                  <span className="process-timeline-marker" aria-hidden="true">{formatActivityIcon(activity.status)}</span>
+                  <span className="process-timeline-copy">
+                    <span className="process-timeline-label">{activity.label}</span>
+                    {activity.detail ? <span className="process-timeline-detail">{activity.detail}</span> : null}
+                    {activity.input !== undefined ? (
+                      <details className="process-timeline-field" data-field="input">
+                        <summary className="process-timeline-field-label">Input</summary>
+                        <code className="process-timeline-value">{activity.input}</code>
+                      </details>
+                    ) : null}
+                    {activity.output !== undefined ? (
+                      <details className="process-timeline-field" data-field="output">
+                        <summary className="process-timeline-field-label">Output</summary>
+                        <code className="process-timeline-value">{activity.output}</code>
+                      </details>
+                    ) : null}
+                  </span>
+                </li>
+              );
+            })}
           </ol>
         </>
       ) : null}

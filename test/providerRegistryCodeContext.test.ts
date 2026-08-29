@@ -7,6 +7,55 @@ import type { ModelMessage, ModelProvider } from "../src/extension/model/types";
 import type { HostToWebviewMessage } from "../src/shared/messages";
 
 describe("createConfiguredAgentRunner code intelligence context", () => {
+  it("limits plan mode to read-only tools and plan instructions", async () => {
+    const capturedToolNames: string[][] = [];
+    const capturedMessages: ModelMessage[][] = [];
+    vi.resetModules();
+    vi.doMock("../src/extension/model/modelConfig", () => ({
+      getModelRuntimeConfig: async () => ({ provider: "deepseek", model: "test-model", baseUrl: "", apiKey: "test-key", thinking: "disabled" }),
+    }));
+    vi.doMock("../src/extension/model/providers/deepseekProvider", () => ({
+      createDeepSeekProvider: (): ModelProvider => ({
+        id: "mock",
+        displayName: "Mock model",
+        stream: async function* ({ messages, tools }) {
+          capturedMessages.push(messages);
+          capturedToolNames.push((tools ?? []).map((tool) => tool.function.name));
+          yield { type: "contentDelta", content: "plan" };
+          yield { type: "finishReason", reason: "stop" };
+        },
+      }),
+    }));
+
+    const { createConfiguredAgentRunner } = await import("../src/extension/model/providerRegistry");
+    const tool = (name: string): ReactAgentTool => ({
+      name,
+      description: name,
+      inputSchema: { type: "object" },
+      invoke: async () => "ok",
+    });
+    const runner = await createConfiguredAgentRunner(
+      {} as never,
+      { provider: "deepseek" },
+      {
+        mode: "plan",
+        workspaceIntelligence: { buildCodeIntelligencePrompt: async () => "" },
+        readFileTool: tool("readFile"),
+        applyEditTool: tool("applyEdit"),
+        runCommandTool: tool("runCommand"),
+      },
+    );
+
+    await collectHostMessages(runner, "Change this file");
+
+    expect(capturedToolNames[0]).toEqual(["exploreCode", "readFile"]);
+    expect(capturedToolNames[0]).not.toContain("applyEdit");
+    expect(capturedToolNames[0]).not.toContain("runCommand");
+    expect(capturedToolNames[0]).not.toContain("spawnSubagent");
+    const prompt = capturedMessages[0]?.filter((message) => message.role === "system").map((message) => message.content).join("\n") ?? "";
+    expect(prompt).toContain("Do not edit files or run commands");
+  });
+
   it("gives the parent runner direct and subagent tools, gated on any real tool call", async () => {
     const capturedToolNames: string[][] = [];
     const capturedMessages: ModelMessage[][] = [];
@@ -43,7 +92,12 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     expect(hostMessages).toContainEqual({ type: "runFinished", runId: "run-1" });
     expect(hostMessages).not.toContainEqual(expect.objectContaining({ type: "runFailed" }));
     expect(capturedToolNames[0]).toEqual(["exploreCode", "spawnSubagent", "waitForSubagents", "cancelSubagent"]);
-    expect(capturedToolNames.at(-1)).toEqual(["exploreCode", "spawnSubagent", "waitForSubagents", "cancelSubagent"]);
+    expect(capturedToolNames.filter((tools) => tools.length > 0).at(-1)).toEqual([
+      "exploreCode",
+      "spawnSubagent",
+      "waitForSubagents",
+      "cancelSubagent",
+    ]);
     expect(capturedMessages.at(-1)?.every((message) => message.role === "system" || message.role === "user")).toBe(true);
     const systemPrompt = capturedMessages[0]
       ?.filter((message) => message.role === "system")
@@ -319,10 +373,8 @@ describe("createConfiguredAgentRunner code intelligence context", () => {
     );
     expect(systemPrompt).toContain("use exploreCode to locate the closest existing implementation");
     expect(systemPrompt).toContain("then read that implementation, its direct callers, relevant types, and tests");
-    expect(systemPrompt).toContain("Skip the exploration phase for clearly scoped single-file changes");
     expect(systemPrompt).toContain("Propose all workspace changes through applyEdit");
-    expect(systemPrompt).toContain("Call applyEdit immediately after reading the relevant files");
-    expect(systemPrompt).toContain("do not ask the user for textual confirmation first");
+    expect(systemPrompt).toContain("When the change is well-scoped and you have verified all affected code, call applyEdit directly");
     expect(systemPrompt).toContain("Do not claim an edit succeeded until applyEdit reports that it was applied");
     expect(systemPrompt).toContain("Use runCommand to run tests, type checks, or builds when relevant to verify a change");
     expect(systemPrompt).toContain("Do not repeat a command the user has rejected");

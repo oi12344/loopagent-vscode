@@ -77,6 +77,8 @@ export type InterruptedRunCheckpoint = {
     model: string;
     thinking: "disabled" | "enabled";
   };
+  mode?: "plan" | "execute";
+  commandPermission?: "ask" | "full";
   step: number;
   messages: Array<Record<string, unknown>>;
   updatedAt: number;

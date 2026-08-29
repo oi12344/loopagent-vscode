@@ -4,6 +4,17 @@
  * 将系统提示词分为多个层级，每层有不同的优先级和压缩策略
  */
 
+/**
+ * 内容感知的 token 估算：中文约 1.5-2 字符/token，英文约 4 字符/token
+ */
+function estimateTokens(text: string): number {
+  if (text.length === 0) return 0;
+  const cjkChars = (text.match(/[\u4e00-\u9fff\u3400-\u4dbf]/g) ?? []).length;
+  const ratio = cjkChars / text.length;
+  const charsPerToken = 4 - ratio * 2;
+  return Math.ceil(text.length / charsPerToken);
+}
+
 export type SystemPromptLayer = {
   /** 层级名称 */
   name: string;
@@ -76,7 +87,7 @@ export function createLayeredSystemPrompt(
   }
 
   const totalChars = layers.reduce((sum, layer) => sum + layer.content.length, 0);
-  const estimatedTokens = Math.ceil(totalChars / 4);
+  const estimatedTokens = layers.reduce((sum, layer) => sum + estimateTokens(layer.content), 0);
 
   return {
     layers,
@@ -148,9 +159,9 @@ export function compressLayeredPrompt(
     }
 
     // 可压缩层：生成摘要
-    const layerTokens = Math.ceil(layer.content.length / 4);
+    const layerTokens = estimateTokens(layer.content);
     const summary = summarizeLayer(layer);
-    const summaryTokens = Math.ceil(summary.length / 4);
+    const summaryTokens = estimateTokens(summary);
     const saved = layerTokens - summaryTokens;
 
     compressedLayers.push({
@@ -166,7 +177,7 @@ export function compressLayeredPrompt(
   return {
     layers: compressedLayers,
     totalChars,
-    estimatedTokens: Math.ceil(totalChars / 4),
+    estimatedTokens: compressedLayers.reduce((sum, layer) => sum + estimateTokens(layer.content), 0),
   };
 }
 

@@ -12,7 +12,19 @@ export type ModelRuntimeConfig = {
   baseUrl?: string;
   thinking: DeepSeekThinkingMode;
   apiKey?: string;
+  /** 模型上下文窗口大小（token 数），默认 32K */
+  contextWindow?: number;
 };
+
+/** 已知模型的上下文窗口大小 */
+const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  "deepseek-v4-flash": 1_000_000,
+  "deepseek-v4": 1_000_000,
+  "deepseek-v3": 32_000,
+  "deepseek-v2.5": 32_000,
+};
+
+const DEFAULT_CONTEXT_WINDOW = 32_000;
 
 const SECRET_PREFIX = "loopagent.model.apiKey.";
 
@@ -36,10 +48,12 @@ export async function getModelRuntimeConfig(
     thinking,
   }, selection);
   const apiKey = await getModelApiKey(context, config.provider);
+  const contextWindow = MODEL_CONTEXT_WINDOWS[config.model] ?? DEFAULT_CONTEXT_WINDOW;
 
   return {
     ...config,
     apiKey,
+    contextWindow,
   };
 }
 

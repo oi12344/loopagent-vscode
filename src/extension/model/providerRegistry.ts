@@ -9,6 +9,7 @@ import { createReactAgentRunner } from "../agent/reactAgentRunner";
 import { createWorkflowTools } from "../agent/workflowTools";
 import { createWorkflowOrchestrator, type WorkflowEvent } from "../agent/workflowOrchestrator";
 import { classifyTask, getExecutionGuidance } from "../agent/taskClassifier";
+import { createLayeredSystemPrompt, renderLayeredPrompt, compressLayeredPrompt } from "../agent/layeredSystemPrompt";
 import type { AgentRunner, AgentRunRequest } from "../agentRunner";
 import type { ParserRuntime } from "../intelligence/parser/parserRuntime";
 import { createTreeSitterParserRuntime } from "../intelligence/parser/treeSitterRuntime";
@@ -17,14 +18,15 @@ import { createVsCodeWorkspaceIntelligence, type VsCodeWorkspaceApi } from "../i
 import type { ProjectMemory } from "../memory/projectMemory";
 import { renderCodeRuntimeContextPrompt } from "../runtime/contextPrompt";
 import { collectVsCodeRuntimeContext } from "../runtime/vscodeRuntimeContext";
-import type { HostToWebviewMessage, RunModelSelection } from "../../shared/messages";
+import type { HostToWebviewMessage, RunMode, RunModelSelection } from "../../shared/messages";
 import type { InterruptedRunCheckpoint } from "../../shared/chatTypes";
 import { getModelRuntimeConfig } from "./modelConfig";
 import { createDeepSeekProvider } from "./providers/deepseekProvider";
 import { resolveRole } from "../agent/workflow/roleRegistry";
-import type { ImageAnalysisService } from "../vision/imageAnalysisService";
-import type { ImageAnalysisContext } from "../vision/imageAnalysisService";
 import type { ConversationStore } from "../conversation/conversationStore";
+import type { ImageAnalysisService } from "../vision/imageAnalysisService";
+import { createVisionAnalysisTool } from "../vision/visionAnalysisTool";
+import type { VisionService } from "../vision/types";
 
 const DIRECT_TOOL_GUIDANCE = [
   // --- Discovery ---
@@ -72,6 +74,15 @@ const REACT_SYSTEM_PROMPT = [
   ...DIRECT_TOOL_GUIDANCE,
 ].join("\n");
 
+const PLAN_SYSTEM_PROMPT = [
+  "You are LoopAgent in plan mode, a coding assistant working in the current VS Code workspace.",
+  "Produce an ordered implementation plan grounded in the available read-only evidence.",
+  "For each step, name the affected files and the verification command that should be run during execution.",
+  "Do not edit files or run commands. Do not claim that changes or verification have been completed.",
+  ...DIRECT_TOOL_GUIDANCE.slice(0, 10),
+  "Answer only from evidence returned by tools. State any material limitation when the evidence is insufficient.",
+].join("\n");
+
 const AGENT_SYSTEM_PROMPT = [
   "You are LoopAgent, a coding assistant working in the current VS Code workspace.",
   "When a task has independent parts that can be explored or executed concurrently, use spawnSubagent to delegate work:",
@@ -97,6 +108,8 @@ export type CreateConfiguredAgentRunnerDeps = {
   projectMemory?: ProjectMemory;
   enableWorkflowTools?: boolean;
   imageAnalysisService?: ImageAnalysisService;
+  visionService?: VisionService;
+  mode?: RunMode;
 };
 
 export async function createConfiguredAgentRunner(
@@ -124,63 +137,94 @@ export async function createConfiguredAgentRunner(
     ...(deps.readFileTool ? [deps.readFileTool] : []),
     ...(deps.listDirectoryTool ? [deps.listDirectoryTool] : []),
   ];
+
+  // 视觉子智能体：通过闭包访问当前请求的附件
+  let currentAttachments: import("../../shared/messages").ImageAttachment[] | undefined;
+  const visionTool = deps.visionService
+    ? createVisionAnalysisTool({
+        visionService: deps.visionService,
+        getAttachments: () => currentAttachments,
+      })
+    : undefined;
+
   const parentTools = [
     ...readOnlyTools,
     ...(deps.applyEditTool ? [deps.applyEditTool] : []),
     ...(deps.runCommandTool ? [deps.runCommandTool] : []),
+    ...(visionTool ? [visionTool] : []),
     ...(deps.extraTools ?? []),
   ];
+  const mode = normalizeRunMode(deps.mode);
   const memoryGenerationByRunId = new Map<string, number>();
 
-  const runtimeSystemPromptProvider = async (): Promise<string> => {
-    let runtimePrompt = "";
+  // --- 缓存：runtime context 和 task classification 变化频率低，可复用 ---
+  let cachedRuntimePrompt = "";
+  let cachedRuntimePromptAt = 0;
+  const RUNTIME_CACHE_TTL_MS = 5_000; // 5 秒内复用
+
+  const cachedTaskGuidance = new Map<string, string>();
+
+  const getRuntimePrompt = async (): Promise<string> => {
+    const now = Date.now();
+    if (now - cachedRuntimePromptAt < RUNTIME_CACHE_TTL_MS) {
+      return cachedRuntimePrompt;
+    }
+    let prompt = "";
     try {
-      runtimePrompt = renderCodeRuntimeContextPrompt(await collectVsCodeRuntimeContext());
+      prompt = renderCodeRuntimeContextPrompt(await collectVsCodeRuntimeContext());
     } catch {
       // Runtime context is useful but must not block the model/tool loop.
     }
-    return runtimePrompt;
+    cachedRuntimePrompt = prompt;
+    cachedRuntimePromptAt = now;
+    return prompt;
+  };
+
+  const getTaskGuidance = (task: string): string => {
+    const cached = cachedTaskGuidance.get(task);
+    if (cached !== undefined) return cached;
+    let guidance = "";
+    try {
+      const classification = classifyTask(task);
+      const text = getExecutionGuidance(classification);
+      guidance = [
+        `# Task Complexity Analysis`,
+        `Complexity: ${classification.complexity} (confidence: ${classification.confidence})`,
+        `Reasoning: ${classification.reasoning}`,
+        ``,
+        `# Execution Guidance`,
+        text,
+        ``,
+        `Note: This is a suggestion based on pattern matching. You may choose a different approach if you have strong evidence that the task requires it.`,
+      ].join("\n");
+    } catch {
+      // Task classification is advisory only and must not block execution.
+    }
+    cachedTaskGuidance.set(task, guidance);
+    return guidance;
   };
 
   const createSystemPromptProvider = (basePrompt: string) =>
-    async (request: AgentRunRequest, imageAnalyses?: ImageAnalysisContext[]): Promise<string> => {
-      const runtimePrompt = await runtimeSystemPromptProvider();
-      let memoryPrompt = "";
-      try {
-        const memoryContext = await deps.projectMemory?.loadContext(request.task);
-        if (memoryContext) {
-          memoryPrompt = memoryContext.prompt;
-          memoryGenerationByRunId.set(request.runId, memoryContext.generation);
-        }
-      } catch {
-        // Project memory is best-effort context and must not block the model/tool loop.
+    async (request: AgentRunRequest): Promise<string> => {
+      // 并行采集：runtime context 和 memory 互不依赖，可同时执行
+      const [runtimePrompt, memoryContext] = await Promise.all([
+        getRuntimePrompt(),
+        deps.projectMemory?.loadContext(request.task).catch(() => undefined),
+      ]);
+
+      if (memoryContext) {
+        memoryGenerationByRunId.set(request.runId, memoryContext.generation);
       }
 
-      let imagePrompt = "";
-      if (imageAnalyses && imageAnalyses.length > 0 && deps.imageAnalysisService) {
-        imagePrompt = deps.imageAnalysisService.buildSystemPromptFragment(imageAnalyses);
-      }
+      const taskGuidance = getTaskGuidance(request.task);
 
-      // Task classification guidance
-      let taskGuidance = "";
-      try {
-        const classification = classifyTask(request.task);
-        const guidance = getExecutionGuidance(classification);
-        taskGuidance = [
-          `# Task Complexity Analysis`,
-          `Complexity: ${classification.complexity} (confidence: ${classification.confidence})`,
-          `Reasoning: ${classification.reasoning}`,
-          ``,
-          `# Execution Guidance`,
-          guidance,
-          ``,
-          `Note: This is a suggestion based on pattern matching. You may choose a different approach if you have strong evidence that the task requires it.`,
-        ].join("\n");
-      } catch {
-        // Task classification is advisory only and must not block execution.
-      }
-
-      return [basePrompt, taskGuidance, runtimePrompt, memoryPrompt, imagePrompt].filter(Boolean).join("\n\n");
+      const layered = createLayeredSystemPrompt(
+        [basePrompt, taskGuidance].filter(Boolean).join("\n\n"),
+        runtimePrompt,
+        memoryContext?.prompt ?? "",
+        "",
+      );
+      return renderLayeredPrompt(layered);
     };
 
   const createParentRunner = (
@@ -206,21 +250,18 @@ export async function createConfiguredAgentRunner(
     requiredToolNames,
     requiredAnyOfToolNames,
     invokeTool,
-    analyzeImages: deps.imageAnalysisService
-      ? async (request) => {
-          return await deps.imageAnalysisService!.analyzeAttachments(
-            request.attachments,
-            request.task,
-            request.signal,
-          );
-        }
-      : undefined,
+    contextWindow: config.contextWindow,
+    visionService: deps.visionService,
   });
 
+  if (mode === "plan") return createParentRunner(readOnlyTools, undefined, PLAN_SYSTEM_PROMPT);
   if (deps.enableWorkflowTools === false) return createParentRunner(parentTools, deps.requiredToolNames, REACT_SYSTEM_PROMPT);
 
   return {
     async *run(request) {
+      // 设置当前请求的附件，供视觉子智能体使用
+      currentAttachments = request.attachments;
+
       const events = createAsyncQueue<HostToWebviewMessage>();
       const orchestrator = createWorkflowOrchestrator({
         signal: request.signal,
@@ -232,15 +273,21 @@ export async function createConfiguredAgentRunner(
             tools: childTools,
             unhandledErrorMode: "summarize-and-fail",
             invokeTool,
+            contextWindow: config.contextWindow,
             modelTurn: createOpenAiReactModelTurn({ provider, tools: childTools }),
-            systemPromptProvider: async () => {
-              let runtimePrompt = "";
-              try {
-                runtimePrompt = renderCodeRuntimeContextPrompt(await collectVsCodeRuntimeContext());
-              } catch {
-                // Runtime context is useful but must not block the model/tool loop.
-              }
-              return [childProfile.systemPrompt, runtimePrompt].filter(Boolean).join("\n\n");
+            systemPromptProvider: async (childRequest) => {
+              const childTask = childRequest?.task ?? "";
+              const [runtimePrompt, memoryContext] = await Promise.all([
+                getRuntimePrompt(),
+                deps.projectMemory?.loadContext(childTask).catch(() => undefined),
+              ]);
+              const layered = createLayeredSystemPrompt(
+                childProfile.systemPrompt,
+                runtimePrompt,
+                memoryContext?.prompt ?? "",
+                "",
+              );
+              return renderLayeredPrompt(layered);
             },
           });
         },
@@ -277,6 +324,10 @@ export async function createConfiguredAgentRunner(
       if (parentError) throw parentError;
     },
   };
+}
+
+function normalizeRunMode(mode: unknown): RunMode {
+  return mode === "plan" ? "plan" : "execute";
 }
 
 function toHostMessage(event: WorkflowEvent, runId: string): HostToWebviewMessage {
