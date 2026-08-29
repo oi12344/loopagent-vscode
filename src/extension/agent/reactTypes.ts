@@ -33,6 +33,8 @@ export type ReactAgentToolInvocation = {
   request: ReactAgentToolRequest;
   input: unknown;
   signal: AbortSignal;
+  /** 前一个工具的输出上下文（同一步骤内传递） */
+  context?: string;
 };
 
 /** A tool's normalized result: the bounded text appended to ReAct message history, plus
