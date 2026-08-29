@@ -1731,6 +1731,89 @@ describe("createReactAgentRunner", () => {
     expect(messages).toContainEqual({ type: "runFinished", runId: "run-1" });
     expect(messages).not.toContainEqual(expect.objectContaining({ type: "runFailed" }));
   });
+
+  it("caches read-only tool results and returns cached content on repeat calls", async () => {
+    let callCount = 0;
+    const mockInvoke = vi.fn().mockImplementation(async () => {
+      callCount++;
+      return { content: `file content #${callCount}`, evidence: [], productive: true };
+    });
+
+    // Shared cache across two runner instances
+    const { ToolResultCache } = await import("../src/extension/agent/toolCache");
+    const sharedCache = new ToolResultCache();
+
+    // First run: tool should be called
+    const mockModelTurn1 = vi.fn().mockResolvedValueOnce({
+      kind: "toolRequests",
+      assistantMessage: { role: "assistant", content: "", toolCalls: [] },
+      requests: [{
+        id: "call-1",
+        name: "readFile",
+        rawArguments: '{"path":"test.ts"}',
+        input: { path: "test.ts" },
+      }],
+    }).mockResolvedValueOnce({
+      kind: "final",
+      content: "Done reading",
+    });
+
+    const runner1 = createReactAgentRunner({
+      modelTurn: mockModelTurn1,
+      toolCache: sharedCache,
+      tools: [{
+        name: "readFile",
+        description: "Read file",
+        inputSchema: { type: "object", properties: { path: { type: "string" } } },
+        invoke: mockInvoke,
+      }],
+    });
+
+    const events1 = [];
+    for await (const event of runner1.run({ runId: "1", task: "read test.ts", signal: new AbortController().signal })) {
+      events1.push(event);
+    }
+
+    expect(callCount).toBe(1);
+
+    // Second run with same parameters: should use cache
+    const mockModelTurn2 = vi.fn().mockResolvedValueOnce({
+      kind: "toolRequests",
+      assistantMessage: { role: "assistant", content: "", toolCalls: [] },
+      requests: [{
+        id: "call-2",
+        name: "readFile",
+        rawArguments: '{"path":"test.ts"}',
+        input: { path: "test.ts" },
+      }],
+    }).mockResolvedValueOnce({
+      kind: "final",
+      content: "Done again",
+    });
+
+    const runner2 = createReactAgentRunner({
+      modelTurn: mockModelTurn2,
+      toolCache: sharedCache,
+      tools: [{
+        name: "readFile",
+        description: "Read file",
+        inputSchema: { type: "object", properties: { path: { type: "string" } } },
+        invoke: mockInvoke,
+      }],
+    });
+
+    const events2 = [];
+    for await (const event of runner2.run({ runId: "2", task: "read test.ts", signal: new AbortController().signal })) {
+      events2.push(event);
+    }
+
+    // Tool should not be called again (cache hit)
+    expect(callCount).toBe(1);
+
+    // Verify cache output contains [缓存] prefix
+    const toolFinished = events2.find(e => e.type === "toolCallFinished");
+    expect(toolFinished?.output).toContain("[缓存]");
+  });
 });
 
 function toolRequest(id: string, name: string, input: unknown) {

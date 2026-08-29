@@ -36,6 +36,8 @@ export type CreateReactAgentRunnerOptions = {
   contextWindow?: number;
   /** 自适应延长硬上限（毫秒）。默认 runTimeoutMs * 3 */
   maxRunTimeoutMs?: number;
+  /** 共享的工具结果缓存实例，用于跨运行复用只读工具结果 */
+  toolCache?: ToolResultCache;
 };
 
 export function createReactAgentRunner({
@@ -54,11 +56,12 @@ export function createReactAgentRunner({
   runTimeoutMs,
   maxRunTimeoutMs: configuredMaxRunTimeoutMs,
   contextWindow = 32_000,
+  toolCache: sharedToolCache,
 }: CreateReactAgentRunnerOptions): AgentRunner {
   const invokeTool = configuredInvokeTool ?? createToolInvoker(tools);
   const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
   const maxRunTimeoutMs = runTimeoutMs !== undefined ? (configuredMaxRunTimeoutMs ?? runTimeoutMs * 3) : undefined;
-  const toolCache = new ToolResultCache({ ttlMs: 5 * 60 * 1000 });
+  const toolCache = sharedToolCache ?? new ToolResultCache({ ttlMs: 5 * 60 * 1000 });
 
   /** 只读工具列表（可缓存） */
   const READ_ONLY_TOOLS = new Set([
